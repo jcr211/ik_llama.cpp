@@ -11997,9 +11997,20 @@ int32_t llama_encode(
 int32_t llama_decode(
         struct llama_context * ctx,
           struct llama_batch   batch) {
+    // verify-cost census: per-decode wall time by batch width and context
+    // role, env-gated so production stays silent
+    static const bool vt = getenv("LONGSPEAR_VERIFY_TIMING") != nullptr;
+    const int64_t vt_t0 = vt ? ggml_time_us() : 0;
+
     const int ret = llama_decode_internal(*ctx, batch);
     if (ret < 0) {
         LLAMA_LOG_ERROR("%s: failed to decode, ret = %d\n", __func__, ret);
+    }
+
+    if (vt) {
+        fprintf(stderr, "[vt] K=%d mtp_op=%d us=%lld\n",
+                (int) batch.n_tokens, (int) ctx->cparams.mtp_op_type,
+                (long long) (ggml_time_us() - vt_t0));
     }
 
     return ret;
