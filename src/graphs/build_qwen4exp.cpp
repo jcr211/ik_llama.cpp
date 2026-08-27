@@ -598,6 +598,10 @@ ggml_cgraph * llm_build_context::build_qwen4exp() {
         cur = ggml_get_rows(ctx0, cur, inp_out_ids);
     }
 
+    // append_pooling runs whenever the model carries a nextn tail and needs a
+    // named embedding tensor; the mixed single stream is the natural one
+    cb(cur, "result_embd", -1);
+
     cur = llm_build_lora_mm(lctx, ctx0, model.output, cur);
     cb(cur, "result_output", -1);
 

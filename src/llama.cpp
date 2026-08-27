@@ -8586,6 +8586,7 @@ struct llama_context * llama_init_from_model(
         model->arch != LLM_ARCH_STEP35 &&
         model->arch != LLM_ARCH_GEMMA4_ASSISTANT &&
         model->arch != LLM_ARCH_OPENPANGU &&
+        model->arch != LLM_ARCH_QWEN4EXP &&
         cparams.mtp != 0) {
         cparams.mtp = 0;
     }
