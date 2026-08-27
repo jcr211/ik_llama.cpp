@@ -1156,6 +1156,7 @@ static bool llama_mtp_tail_uses_layer_cache(const llama_model & model) {
     return model.hparams.nextn_predict_layers > 0 &&
         (model.arch == LLM_ARCH_GLM_DSA ||
          model.arch == LLM_ARCH_QWEN35MOE ||
+         model.arch == LLM_ARCH_QWEN4EXP ||
          model.arch == LLM_ARCH_STEP35);
 }
 
