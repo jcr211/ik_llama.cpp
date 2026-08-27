@@ -1152,6 +1152,13 @@ static inline bool llama_kv_qnext_seq_id_in_range(const llama_kv_cache & cache, 
     return n_slots > 0 && seq_id >= 0 && (uint32_t) seq_id < n_slots;
 }
 
+// verify-cost census stage accumulators (single-decode-thread; env-gated prints)
+static int64_t g_vt_build_us   = 0;
+static int64_t g_vt_compute_us = 0;
+static int64_t g_vt_logits_us  = 0;
+static int64_t g_vt_embd_us    = 0;
+static int     g_vt_reused     = 0;
+
 static bool llama_mtp_tail_uses_layer_cache(const llama_model & model) {
     return model.hparams.nextn_predict_layers > 0 &&
         (model.arch == LLM_ARCH_GLM_DSA ||
@@ -6702,6 +6709,7 @@ static int llama_decode_internal(
         ggml_cgraph * gf = nullptr;
         const uint64_t seq_fingerprint = llama_ubatch_seq_fingerprint(u_batch, lctx.model.arch);
         const uint64_t state_hash      = model_state_hash(lctx);
+        const int64_t vt_b0 = ggml_time_us();
         if (!lctx.can_reuse_graph(u_batch, seq_fingerprint, state_hash)) {
             lctx.reset_scheduler();
             ggml_backend_sched_set_eval_callback(lctx.sched, lctx.cparams.cb_eval, lctx.cparams.cb_eval_user_data);
@@ -6743,7 +6751,9 @@ static int llama_decode_internal(
         } else {
             //printf("Reusing graph with type = %d, n_kv = %d, n_tokens = %d\n", cparams.mtp_op_type, (int)prev->n_kv, (int)prev->n_tokens);
             gf = prev->graph;
+            g_vt_reused++;
         }
+        g_vt_build_us += ggml_time_us() - vt_b0;
 
         if (cparams.mtp_op_type != MTP_OP_NONE) {
             if (!prepare_mtp_graph_inputs(lctx, cur_token, n_tokens, n_tokens_all)) {
@@ -6824,7 +6834,9 @@ static int llama_decode_internal(
         tim1 = ggml_time_us();
 #endif
         //fprintf(stderr, "%s: invoking llama_graph_compute\n", __func__);
+        const int64_t vt_c0 = ggml_time_us();
         llama_graph_compute(lctx, gf, n_threads);
+        g_vt_compute_us += ggml_time_us() - vt_c0;
 
         if (lctx.model.arch == LLM_ARCH_DEEPSEEK4 &&
             lctx.cparams.mtp_op_type == MTP_OP_NONE &&
@@ -6939,6 +6951,7 @@ static int llama_decode_internal(
             tim1 = ggml_time_us();
 #endif
             // Do not process logits if MTP is only updating the KV cache.
+            const int64_t vt_l0 = ggml_time_us();
             if (cparams.mtp_op_type != MTP_OP_WARMUP) { // && cparams.mtp_op_type != MTP_OP_UPDATE_ACCEPTED) {
                 ggml_backend_t backend_res = ggml_backend_sched_get_tensor_backend(lctx.sched, res);
                 GGML_ASSERT(backend_res != nullptr);
@@ -6968,6 +6981,7 @@ static int llama_decode_internal(
                     }
                 }
             }
+            g_vt_logits_us += ggml_time_us() - vt_l0;
 #if IK_PRINT_TIMING
             tim2 = ggml_time_us();
             printf("get_result(...): %d us\n", int(tim2-tim1));
@@ -6976,6 +6990,7 @@ static int llama_decode_internal(
 
         // extract embeddings
         //if (embd && (cparams.mtp_op_type == MTP_OP_NONE || cparams.mtp_op_type == MTP_OP_DRAFT_GEN)) {
+        const int64_t vt_e0 = ggml_time_us();
         if (embd && cparams.mtp_op_type != MTP_OP_WARMUP) {
 #if IK_PRINT_TIMING
             tim1 = ggml_time_us();
@@ -7047,6 +7062,7 @@ static int llama_decode_internal(
             }
         }
 
+        g_vt_embd_us += ggml_time_us() - vt_e0;
         n_outputs_prev += lctx.n_outputs;
         n_outputs_prev_embd += (has_mtp && embd) ? embd->ne[1] : lctx.n_outputs;
         cur_token += n_tokens;
@@ -12001,6 +12017,10 @@ int32_t llama_decode(
     // role, env-gated so production stays silent
     static const bool vt = getenv("LONGSPEAR_VERIFY_TIMING") != nullptr;
     const int64_t vt_t0 = vt ? ggml_time_us() : 0;
+    if (vt) {
+        g_vt_build_us = g_vt_compute_us = g_vt_logits_us = g_vt_embd_us = 0;
+        g_vt_reused = 0;
+    }
 
     const int ret = llama_decode_internal(*ctx, batch);
     if (ret < 0) {
@@ -12008,9 +12028,11 @@ int32_t llama_decode(
     }
 
     if (vt) {
-        fprintf(stderr, "[vt] K=%d mtp_op=%d us=%lld\n",
+        fprintf(stderr, "[vt] K=%d mtp_op=%d us=%lld build=%lld compute=%lld logits=%lld embd=%lld reused=%d\n",
                 (int) batch.n_tokens, (int) ctx->cparams.mtp_op_type,
-                (long long) (ggml_time_us() - vt_t0));
+                (long long) (ggml_time_us() - vt_t0),
+                (long long) g_vt_build_us, (long long) g_vt_compute_us,
+                (long long) g_vt_logits_us, (long long) g_vt_embd_us, g_vt_reused);
     }
 
     return ret;
