@@ -3,6 +3,8 @@
 #include "../llama-context.h"
 #include "../llama-delta-net.h"
 
+#include <optional>
+
 // the [hc_dim] gamma is wider than the per-stream reduction, so ggml_fused_rms_norm cannot
 // express this and the two ops stay separate
 static ggml_tensor * qwen4exp_grouped_rms(
@@ -428,9 +430,14 @@ ggml_cgraph * llm_build_context::build_qwen4exp() {
 
     ggml_cgraph * gf = new_graph_custom();
 
-    delta_net delta(lctx, batch);
-
     const bool is_mtp = lctx.cparams.mtp_op_type != MTP_OP_NONE;
+
+    // the MTP pass walks only the QSA tail: no recurrent state, so the draft
+    // context has zero qnext state slots and the delta-net ctor must not run
+    std::optional<delta_net> delta_opt;
+    if (!is_mtp) {
+        delta_opt.emplace(lctx, batch);
+    }
 
     const int32_t n_embd_head = hparams.n_embd_head_v(0);
     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k(0));
@@ -510,7 +517,7 @@ ggml_cgraph * llm_build_context::build_qwen4exp() {
         ggml_tensor * inject = nullptr;
 
         if (hparams.is_ple(il)) {
-            res_hc = qwen4exp_ple(*this, ctx0, gf, lctx, model, hparams, delta, res_hc, lctx.inp_ple_rows,
+            res_hc = qwen4exp_ple(*this, ctx0, gf, lctx, model, hparams, *delta_opt, res_hc, lctx.inp_ple_rows,
                     kv_self.s_l[il], ple_reset_state, ple_reset_pos, n_embd, n_tokens, il, cb);
         }
 
@@ -520,7 +527,7 @@ ggml_cgraph * llm_build_context::build_qwen4exp() {
                 &inject, n_embd, il, cb);
 
         if (hparams.is_recurrent(il)) {
-            cur = delta.build_layer_attn_linear(ctx0, gf, cur, nullptr, il, cb, /* external_residual */ true,
+            cur = delta_opt->build_layer_attn_linear(ctx0, gf, cur, nullptr, il, cb, /* external_residual */ true,
                     GGML_UNARY_OP_SIGMOID);
         } else {
             // the indexer reads the same block input as q/k/v, and returns the causal mask
