@@ -4420,6 +4420,121 @@ static inline const void * ggml_cuda_graph_get_key(ggml_cgraph * cgraph) {
     return cgraph->nodes[0];
 }
 
+static bool ggml_cuda_graph_debug2_enabled() {
+    static const bool enabled = [] {
+        const char * env = getenv("LONGSPEAR_CG_DEBUG2");
+        return env != nullptr && env[0] == '1' && env[1] == '\0';
+    }();
+    return enabled;
+}
+
+static const ggml_tensor * ggml_cuda_ultimate_view_src(const ggml_tensor * tensor) {
+    while (tensor != nullptr && tensor->view_src != nullptr) {
+        tensor = tensor->view_src;
+    }
+    return tensor;
+}
+
+static int ggml_cuda_earlier_producer_index(
+        const ggml_cgraph * cgraph, int node_index, const ggml_tensor * tensor) {
+    for (int i = 0; i < node_index; ++i) {
+        if (cgraph->nodes[i] == tensor) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int ggml_cuda_later_consumer_count(const ggml_cgraph * cgraph, int node_index) {
+    int consumers = 0;
+    const ggml_tensor * node = cgraph->nodes[node_index];
+    for (int i = node_index + 1; i < cgraph->n_nodes; ++i) {
+        bool consumes = false;
+        for (int src_index = 0; src_index < GGML_MAX_SRC; ++src_index) {
+            consumes = consumes || cgraph->nodes[i]->src[src_index] == node;
+        }
+        consumers += consumes ? 1 : 0;
+    }
+    return consumers;
+}
+
+static void ggml_cuda_tensor_address_parts(
+        const ggml_tensor * tensor, void ** base, long long * offset) {
+    *base = nullptr;
+    *offset = -1;
+    if (tensor == nullptr || tensor->buffer == nullptr) {
+        return;
+    }
+
+    *base = ggml_backend_buffer_get_base(tensor->buffer);
+    if (*base != nullptr && tensor->data != nullptr) {
+        *offset = (long long) ((intptr_t) tensor->data - (intptr_t) *base);
+    }
+}
+
+static void ggml_cuda_trace_mma_graph(
+        ggml_cuda_graph * graph, const ggml_cgraph * cgraph, const void * key) {
+    const uint64_t pass = ++graph->debug_pass;
+    const bool census = !graph->debug_mma_census_logged;
+
+    for (int node_index = 0; node_index < cgraph->n_nodes; ++node_index) {
+        const ggml_tensor * node = cgraph->nodes[node_index];
+        if (node->op != GGML_OP_MUL_MULTI_ADD) {
+            continue;
+        }
+
+        const bool has_src2 = node->src[2] != nullptr;
+        const bool has_src3 = node->src[3] != nullptr;
+        const char * variant = has_src2 == has_src3 ? (has_src2 ? "scaled" : "plain") : "invalid";
+
+        if (census) {
+            fprintf(stderr,
+                    "[cg] mma key=%p node_index=%d name=%s op=%s variant=%s src2_present=%d src3_present=%d "
+                    "nused=%lld dst_ne0=%lld dst_ne1=%lld dst_nb1=%zu src0_nb1=%zu src0_nb2=%zu "
+                    "src1_nb1=%zu src1_nb2=%zu src3_nb1=%zu src0_type=%s src1_type=%s src2_type=%s "
+                    "src3_type=%s dst_consumers=%d\n",
+                    key, node_index, node->name, ggml_op_name(node->op), variant, (int) has_src2, (int) has_src3,
+                    (long long) node->src[0]->ne[1], (long long) node->ne[0], (long long) node->ne[1], node->nb[1],
+                    node->src[0]->nb[1], node->src[0]->nb[2], node->src[1]->nb[1], node->src[1]->nb[2],
+                    has_src3 ? node->src[3]->nb[1] : 0,
+                    ggml_type_name(node->src[0]->type), ggml_type_name(node->src[1]->type),
+                    has_src2 ? ggml_type_name(node->src[2]->type) : "none",
+                    has_src3 ? ggml_type_name(node->src[3]->type) : "none",
+                    ggml_cuda_later_consumer_count(cgraph, node_index));
+        }
+
+        static const char * roles[] = { "src0", "src1", "scales", "cids" };
+        for (int src_index = 0; src_index < 4; ++src_index) {
+            const ggml_tensor * src = node->src[src_index];
+            if (src == nullptr) {
+                continue;
+            }
+
+            const ggml_tensor * ultimate = ggml_cuda_ultimate_view_src(src);
+            const int producer_index = ggml_cuda_earlier_producer_index(cgraph, node_index, ultimate);
+            if (census) {
+                fprintf(stderr,
+                        "[cg] mma_src key=%p node_index=%d src_index=%d role=%s tensor=%s ultimate=%s "
+                        "provenance=%s producer_index=%d\n",
+                        key, node_index, src_index, roles[src_index], src->name,
+                        ultimate != nullptr ? ultimate->name : "none",
+                        producer_index >= 0 ? "internal" : "external", producer_index);
+            }
+
+            void * base = nullptr;
+            long long offset = -1;
+            ggml_cuda_tensor_address_parts(src, &base, &offset);
+            fprintf(stderr,
+                    "[cg] addr key=%p pass=%llu phase=cuda_observe node_index=%d src_index=%d role=%s "
+                    "tensor=%s data=%p buffer=%p base=%p offset=%lld\n",
+                    key, (unsigned long long) pass, node_index, src_index, roles[src_index], src->name,
+                    src->data, (void *) src->buffer, base, offset);
+        }
+    }
+
+    graph->debug_mma_census_logged = true;
+}
+
 static inline ggml_cuda_graph * ggml_cuda_get_graph(ggml_backend_cuda_context & ctx, const void * key) {
     auto & graph = ctx.cuda_graphs[key];
     if (!graph) {
@@ -4552,31 +4667,88 @@ static void set_ggml_graph_node_properties(ggml_tensor * node, ggml_graph_node_p
     memcpy(graph_node_properties->op_params, node->op_params, GGML_MAX_OP_PARAMS);
 }
 
-static const char * ggml_cuda_graph_first_differing_field(
+static std::string ggml_cuda_graph_hex_bytes(const uint8_t * data, size_t begin, size_t end) {
+    static const char digits[] = "0123456789abcdef";
+    std::string result(2*(end - begin), '0');
+    for (size_t i = begin; i < end; ++i) {
+        result[2*(i - begin) + 0] = digits[data[i] >> 4];
+        result[2*(i - begin) + 1] = digits[data[i] & 0x0f];
+    }
+    return result;
+}
+
+static void ggml_cuda_graph_log_differences(
+        const void * key, int pass, int node_index, const ggml_tensor * node,
         const ggml_graph_node_properties & old_props,
         const ggml_graph_node_properties & new_props) {
-    // Keep the diagnostic vocabulary compact. "data" covers the identity/view header that precedes
-    // the shape arrays in ggml_graph_node_properties; the update decision itself remains the raw memcmp below.
-    if (old_props.node_address != new_props.node_address ||
-        old_props.node_op      != new_props.node_op      ||
-        old_props.type         != new_props.type         ||
-        old_props.view_src     != new_props.view_src     ||
-        old_props.view_offs    != new_props.view_offs) {
-        return "data";
+#define GGML_CUDA_LOG_PTR_FIELD(field_name, old_value, new_value) \
+    fprintf(stderr, "[cg] churn key=%p pass=%d node_index=%d name=%s op=%s field=" field_name " old=%p new=%p\n", \
+            key, pass, node_index, node->name, ggml_op_name(node->op), (void *) (old_value), (void *) (new_value))
+#define GGML_CUDA_LOG_INT_FIELD(field_name, old_value, new_value) \
+    fprintf(stderr, "[cg] churn key=%p pass=%d node_index=%d name=%s op=%s field=" field_name " old=%lld new=%lld\n", \
+            key, pass, node_index, node->name, ggml_op_name(node->op), \
+            (long long) (old_value), (long long) (new_value))
+
+    if (old_props.node_address != new_props.node_address) {
+        GGML_CUDA_LOG_PTR_FIELD("node_address", old_props.node_address, new_props.node_address);
     }
-    if (memcmp(old_props.ne, new_props.ne, sizeof(old_props.ne)) != 0) {
-        return "ne";
+    if (old_props.node_op != new_props.node_op) {
+        GGML_CUDA_LOG_INT_FIELD("node_op", old_props.node_op, new_props.node_op);
     }
-    if (memcmp(old_props.nb, new_props.nb, sizeof(old_props.nb)) != 0) {
-        return "nb";
+    if (old_props.type != new_props.type) {
+        GGML_CUDA_LOG_INT_FIELD("type", old_props.type, new_props.type);
     }
-    if (memcmp(old_props.src_address, new_props.src_address, sizeof(old_props.src_address)) != 0) {
-        return "src";
+    if (old_props.view_src != new_props.view_src) {
+        GGML_CUDA_LOG_PTR_FIELD("view_src", old_props.view_src, new_props.view_src);
     }
-    if (memcmp(old_props.op_params, new_props.op_params, sizeof(old_props.op_params)) != 0) {
-        return "op_params";
+    if (old_props.view_offs != new_props.view_offs) {
+        GGML_CUDA_LOG_INT_FIELD("view_offs", old_props.view_offs, new_props.view_offs);
     }
-    return nullptr;
+    for (int i = 0; i < GGML_MAX_DIMS; ++i) {
+        if (old_props.ne[i] != new_props.ne[i]) {
+            fprintf(stderr,
+                    "[cg] churn key=%p pass=%d node_index=%d name=%s op=%s field=ne[%d] old=%lld new=%lld\n",
+                    key, pass, node_index, node->name, ggml_op_name(node->op), i,
+                    (long long) old_props.ne[i], (long long) new_props.ne[i]);
+        }
+        if (old_props.nb[i] != new_props.nb[i]) {
+            fprintf(stderr,
+                    "[cg] churn key=%p pass=%d node_index=%d name=%s op=%s field=nb[%d] old=%zu new=%zu\n",
+                    key, pass, node_index, node->name, ggml_op_name(node->op), i,
+                    old_props.nb[i], new_props.nb[i]);
+        }
+    }
+    for (int i = 0; i < GGML_MAX_SRC; ++i) {
+        if (old_props.src_address[i] != new_props.src_address[i]) {
+            fprintf(stderr,
+                    "[cg] churn key=%p pass=%d node_index=%d name=%s op=%s field=src_address[%d] old=%p new=%p\n",
+                    key, pass, node_index, node->name, ggml_op_name(node->op), i,
+                    old_props.src_address[i], new_props.src_address[i]);
+        }
+    }
+
+    const uint8_t * old_bytes = reinterpret_cast<const uint8_t *>(old_props.op_params);
+    const uint8_t * new_bytes = reinterpret_cast<const uint8_t *>(new_props.op_params);
+    for (size_t begin = 0; begin < GGML_MAX_OP_PARAMS;) {
+        if (old_bytes[begin] == new_bytes[begin]) {
+            ++begin;
+            continue;
+        }
+        size_t end = begin + 1;
+        while (end < GGML_MAX_OP_PARAMS && old_bytes[end] != new_bytes[end]) {
+            ++end;
+        }
+        const std::string old_hex = ggml_cuda_graph_hex_bytes(old_bytes, begin, end);
+        const std::string new_hex = ggml_cuda_graph_hex_bytes(new_bytes, begin, end);
+        fprintf(stderr,
+                "[cg] churn key=%p pass=%d node_index=%d name=%s op=%s field=op_params[%zu:%zu] old=%s new=%s\n",
+                key, pass, node_index, node->name, ggml_op_name(node->op), begin, end,
+                old_hex.c_str(), new_hex.c_str());
+        begin = end;
+    }
+
+#undef GGML_CUDA_LOG_INT_FIELD
+#undef GGML_CUDA_LOG_PTR_FIELD
 }
 
 static bool is_cuda_graph_update_required(
@@ -4605,10 +4777,10 @@ static bool is_cuda_graph_update_required(
 
     // Loop over nodes in GGML graph to determine if CUDA graph update is required
     // and store properties to allow this comparison for the next token
-    int first_differing_node = -1;
-    const char * first_differing_field = nullptr;
+    const bool trace_pass = log_churn && has_comparable_executable && graph->debug_churn_passes < 8;
+    bool traced_difference = false;
     for (int i = 0; i < cgraph->n_nodes; i++) {
-        ggml_graph_node_properties new_props;
+        ggml_graph_node_properties new_props {};
         set_ggml_graph_node_properties(cgraph->nodes[i], &new_props);
         if (ignore_cpy_destinations && has_comparable_executable && cgraph->nodes[i]->op == GGML_OP_CPY) {
             // CPY kernels use cpy_dest_ptrs/dest_ptrs_d indirection, refreshed before every replay.
@@ -4618,25 +4790,19 @@ static bool is_cuda_graph_update_required(
             new_props.src_address[1] = graph->ggml_graph_properties[i].src_address[1];
         }
         if (memcmp(&graph->ggml_graph_properties[i], &new_props, sizeof(new_props)) != 0) {
-            if (log_churn && first_differing_node < 0) {
-                first_differing_node = i;
-                first_differing_field = ggml_cuda_graph_first_differing_field(
+            if (trace_pass) {
+                ggml_cuda_graph_log_differences(
+                        ggml_cuda_graph_get_key(cgraph), graph->debug_churn_passes + 1, i, cgraph->nodes[i],
                         graph->ggml_graph_properties[i], new_props);
+                traced_difference = true;
             }
             cuda_graph_update_required = true;
             memcpy(&graph->ggml_graph_properties[i], &new_props, sizeof(new_props));
         }
     }
 
-    if (log_churn && cuda_graph_update_required && first_differing_node >= 0) {
-        static std::atomic<int> churn_lines { 0 };
-        const int churn_line = churn_lines.fetch_add(1, std::memory_order_relaxed);
-        if (churn_line < 40) {
-            const ggml_tensor * node = cgraph->nodes[first_differing_node];
-            fprintf(stderr, "[cg] churn key=%p node_idx=%d op=%s name=%s field=%s\n",
-                    (const void *) ggml_cuda_graph_get_key(cgraph), first_differing_node,
-                    ggml_op_name(node->op), node->name, first_differing_field ? first_differing_field : "data");
-        }
+    if (traced_difference) {
+        graph->debug_churn_passes++;
     }
 
     graph->uid = cgraph->uid;
@@ -4770,14 +4936,19 @@ GGML_CALL static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t
     }
 
     static const bool cg_dbg_top = getenv("LONGSPEAR_CG_DEBUG") != nullptr;
+    const bool cg_dbg2 = ggml_cuda_graph_debug2_enabled();
     static const char * cg_revive_env = getenv("LONGSPEAR_CG_REVIVE");
     static const bool cg_revive = cg_revive_env != nullptr && cg_revive_env[0] == '1' && cg_revive_env[1] == '\0';
+
+    if (use_cuda_graph && cg_dbg2) {
+        ggml_cuda_trace_mma_graph(graph, cgraph, ggml_cuda_graph_get_key(cgraph));
+    }
 
     if (use_cuda_graph && cg_revive && graph->disable_due_to_too_many_updates &&
             !graph->disable_due_to_gpu_arch && !graph->disable_due_to_failed_graph_capture) {
         // A cgraph can keep the same uid while its node properties change. Bypass the uid shortcut while
         // observing a disabled graph so that stable passes are based on the properties and refresh the cache.
-        if (is_cuda_graph_update_required(graph, cgraph, true, cg_dbg_top, true)) {
+        if (is_cuda_graph_update_required(graph, cgraph, true, cg_dbg2, true)) {
             graph->number_consecutive_stable = 0;
         } else {
             graph->number_consecutive_stable++;
@@ -4798,6 +4969,11 @@ GGML_CALL static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t
         }
     }
 
+    if (use_cuda_graph && cg_dbg2 && !cg_revive && graph->disable_due_to_too_many_updates &&
+            !graph->disable_due_to_gpu_arch && !graph->disable_due_to_failed_graph_capture) {
+        (void) is_cuda_graph_update_required(graph, cgraph, true, true, graph->use_cpy_indirection);
+    }
+
     if (use_cuda_graph && (
         graph->disable_due_to_gpu_arch ||
         graph->disable_due_to_too_many_updates ||
@@ -4810,7 +4986,7 @@ GGML_CALL static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t
 
     if (use_cuda_graph) {
         cuda_graph_update_required = is_cuda_graph_update_required(
-                graph, cgraph, false, false, cg_revive && graph->use_cpy_indirection);
+                graph, cgraph, cg_dbg2, cg_dbg2, cg_revive && graph->use_cpy_indirection);
 
         use_cuda_graph = check_node_graph_compatibility_and_refresh_copy_ops(graph, cgraph, use_cuda_graph, cuda_ctx->stream());
 

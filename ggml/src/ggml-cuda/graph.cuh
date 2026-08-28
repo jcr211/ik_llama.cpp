@@ -36,6 +36,9 @@ struct ggml_cuda_graph {
     int number_consecutive_updates = 0;
     int number_consecutive_stable = 0;
     std::vector<ggml_graph_node_properties> ggml_graph_properties;
+    uint64_t debug_pass = 0;
+    int debug_churn_passes = 0;
+    bool debug_mma_census_logged = false;
     bool use_cpy_indirection = false;
     std::vector<char *> cpy_dest_ptrs;
     char ** dest_ptrs_d;
