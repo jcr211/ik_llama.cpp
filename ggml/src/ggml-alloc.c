@@ -1049,6 +1049,19 @@ static bool ggml_gallocr_needs_realloc(ggml_gallocr_t galloc, struct ggml_cgraph
         return true;
     }
 
+    // The legacy single-plan path assumes leaf layouts are fixed. Cached graph classes can revisit
+    // a plan after another class has run, so reject a cached plan if a dynamic leaf outgrew its slot.
+    if (ggml_gallocr_arena_variants_enabled()) {
+        for (int i = 0; i < graph->n_leafs; ++i) {
+            if (!ggml_gallocr_node_needs_realloc(galloc, graph->leafs[i], &galloc->leaf_allocs[i].leaf)) {
+#ifndef NDEBUG
+                fprintf(stderr, "%s: leaf %s is not valid\n", __func__, graph->leafs[i]->name);
+#endif
+                return true;
+            }
+        }
+    }
+
     for (int i = 0; i < graph->n_nodes; i++) {
         struct ggml_tensor * node = graph->nodes[i];
         struct node_alloc * node_alloc = &galloc->node_allocs[i];
