@@ -4552,9 +4552,9 @@ static void set_ggml_graph_node_properties(ggml_tensor * node, ggml_graph_node_p
     memcpy(graph_node_properties->op_params, node->op_params, GGML_MAX_OP_PARAMS);
 }
 
-static bool is_cuda_graph_update_required(ggml_cuda_graph * graph, ggml_cgraph * cgraph) {
+static bool is_cuda_graph_update_required(ggml_cuda_graph * graph, ggml_cgraph * cgraph, bool ignore_uid = false) {
 
-    if (cgraph->uid != 0 && graph->uid == cgraph->uid) {
+    if (!ignore_uid && cgraph->uid != 0 && graph->uid == cgraph->uid) {
         GGML_ASSERT(graph->ggml_graph_properties.size() == (size_t)cgraph->n_nodes);
         return false;
     }
@@ -4713,6 +4713,34 @@ GGML_CALL static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t
     }
 
     static const bool cg_dbg_top = getenv("LONGSPEAR_CG_DEBUG") != nullptr;
+    static const char * cg_revive_env = getenv("LONGSPEAR_CG_REVIVE");
+    static const bool cg_revive = cg_revive_env != nullptr && cg_revive_env[0] == '1' && cg_revive_env[1] == '\0';
+
+    if (use_cuda_graph && cg_revive && graph->disable_due_to_too_many_updates &&
+            !graph->disable_due_to_gpu_arch && !graph->disable_due_to_failed_graph_capture) {
+        // A cgraph can keep the same uid while its node properties change. Bypass the uid shortcut while
+        // observing a disabled graph so that stable passes are based on the properties and refresh the cache.
+        if (is_cuda_graph_update_required(graph, cgraph, true)) {
+            graph->number_consecutive_stable = 0;
+        } else {
+            graph->number_consecutive_stable++;
+        }
+
+        if (graph->number_consecutive_stable >= 4) {
+            if (cg_dbg_top) fprintf(stderr, "[cg] revive=too_many_updates key=%p stable=%d\n",
+                    (const void *) ggml_cuda_graph_get_key(cgraph), graph->number_consecutive_stable);
+            graph->disable_due_to_too_many_updates = false;
+            graph->number_consecutive_updates = 0;
+            graph->number_consecutive_stable = 0;
+
+            // The refreshed properties may not match the last captured executable because the latch is set
+            // before capture begins. Invalidate the comparison cache so the next pass must capture before replay.
+            graph->uid = 0;
+            graph->ggml_graph_properties.clear();
+            use_cuda_graph = false;
+        }
+    }
+
     if (use_cuda_graph && (
         graph->disable_due_to_gpu_arch ||
         graph->disable_due_to_too_many_updates ||
