@@ -23,6 +23,11 @@ static bool ggml_gallocr_debug2_enabled(void) {
     return env != NULL && env[0] == '1' && env[1] == '\0';
 }
 
+static bool ggml_gallocr_arena_variants_enabled(void) {
+    const char * env = getenv("LONGSPEAR_CG_ARENA");
+    return env != NULL && env[0] == '1' && env[1] == '\0';
+}
+
 static bool ggml_is_view(const struct ggml_tensor * t) {
     return t->view_src != NULL;
 }
@@ -359,6 +364,23 @@ struct node_alloc {
     struct tensor_alloc src[GGML_MAX_SRC];
 };
 
+#define GGML_GALLOCR_MAX_PLANS 4
+
+// Graph classes with different node/leaf topology cannot share ggml-alloc's indexed placement plan.
+// Keep their plans separate, but retain one set of backing buffers so the largest warmed class fixes
+// the arena base without multiplying compute-buffer VRAM by the number of classes.
+struct ggml_gallocr_plan {
+    bool valid;
+    uint64_t fingerprint;
+    uint64_t last_used;
+
+    struct node_alloc * node_allocs;
+    int n_nodes;
+
+    struct leaf_alloc * leaf_allocs;
+    int n_leafs;
+};
+
 struct ggml_gallocr {
     ggml_backend_buffer_type_t * bufts; // [n_buffers]
     ggml_backend_buffer_t * buffers; // [n_buffers]
@@ -374,8 +396,151 @@ struct ggml_gallocr {
     struct leaf_alloc * leaf_allocs; // [n_leafs]
     int n_leafs;
 
+    struct ggml_gallocr_plan plans[GGML_GALLOCR_MAX_PLANS];
+    int active_plan;
+    uint64_t plan_lru_tick;
+
     uint64_t debug_generation;
 };
+
+static uint64_t ggml_gallocr_fingerprint_append(uint64_t hash, const void * data, size_t size) {
+    const uint8_t * bytes = (const uint8_t *) data;
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+static bool ggml_gallocr_tensor_is_external(const struct ggml_tensor * tensor) {
+    return tensor->data != NULL &&
+        (tensor->buffer == NULL || ggml_backend_buffer_get_usage(tensor->buffer) != GGML_BACKEND_BUFFER_USAGE_COMPUTE);
+}
+
+static uint64_t ggml_gallocr_graph_fingerprint(const struct ggml_cgraph * graph) {
+    uint64_t fingerprint = UINT64_C(14695981039346656037);
+    fingerprint = ggml_gallocr_fingerprint_append(fingerprint, &graph->n_nodes, sizeof(graph->n_nodes));
+    fingerprint = ggml_gallocr_fingerprint_append(fingerprint, &graph->n_leafs, sizeof(graph->n_leafs));
+    fingerprint = ggml_gallocr_fingerprint_append(fingerprint, &graph->n_batch, sizeof(graph->n_batch));
+
+    for (int i = 0; i < graph->n_nodes; ++i) {
+        const struct ggml_tensor * node = graph->nodes[i];
+        uint64_t src_presence_mask = 0;
+        uint64_t src_view_mask = 0;
+        uint64_t src_external_mask = 0;
+        uint64_t src_same_layout_mask = 0;
+
+        GGML_ASSERT(GGML_MAX_SRC <= 64);
+        for (int src = 0; src < GGML_MAX_SRC; ++src) {
+            const struct ggml_tensor * parent = node->src[src];
+            if (parent == NULL) {
+                continue;
+            }
+
+            src_presence_mask |= UINT64_C(1) << src;
+            src_view_mask |= (uint64_t) (parent->view_src != NULL) << src;
+            src_external_mask |= (uint64_t) ggml_gallocr_tensor_is_external(parent) << src;
+            src_same_layout_mask |= (uint64_t) ggml_are_same_layout(node, parent) << src;
+        }
+
+        const uint8_t node_view = node->view_src != NULL;
+        const uint8_t node_external = ggml_gallocr_tensor_is_external(node);
+        fingerprint = ggml_gallocr_fingerprint_append(fingerprint, &node->op, sizeof(node->op));
+        fingerprint = ggml_gallocr_fingerprint_append(fingerprint, &node->type, sizeof(node->type));
+        fingerprint = ggml_gallocr_fingerprint_append(fingerprint, &node->flags, sizeof(node->flags));
+        fingerprint = ggml_gallocr_fingerprint_append(fingerprint, &node_view, sizeof(node_view));
+        fingerprint = ggml_gallocr_fingerprint_append(fingerprint, &node_external, sizeof(node_external));
+        fingerprint = ggml_gallocr_fingerprint_append(fingerprint, &src_presence_mask, sizeof(src_presence_mask));
+        fingerprint = ggml_gallocr_fingerprint_append(fingerprint, &src_view_mask, sizeof(src_view_mask));
+        fingerprint = ggml_gallocr_fingerprint_append(fingerprint, &src_external_mask, sizeof(src_external_mask));
+        fingerprint = ggml_gallocr_fingerprint_append(fingerprint, &src_same_layout_mask, sizeof(src_same_layout_mask));
+    }
+
+    for (int i = 0; i < graph->n_leafs; ++i) {
+        const struct ggml_tensor * leaf = graph->leafs[i];
+        const uint8_t leaf_view = leaf->view_src != NULL;
+        const uint8_t leaf_external = ggml_gallocr_tensor_is_external(leaf);
+        fingerprint = ggml_gallocr_fingerprint_append(fingerprint, &leaf->type, sizeof(leaf->type));
+        fingerprint = ggml_gallocr_fingerprint_append(fingerprint, &leaf->flags, sizeof(leaf->flags));
+        fingerprint = ggml_gallocr_fingerprint_append(fingerprint, &leaf_view, sizeof(leaf_view));
+        fingerprint = ggml_gallocr_fingerprint_append(fingerprint, &leaf_external, sizeof(leaf_external));
+    }
+
+    return fingerprint;
+}
+
+static void ggml_gallocr_activate_plan(ggml_gallocr_t galloc, int plan_index) {
+    struct ggml_gallocr_plan * plan = &galloc->plans[plan_index];
+    GGML_ASSERT(plan->valid);
+
+    galloc->active_plan = plan_index;
+    galloc->node_allocs = plan->node_allocs;
+    galloc->n_nodes = plan->n_nodes;
+    galloc->leaf_allocs = plan->leaf_allocs;
+    galloc->n_leafs = plan->n_leafs;
+}
+
+static void ggml_gallocr_store_active_plan(ggml_gallocr_t galloc) {
+    GGML_ASSERT(galloc->active_plan >= 0 && galloc->active_plan < GGML_GALLOCR_MAX_PLANS);
+    struct ggml_gallocr_plan * plan = &galloc->plans[galloc->active_plan];
+    plan->node_allocs = galloc->node_allocs;
+    plan->n_nodes = galloc->n_nodes;
+    plan->leaf_allocs = galloc->leaf_allocs;
+    plan->n_leafs = galloc->n_leafs;
+}
+
+static int ggml_gallocr_find_plan(ggml_gallocr_t galloc, uint64_t fingerprint) {
+    for (int i = 0; i < GGML_GALLOCR_MAX_PLANS; ++i) {
+        if (galloc->plans[i].valid && galloc->plans[i].fingerprint == fingerprint) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int ggml_gallocr_get_reserve_plan(ggml_gallocr_t galloc, uint64_t fingerprint) {
+    int plan_index = ggml_gallocr_find_plan(galloc, fingerprint);
+    if (plan_index >= 0) {
+        struct ggml_gallocr_plan * plan = &galloc->plans[plan_index];
+        plan->last_used = ++galloc->plan_lru_tick;
+        ggml_gallocr_activate_plan(galloc, plan_index);
+        return plan_index;
+    }
+
+    for (int i = 0; i < GGML_GALLOCR_MAX_PLANS; ++i) {
+        if (!galloc->plans[i].valid) {
+            plan_index = i;
+            break;
+        }
+    }
+
+    if (plan_index < 0) {
+        plan_index = 0;
+        for (int i = 1; i < GGML_GALLOCR_MAX_PLANS; ++i) {
+            if (galloc->plans[i].last_used < galloc->plans[plan_index].last_used) {
+                plan_index = i;
+            }
+        }
+
+        struct ggml_gallocr_plan * evicted = &galloc->plans[plan_index];
+        if (ggml_gallocr_debug2_enabled()) {
+            const uint64_t generation = ++galloc->debug_generation;
+            fprintf(stderr, "[galloc] gen=%llu event=plan_evict galloc=%p fingerprint=%016llx\n",
+                    (unsigned long long) generation, (void *) galloc,
+                    (unsigned long long) evicted->fingerprint);
+        }
+        free(evicted->node_allocs);
+        free(evicted->leaf_allocs);
+        memset(evicted, 0, sizeof(*evicted));
+    }
+
+    struct ggml_gallocr_plan * plan = &galloc->plans[plan_index];
+    plan->valid = true;
+    plan->fingerprint = fingerprint;
+    plan->last_used = ++galloc->plan_lru_tick;
+    ggml_gallocr_activate_plan(galloc, plan_index);
+    return plan_index;
+}
 
 ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs) {
     ggml_gallocr_t galloc = (ggml_gallocr_t)calloc(1, sizeof(struct ggml_gallocr));
@@ -408,6 +573,7 @@ ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs
         }
     }
     galloc->n_buffers = n_bufs;
+    galloc->active_plan = -1;
 
     return galloc;
 }
@@ -455,8 +621,15 @@ void ggml_gallocr_free(ggml_gallocr_t galloc) {
     free(galloc->bufts);
     free(galloc->buffers);
     free(galloc->buf_tallocs);
-    free(galloc->node_allocs);
-    free(galloc->leaf_allocs);
+    if (ggml_gallocr_arena_variants_enabled()) {
+        for (int i = 0; i < GGML_GALLOCR_MAX_PLANS; ++i) {
+            free(galloc->plans[i].node_allocs);
+            free(galloc->plans[i].leaf_allocs);
+        }
+    } else {
+        free(galloc->node_allocs);
+        free(galloc->leaf_allocs);
+    }
     free(galloc);
 }
 
@@ -678,10 +851,22 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
 }
 
 bool ggml_gallocr_reserve_n(ggml_gallocr_t galloc, struct ggml_cgraph * graph, const int * node_buffer_ids, const int * leaf_buffer_ids) {
+    uint64_t fingerprint = 0;
+    if (ggml_gallocr_arena_variants_enabled()) {
+        fingerprint = ggml_gallocr_graph_fingerprint(graph);
+        ggml_gallocr_get_reserve_plan(galloc, fingerprint);
+    }
+
     if (ggml_gallocr_debug2_enabled()) {
         const uint64_t generation = ++galloc->debug_generation;
-        fprintf(stderr, "[galloc] gen=%llu event=reserve galloc=%p nodes=%d leafs=%d buffers=%d\n",
-                (unsigned long long) generation, (void *) galloc, graph->n_nodes, graph->n_leafs, galloc->n_buffers);
+        if (ggml_gallocr_arena_variants_enabled()) {
+            fprintf(stderr, "[galloc] gen=%llu event=reserve galloc=%p nodes=%d leafs=%d buffers=%d fingerprint=%016llx\n",
+                    (unsigned long long) generation, (void *) galloc, graph->n_nodes, graph->n_leafs, galloc->n_buffers,
+                    (unsigned long long) fingerprint);
+        } else {
+            fprintf(stderr, "[galloc] gen=%llu event=reserve galloc=%p nodes=%d leafs=%d buffers=%d\n",
+                    (unsigned long long) generation, (void *) galloc, graph->n_nodes, graph->n_leafs, galloc->n_buffers);
+        }
     }
 
     size_t min_hash_size = graph->n_nodes + graph->n_leafs;
@@ -760,6 +945,10 @@ bool ggml_gallocr_reserve_n(ggml_gallocr_t galloc, struct ggml_cgraph * graph, c
             galloc->leaf_allocs[i].leaf.offset = hn->offset;
             galloc->leaf_allocs[i].leaf.size_max = ggml_backend_buft_get_alloc_size(galloc->bufts[hn->buffer_id], leaf);
         }
+    }
+
+    if (ggml_gallocr_arena_variants_enabled()) {
+        ggml_gallocr_store_active_plan(galloc);
     }
 
     // reallocate buffers if needed
@@ -889,7 +1078,19 @@ static bool ggml_gallocr_needs_realloc(ggml_gallocr_t galloc, struct ggml_cgraph
 }
 
 bool ggml_gallocr_alloc_graph(ggml_gallocr_t galloc, struct ggml_cgraph * graph) {
-    if (ggml_gallocr_needs_realloc(galloc, graph)) {
+    bool plan_miss = false;
+    if (ggml_gallocr_arena_variants_enabled()) {
+        const uint64_t fingerprint = ggml_gallocr_graph_fingerprint(graph);
+        const int plan_index = ggml_gallocr_find_plan(galloc, fingerprint);
+        if (plan_index >= 0) {
+            galloc->plans[plan_index].last_used = ++galloc->plan_lru_tick;
+            ggml_gallocr_activate_plan(galloc, plan_index);
+        } else {
+            plan_miss = true;
+        }
+    }
+
+    if (plan_miss || ggml_gallocr_needs_realloc(galloc, graph)) {
         if (galloc->n_buffers == 1) {
 #ifndef NDEBUG
             fprintf(stderr, "%s: reallocating buffers automatically\n", __func__);

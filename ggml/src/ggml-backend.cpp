@@ -34,6 +34,14 @@ static bool ggml_backend_debug2_enabled() {
     return enabled;
 }
 
+static bool ggml_backend_arena_variants_enabled() {
+    static const bool enabled = [] {
+        const char * env = getenv("LONGSPEAR_CG_ARENA");
+        return env != nullptr && env[0] == '1' && env[1] == '\0';
+    }();
+    return enabled;
+}
+
 // backend buffer type
 
 const char * ggml_backend_buft_name(ggml_backend_buffer_type_t buft) {
@@ -1949,6 +1957,9 @@ static void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct gg
     }
     sched->graph.n_nodes = 0;
     sched->graph.n_leafs = 0;
+    if (ggml_backend_arena_variants_enabled()) {
+        sched->graph.n_batch = graph->n_batch;
+    }
 
     struct ggml_cgraph * graph_copy = &sched->graph;
 
