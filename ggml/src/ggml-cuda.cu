@@ -4600,7 +4600,7 @@ static inline ggml_cuda_graph * ggml_cuda_get_graph(ggml_backend_cuda_context & 
 }
 
 static ggml_cuda_graph * ggml_cuda_get_graph_variant(
-        ggml_backend_cuda_context & ctx, const void * key, uint64_t fingerprint, bool debug) {
+        ggml_backend_cuda_context & ctx, const void * key, uint64_t fingerprint, int n_tokens, bool debug) {
     static constexpr size_t MAX_VARIANTS = 4;
 
     auto & variants = ctx.cuda_graph_variants[key];
@@ -4614,8 +4614,8 @@ static ggml_cuda_graph * ggml_cuda_get_graph_variant(
             variant.last_used = last_used;
             ++ctx.cuda_graph_variant_hits;
             if (debug) {
-                fprintf(stderr, "[cg] variant=hit key=%p fingerprint=%016llx variants_count=%zu\n",
-                        key, (unsigned long long) fingerprint, variants->entries.size());
+                fprintf(stderr, "[cg] variant=hit key=%p fingerprint=%016llx n_tokens=%d variants_count=%zu\n",
+                        key, (unsigned long long) fingerprint, variant.n_tokens, variants->entries.size());
             }
             return variant.graph.get();
         }
@@ -4628,19 +4628,19 @@ static ggml_cuda_graph * ggml_cuda_get_graph_variant(
                     return a.last_used < b.last_used;
                 });
         if (debug) {
-            fprintf(stderr, "[cg] variant=evict key=%p fingerprint=%016llx variants_count=%zu\n",
-                    key, (unsigned long long) lru->fingerprint, variants->entries.size());
+            fprintf(stderr, "[cg] variant=evict key=%p fingerprint=%016llx n_tokens=%d variants_count=%zu\n",
+                    key, (unsigned long long) lru->fingerprint, lru->n_tokens, variants->entries.size());
         }
         variants->entries.erase(lru);
         ++ctx.cuda_graph_variant_evictions;
     }
 
-    variants->entries.emplace_back(fingerprint, last_used);
+    variants->entries.emplace_back(fingerprint, n_tokens, last_used);
     ++ctx.cuda_graph_variants_created;
     variants->max_variants_seen = std::max(variants->max_variants_seen, variants->entries.size());
     if (debug) {
-        fprintf(stderr, "[cg] variant=miss key=%p fingerprint=%016llx variants_count=%zu\n",
-                key, (unsigned long long) fingerprint, variants->entries.size());
+        fprintf(stderr, "[cg] variant=miss key=%p fingerprint=%016llx n_tokens=%d variants_count=%zu\n",
+                key, (unsigned long long) fingerprint, n_tokens, variants->entries.size());
     }
     return variants->entries.back().graph.get();
 }
@@ -5030,7 +5030,8 @@ GGML_CALL static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t
         if (ggml_cuda_graph_variants_enabled()) {
             const uint64_t fingerprint = ggml_cuda_graph_structural_fingerprint(cgraph);
             static const bool cg_dbg_variants = getenv("LONGSPEAR_CG_DEBUG") != nullptr;
-            graph = ggml_cuda_get_graph_variant(*cuda_ctx, graph_key, fingerprint, cg_dbg_variants);
+            graph = ggml_cuda_get_graph_variant(
+                    *cuda_ctx, graph_key, fingerprint, cgraph->n_batch, cg_dbg_variants);
         } else {
             graph = ggml_cuda_get_graph(*cuda_ctx, graph_key);
         }
