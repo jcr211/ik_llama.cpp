@@ -4451,13 +4451,14 @@ static uint64_t ggml_cuda_graph_fingerprint_append(uint64_t hash, const void * d
 }
 
 static uint64_t ggml_cuda_graph_structural_fingerprint(const ggml_cgraph * cgraph) {
-    static_assert(GGML_MAX_DIMS >= 4, "CUDA graph fingerprints require four tensor dimensions");
     static_assert(GGML_MAX_SRC <= 64, "CUDA graph source presence mask exceeds 64 bits");
 
-    // Tensor and source addresses plus view offsets are intentionally excluded: they are the dynamic
-    // properties that a matching structural variant may update without changing graph identity.
+    // n_batch is the ubatch token count assigned by llama_build_graph() and preserved by scheduler graph views.
+    // Shapes, strides, op parameters, addresses, and view metadata are deliberately excluded: they are dynamic
+    // properties that a matching batch-class variant may update without changing graph identity.
     uint64_t fingerprint = UINT64_C(14695981039346656037);
     fingerprint = ggml_cuda_graph_fingerprint_append(fingerprint, &cgraph->n_nodes, sizeof(cgraph->n_nodes));
+    fingerprint = ggml_cuda_graph_fingerprint_append(fingerprint, &cgraph->n_batch, sizeof(cgraph->n_batch));
 
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         const ggml_tensor * node = cgraph->nodes[i];
@@ -4468,9 +4469,6 @@ static uint64_t ggml_cuda_graph_structural_fingerprint(const ggml_cgraph * cgrap
 
         fingerprint = ggml_cuda_graph_fingerprint_append(fingerprint, &node->op, sizeof(node->op));
         fingerprint = ggml_cuda_graph_fingerprint_append(fingerprint, &node->type, sizeof(node->type));
-        fingerprint = ggml_cuda_graph_fingerprint_append(fingerprint, node->ne, 4*sizeof(node->ne[0]));
-        fingerprint = ggml_cuda_graph_fingerprint_append(fingerprint, node->nb, 4*sizeof(node->nb[0]));
-        fingerprint = ggml_cuda_graph_fingerprint_append(fingerprint, node->op_params, GGML_MAX_OP_PARAMS);
         fingerprint = ggml_cuda_graph_fingerprint_append(
                 fingerprint, &src_presence_mask, sizeof(src_presence_mask));
     }
