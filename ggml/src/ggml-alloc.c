@@ -5,6 +5,7 @@
 #include <assert.h>
 #include <limits.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,10 @@
 //#define AT_PRINTF(...) fprintf(stderr, __VA_ARGS__)
 #define AT_PRINTF(...)
 
+static bool ggml_gallocr_debug2_enabled(void) {
+    const char * env = getenv("LONGSPEAR_CG_DEBUG2");
+    return env != NULL && env[0] == '1' && env[1] == '\0';
+}
 
 static bool ggml_is_view(const struct ggml_tensor * t) {
     return t->view_src != NULL;
@@ -368,6 +373,8 @@ struct ggml_gallocr {
 
     struct leaf_alloc * leaf_allocs; // [n_leafs]
     int n_leafs;
+
+    uint64_t debug_generation;
 };
 
 ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs) {
@@ -671,6 +678,12 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
 }
 
 bool ggml_gallocr_reserve_n(ggml_gallocr_t galloc, struct ggml_cgraph * graph, const int * node_buffer_ids, const int * leaf_buffer_ids) {
+    if (ggml_gallocr_debug2_enabled()) {
+        const uint64_t generation = ++galloc->debug_generation;
+        fprintf(stderr, "[galloc] gen=%llu event=reserve galloc=%p nodes=%d leafs=%d buffers=%d\n",
+                (unsigned long long) generation, (void *) galloc, graph->n_nodes, graph->n_leafs, galloc->n_buffers);
+    }
+
     size_t min_hash_size = graph->n_nodes + graph->n_leafs;
     // add 25% margin to avoid hash collisions
     min_hash_size += min_hash_size / 4;
@@ -764,6 +777,13 @@ bool ggml_gallocr_reserve_n(ggml_gallocr_t galloc, struct ggml_cgraph * graph, c
 
         // even if there are no tensors allocated in this buffer, we still need to allocate it to initialize views
         if (new_size > cur_size || galloc->buffers[i] == NULL) {
+            if (ggml_gallocr_debug2_enabled()) {
+                const uint64_t generation = ++galloc->debug_generation;
+                fprintf(stderr,
+                        "[galloc] gen=%llu event=buffer_realloc galloc=%p buffer_index=%d buft=%s old_size=%zu new_size=%zu\n",
+                        (unsigned long long) generation, (void *) galloc, i,
+                        ggml_backend_buft_name(galloc->bufts[i]), cur_size, new_size);
+            }
 #ifndef NDEBUG
             fprintf(stderr, "%s: reallocating %s buffer from size %.02f MiB to %.02f MiB\n", __func__, ggml_backend_buft_name(galloc->bufts[i]), cur_size / 1024.0 / 1024.0, new_size / 1024.0 / 1024.0);
 #endif
