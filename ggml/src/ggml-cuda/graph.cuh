@@ -23,6 +23,9 @@ struct ggml_cuda_graph {
         if (graph != nullptr) {
             CUDA_CHECK(cudaGraphDestroy(graph));
         }
+        if (dest_ptrs_d != nullptr) {
+            CUDA_CHECK(cudaFree(dest_ptrs_d));
+        }
     }
     uint64_t uid = 0;
     cudaGraph_t graph = nullptr;
@@ -41,7 +44,7 @@ struct ggml_cuda_graph {
     bool debug_mma_census_logged = false;
     bool use_cpy_indirection = false;
     std::vector<char *> cpy_dest_ptrs;
-    char ** dest_ptrs_d;
+    char ** dest_ptrs_d = nullptr;
     int dest_ptrs_size = 0;
     // Index to allow each cpy kernel to be aware of it's position within the graph
     // relative to other cpy nodes.
