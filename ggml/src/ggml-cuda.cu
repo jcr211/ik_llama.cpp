@@ -4580,7 +4580,8 @@ static const char * ggml_cuda_graph_first_differing_field(
 }
 
 static bool is_cuda_graph_update_required(
-        ggml_cuda_graph * graph, ggml_cgraph * cgraph, bool ignore_uid = false, bool log_churn = false) {
+        ggml_cuda_graph * graph, ggml_cgraph * cgraph, bool ignore_uid = false, bool log_churn = false,
+        bool ignore_cpy_destinations = false) {
 
     if (!ignore_uid && cgraph->uid != 0 && graph->uid == cgraph->uid) {
         GGML_ASSERT(graph->ggml_graph_properties.size() == (size_t)cgraph->n_nodes);
@@ -4592,6 +4593,9 @@ static bool is_cuda_graph_update_required(
     if (graph->instance == nullptr) {
         cuda_graph_update_required = true;
     }
+
+    const bool has_comparable_executable = graph->instance != nullptr &&
+            graph->ggml_graph_properties.size() == (size_t) cgraph->n_nodes;
 
     // Check if the graph size has changed
     if (graph->ggml_graph_properties.size() != (size_t)cgraph->n_nodes) {
@@ -4606,6 +4610,13 @@ static bool is_cuda_graph_update_required(
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_graph_node_properties new_props;
         set_ggml_graph_node_properties(cgraph->nodes[i], &new_props);
+        if (ignore_cpy_destinations && has_comparable_executable && cgraph->nodes[i]->op == GGML_OP_CPY) {
+            // CPY kernels use cpy_dest_ptrs/dest_ptrs_d indirection, refreshed before every replay.
+            // Keep comparing the source and all non-pointer properties; only the direct destination
+            // launch arguments are stale by design and are not dereferenced when indirection is active.
+            new_props.node_address  = graph->ggml_graph_properties[i].node_address;
+            new_props.src_address[1] = graph->ggml_graph_properties[i].src_address[1];
+        }
         if (memcmp(&graph->ggml_graph_properties[i], &new_props, sizeof(new_props)) != 0) {
             if (log_churn && first_differing_node < 0) {
                 first_differing_node = i;
@@ -4766,7 +4777,7 @@ GGML_CALL static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t
             !graph->disable_due_to_gpu_arch && !graph->disable_due_to_failed_graph_capture) {
         // A cgraph can keep the same uid while its node properties change. Bypass the uid shortcut while
         // observing a disabled graph so that stable passes are based on the properties and refresh the cache.
-        if (is_cuda_graph_update_required(graph, cgraph, true, cg_dbg_top)) {
+        if (is_cuda_graph_update_required(graph, cgraph, true, cg_dbg_top, true)) {
             graph->number_consecutive_stable = 0;
         } else {
             graph->number_consecutive_stable++;
@@ -4798,7 +4809,8 @@ GGML_CALL static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t
     }
 
     if (use_cuda_graph) {
-        cuda_graph_update_required = is_cuda_graph_update_required(graph, cgraph);
+        cuda_graph_update_required = is_cuda_graph_update_required(
+                graph, cgraph, false, false, cg_revive && graph->use_cpy_indirection);
 
         use_cuda_graph = check_node_graph_compatibility_and_refresh_copy_ops(graph, cgraph, use_cuda_graph, cuda_ctx->stream());
 
