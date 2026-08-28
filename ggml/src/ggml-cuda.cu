@@ -4552,7 +4552,35 @@ static void set_ggml_graph_node_properties(ggml_tensor * node, ggml_graph_node_p
     memcpy(graph_node_properties->op_params, node->op_params, GGML_MAX_OP_PARAMS);
 }
 
-static bool is_cuda_graph_update_required(ggml_cuda_graph * graph, ggml_cgraph * cgraph, bool ignore_uid = false) {
+static const char * ggml_cuda_graph_first_differing_field(
+        const ggml_graph_node_properties & old_props,
+        const ggml_graph_node_properties & new_props) {
+    // Keep the diagnostic vocabulary compact. "data" covers the identity/view header that precedes
+    // the shape arrays in ggml_graph_node_properties; the update decision itself remains the raw memcmp below.
+    if (old_props.node_address != new_props.node_address ||
+        old_props.node_op      != new_props.node_op      ||
+        old_props.type         != new_props.type         ||
+        old_props.view_src     != new_props.view_src     ||
+        old_props.view_offs    != new_props.view_offs) {
+        return "data";
+    }
+    if (memcmp(old_props.ne, new_props.ne, sizeof(old_props.ne)) != 0) {
+        return "ne";
+    }
+    if (memcmp(old_props.nb, new_props.nb, sizeof(old_props.nb)) != 0) {
+        return "nb";
+    }
+    if (memcmp(old_props.src_address, new_props.src_address, sizeof(old_props.src_address)) != 0) {
+        return "src";
+    }
+    if (memcmp(old_props.op_params, new_props.op_params, sizeof(old_props.op_params)) != 0) {
+        return "op_params";
+    }
+    return nullptr;
+}
+
+static bool is_cuda_graph_update_required(
+        ggml_cuda_graph * graph, ggml_cgraph * cgraph, bool ignore_uid = false, bool log_churn = false) {
 
     if (!ignore_uid && cgraph->uid != 0 && graph->uid == cgraph->uid) {
         GGML_ASSERT(graph->ggml_graph_properties.size() == (size_t)cgraph->n_nodes);
@@ -4573,12 +4601,30 @@ static bool is_cuda_graph_update_required(ggml_cuda_graph * graph, ggml_cgraph *
 
     // Loop over nodes in GGML graph to determine if CUDA graph update is required
     // and store properties to allow this comparison for the next token
+    int first_differing_node = -1;
+    const char * first_differing_field = nullptr;
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_graph_node_properties new_props;
         set_ggml_graph_node_properties(cgraph->nodes[i], &new_props);
         if (memcmp(&graph->ggml_graph_properties[i], &new_props, sizeof(new_props)) != 0) {
+            if (log_churn && first_differing_node < 0) {
+                first_differing_node = i;
+                first_differing_field = ggml_cuda_graph_first_differing_field(
+                        graph->ggml_graph_properties[i], new_props);
+            }
             cuda_graph_update_required = true;
             memcpy(&graph->ggml_graph_properties[i], &new_props, sizeof(new_props));
+        }
+    }
+
+    if (log_churn && cuda_graph_update_required && first_differing_node >= 0) {
+        static std::atomic<int> churn_lines { 0 };
+        const int churn_line = churn_lines.fetch_add(1, std::memory_order_relaxed);
+        if (churn_line < 40) {
+            const ggml_tensor * node = cgraph->nodes[first_differing_node];
+            fprintf(stderr, "[cg] churn key=%p node_idx=%d op=%s name=%s field=%s\n",
+                    (const void *) ggml_cuda_graph_get_key(cgraph), first_differing_node,
+                    ggml_op_name(node->op), node->name, first_differing_field ? first_differing_field : "data");
         }
     }
 
@@ -4720,7 +4766,7 @@ GGML_CALL static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t
             !graph->disable_due_to_gpu_arch && !graph->disable_due_to_failed_graph_capture) {
         // A cgraph can keep the same uid while its node properties change. Bypass the uid shortcut while
         // observing a disabled graph so that stable passes are based on the properties and refresh the cache.
-        if (is_cuda_graph_update_required(graph, cgraph, true)) {
+        if (is_cuda_graph_update_required(graph, cgraph, true, cg_dbg_top)) {
             graph->number_consecutive_stable = 0;
         } else {
             graph->number_consecutive_stable++;
