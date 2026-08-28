@@ -16,6 +16,7 @@
 #include <array>
 #include <chrono>
 #include <barrier>
+#include <cstdint>
 #include <thread>
 #ifdef GGML_USE_OPENMP
 #include <omp.h>
@@ -24,6 +25,14 @@
 #define IK_PRINT_TIMING 0
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
+
+static bool ggml_backend_debug2_enabled() {
+    static const bool enabled = [] {
+        const char * env = getenv("LONGSPEAR_CG_DEBUG2");
+        return env != nullptr && env[0] == '1' && env[1] == '\0';
+    }();
+    return enabled;
+}
 
 // backend buffer type
 
@@ -2736,6 +2745,17 @@ static void ggml_sched_prepare_graph(ggml_backend_sched_t sched) {
                 for (int j = 0; j < split->n_inputs; ++j) {
                     if (ggml_backend_buffer_is_host(split->inputs[j]->buffer)) continue;
                     auto input_cpy = tensor_copy(split->inputs[j], backend_id, sched->cur_copy);
+                    void * old_ptr = input_cpy->data;
+                    if (ggml_backend_debug2_enabled()) {
+                        void * base = ggml_backend_buffer_get_base(sched->input_memory_bufs[backend_id]);
+                        const long long offset = (long long) ((intptr_t) ptr - (intptr_t) base);
+                        fprintf(stderr,
+                                "[pack] tensor=%s source=%s old=%p new=%p buffer=%p base=%p offset=%lld "
+                                "backend=%d split=%d cur_copy=%d n_copies=%d max_copies=%d\n",
+                                input_cpy->name, split->inputs[j]->name, old_ptr, ptr,
+                                (void *) sched->input_memory_bufs[backend_id], base, offset,
+                                backend_id, i, sched->cur_copy, sched->n_copies, GGML_SCHED_MAX_COPIES);
+                    }
                     for (int k = 0; k < split->graph.n_nodes; ++k) {
                         auto node = split->graph.nodes[k];
                         for (int l = 0; l < GGML_MAX_SRC; ++l) {
