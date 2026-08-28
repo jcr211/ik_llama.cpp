@@ -1211,8 +1211,42 @@ struct ggml_backend_sched {
     bool split_mode_graph;
     bool is_async = false;
     bool debug;
+    uint64_t debug_prepare_epoch;
     bool has_reduce = false;
 };
+
+static void ggml_backend_trace_mma_sources(ggml_backend_sched_t sched, const char * phase) {
+    if (!ggml_backend_debug2_enabled()) {
+        return;
+    }
+
+    static const char * roles[] = { "src0", "src1", "scales", "cids" };
+    for (int split_index = 0; split_index < sched->n_splits; ++split_index) {
+        const ggml_backend_sched_split * split = &sched->splits[split_index];
+        const void * key = split->graph.n_nodes > 0 ? split->graph.nodes[0] : nullptr;
+        for (int node_index = 0; node_index < split->graph.n_nodes; ++node_index) {
+            const ggml_tensor * node = split->graph.nodes[node_index];
+            if (node->op != GGML_OP_MUL_MULTI_ADD) {
+                continue;
+            }
+            for (int src_index = 0; src_index < 4; ++src_index) {
+                const ggml_tensor * src = node->src[src_index];
+                if (src == nullptr) {
+                    continue;
+                }
+                void * base = src->buffer != nullptr ? ggml_backend_buffer_get_base(src->buffer) : nullptr;
+                const long long offset = base != nullptr && src->data != nullptr ?
+                        (long long) ((intptr_t) src->data - (intptr_t) base) : -1;
+                fprintf(stderr,
+                        "[sched] addr epoch=%llu phase=%s key=%p split=%d node_index=%d src_index=%d role=%s "
+                        "tensor=%s data=%p buffer=%p base=%p offset=%lld cur_copy=%d n_copies=%d\n",
+                        (unsigned long long) sched->debug_prepare_epoch, phase, key, split_index, node_index,
+                        src_index, roles[src_index], src->name, src->data, (void *) src->buffer, base, offset,
+                        sched->cur_copy, sched->n_copies);
+            }
+        }
+    }
+}
 
 void ggml_backend_sched_set_op_offload(ggml_backend_sched_t sched, enum ggml_op op, bool on_or_off) {
     int int_op = (int)op;
@@ -2776,12 +2810,18 @@ static void ggml_sched_prepare_graph(ggml_backend_sched_t sched) {
 bool ggml_backend_sched_alloc_graph(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
     GGML_ASSERT((int)sched->hash_set.size >= graph->n_nodes + graph->n_leafs);
 
+    if (ggml_backend_debug2_enabled()) {
+        ++sched->debug_prepare_epoch;
+    }
     ggml_backend_sched_split_graph(sched, graph);
+    ggml_backend_trace_mma_sources(sched, "post_graph_build");
 
     if (!ggml_backend_sched_alloc_splits(sched)) {
         return false;
     }
+    ggml_backend_trace_mma_sources(sched, "post_gallocr_alloc");
     ggml_sched_prepare_graph(sched);
+    ggml_backend_trace_mma_sources(sched, "post_sched_prepare");
 
     sched->is_alloc = true;
 
