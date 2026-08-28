@@ -1158,6 +1158,8 @@ static int64_t g_vt_compute_us = 0;
 static int64_t g_vt_logits_us  = 0;
 static int64_t g_vt_embd_us    = 0;
 static int     g_vt_reused     = 0;
+static int     g_vt_nodes      = 0;
+static int     g_vt_splits     = 0;
 
 static bool llama_mtp_tail_uses_layer_cache(const llama_model & model) {
     return model.hparams.nextn_predict_layers > 0 &&
@@ -6837,6 +6839,8 @@ static int llama_decode_internal(
         const int64_t vt_c0 = ggml_time_us();
         llama_graph_compute(lctx, gf, n_threads);
         g_vt_compute_us += ggml_time_us() - vt_c0;
+        g_vt_nodes  = gf->n_nodes;
+        g_vt_splits = ggml_backend_sched_get_n_splits(lctx.sched);
 
         if (lctx.model.arch == LLM_ARCH_DEEPSEEK4 &&
             lctx.cparams.mtp_op_type == MTP_OP_NONE &&
@@ -12028,11 +12032,12 @@ int32_t llama_decode(
     }
 
     if (vt) {
-        fprintf(stderr, "[vt] K=%d mtp_op=%d us=%lld build=%lld compute=%lld logits=%lld embd=%lld reused=%d\n",
+        fprintf(stderr, "[vt] K=%d mtp_op=%d us=%lld build=%lld compute=%lld logits=%lld embd=%lld reused=%d nodes=%d splits=%d\n",
                 (int) batch.n_tokens, (int) ctx->cparams.mtp_op_type,
                 (long long) (ggml_time_us() - vt_t0),
                 (long long) g_vt_build_us, (long long) g_vt_compute_us,
-                (long long) g_vt_logits_us, (long long) g_vt_embd_us, g_vt_reused);
+                (long long) g_vt_logits_us, (long long) g_vt_embd_us, g_vt_reused,
+                g_vt_nodes, g_vt_splits);
     }
 
     return ret;
