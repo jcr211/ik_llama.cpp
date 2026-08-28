@@ -1161,6 +1161,120 @@ static int     g_vt_reused     = 0;
 static int     g_vt_nodes      = 0;
 static int     g_vt_splits     = 0;
 
+struct llama_op_census_state {
+    ggml_backend_sched_t sched = nullptr;
+    ggml_backend_sched_eval_callback chained_callback = nullptr;
+    void * chained_user_data = nullptr;
+    int chained_need = 0;
+    ggml_backend_t active_backend = nullptr;
+    int64_t active_start_us = 0;
+    std::unordered_map<std::string, int64_t> buckets;
+};
+
+// Per-node synchronization deliberately serializes the graph and inflates absolute
+// timings. The census is for relative attribution between op classes only.
+static llama_op_census_state g_op_census;
+
+static bool llama_op_census_name_starts_with(const char * name, const char * prefix) {
+    return name != nullptr && prefix != nullptr &&
+        strncmp(name, prefix, strlen(prefix)) == 0;
+}
+
+static bool llama_op_census_name_contains(const char * name, const char * part) {
+    return name != nullptr && part != nullptr && strstr(name, part) != nullptr;
+}
+
+static const char * llama_op_census_name_class(const ggml_tensor * tensor) {
+    const char * node_name = tensor->name;
+    const char * src0_name = tensor->src[0] != nullptr ? tensor->src[0]->name : nullptr;
+
+    auto starts_with = [&](const char * prefix) {
+        return llama_op_census_name_starts_with(node_name, prefix) ||
+               llama_op_census_name_starts_with(src0_name, prefix);
+    };
+    auto contains = [&](const char * part) {
+        return llama_op_census_name_contains(node_name, part) ||
+               llama_op_census_name_contains(src0_name, part);
+    };
+
+    // Prefer the node's cb() name, but also inspect src0 so unnamed plumbing ops
+    // inherit the nearest useful class signal.
+    if (starts_with("qsa_")) {
+        return "qsa";
+    }
+    if (tensor->op == GGML_OP_DELTA_NET || tensor->op == GGML_OP_SSM_CONV || tensor->op == GGML_OP_SSM_SCAN ||
+            starts_with("delta_net") || starts_with("linear_attn") || starts_with("qkv_mixed") ||
+            starts_with("q_conv") || starts_with("k_conv") || starts_with("v_conv") ||
+            starts_with("conv_output") || starts_with("state_predelta") || starts_with("ssm_") ||
+            starts_with("new_state") || starts_with("new_conv")) {
+        return "gdn";
+    }
+    if (contains("norm") || tensor->op == GGML_OP_RMS_NORM) {
+        return "norm";
+    }
+    if (contains("ffn") || contains("exps") || contains("moe") || contains("shexp") ||
+            tensor->op == GGML_OP_MUL_MAT_ID) {
+        return "moe";
+    }
+    if (starts_with("kq") || starts_with("flash_attn") || contains("attn")) {
+        return "attn";
+    }
+    return "other";
+}
+
+static int llama_op_census_eval_callback(ggml_tensor * tensor, bool ask, void * user_data) {
+    auto * census = static_cast<llama_op_census_state *>(user_data);
+    GGML_ASSERT(census != nullptr && census->sched != nullptr);
+
+    if (ask) {
+        census->chained_need = census->chained_callback != nullptr
+            ? census->chained_callback(tensor, true, census->chained_user_data)
+            : 0;
+        census->active_backend = ggml_backend_sched_get_tensor_backend(census->sched, tensor);
+        if (census->active_backend != nullptr) {
+            ggml_backend_synchronize(census->active_backend);
+        } else {
+            ggml_backend_sched_synchronize(census->sched);
+        }
+        census->active_start_us = ggml_time_us();
+        return 2; // observe every node; the callback performs its own post-node sync
+    }
+
+    if (census->active_backend != nullptr) {
+        ggml_backend_synchronize(census->active_backend);
+    } else {
+        ggml_backend_sched_synchronize(census->sched);
+    }
+    const int64_t elapsed_us = ggml_time_us() - census->active_start_us;
+    std::string bucket = ggml_op_name(tensor->op);
+    bucket += '/';
+    bucket += llama_op_census_name_class(tensor);
+    census->buckets[bucket] += elapsed_us;
+
+    const int keep_going = census->chained_callback != nullptr && census->chained_need != 0
+        ? census->chained_callback(tensor, false, census->chained_user_data)
+        : 1;
+    census->chained_need = 0;
+    census->active_backend = nullptr;
+    census->active_start_us = 0;
+    return keep_going;
+}
+
+static void llama_op_census_print(int32_t n_tokens, uint32_t n_kv) {
+    std::vector<std::pair<std::string, int64_t>> sorted(g_op_census.buckets.begin(), g_op_census.buckets.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto & a, const auto & b) {
+        return a.second != b.second ? a.second > b.second : a.first < b.first;
+    });
+
+    const int64_t total_us = std::accumulate(sorted.begin(), sorted.end(), int64_t(0),
+            [](int64_t sum, const auto & entry) { return sum + entry.second; });
+    fprintf(stderr, "[oc] K=%d n_kv=%u total_us=%lld", (int) n_tokens, n_kv, (long long) total_us);
+    for (size_t i = 0; i < std::min<size_t>(12, sorted.size()); ++i) {
+        fprintf(stderr, " %s=%lld", sorted[i].first.c_str(), (long long) sorted[i].second);
+    }
+    fputc('\n', stderr);
+}
+
 static bool llama_mtp_tail_uses_layer_cache(const llama_model & model) {
     return model.hparams.nextn_predict_layers > 0 &&
         (model.arch == LLM_ARCH_GLM_DSA ||
@@ -12026,9 +12140,36 @@ int32_t llama_decode(
         g_vt_reused = 0;
     }
 
+    static const bool op_census = []() {
+        const char * value = getenv("LONGSPEAR_OP_CENSUS");
+        return value != nullptr && strcmp(value, "1") == 0;
+    }();
+    if (op_census) {
+        g_op_census.sched = ctx->sched;
+        g_op_census.chained_callback = ctx->cparams.cb_eval;
+        g_op_census.chained_user_data = ctx->cparams.cb_eval_user_data;
+        g_op_census.chained_need = 0;
+        g_op_census.active_backend = nullptr;
+        g_op_census.active_start_us = 0;
+        g_op_census.buckets.clear();
+        ctx->cparams.cb_eval = llama_op_census_eval_callback;
+        ctx->cparams.cb_eval_user_data = &g_op_census;
+        ggml_backend_sched_set_eval_callback(ctx->sched, ctx->cparams.cb_eval, ctx->cparams.cb_eval_user_data);
+    }
+
     const int ret = llama_decode_internal(*ctx, batch);
     if (ret < 0) {
         LLAMA_LOG_ERROR("%s: failed to decode, ret = %d\n", __func__, ret);
+    }
+
+    if (op_census) {
+        ctx->cparams.cb_eval = g_op_census.chained_callback;
+        ctx->cparams.cb_eval_user_data = g_op_census.chained_user_data;
+        ggml_backend_sched_set_eval_callback(ctx->sched, ctx->cparams.cb_eval, ctx->cparams.cb_eval_user_data);
+        llama_op_census_print(batch.n_tokens, ctx->kv_self.used);
+        g_op_census.sched = nullptr;
+        g_op_census.chained_callback = nullptr;
+        g_op_census.chained_user_data = nullptr;
     }
 
     if (vt) {
