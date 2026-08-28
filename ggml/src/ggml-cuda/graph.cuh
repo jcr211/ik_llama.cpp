@@ -52,3 +52,19 @@ struct ggml_cuda_graph {
 #endif
 };
 
+#ifdef USE_CUDA_GRAPH
+struct ggml_cuda_graph_variant {
+    ggml_cuda_graph_variant(uint64_t fingerprint, uint64_t last_used) :
+        fingerprint(fingerprint), last_used(last_used), graph(std::make_unique<ggml_cuda_graph>()) {}
+
+    uint64_t fingerprint;
+    uint64_t last_used;
+    std::unique_ptr<ggml_cuda_graph> graph;
+};
+
+struct ggml_cuda_graph_variants {
+    std::vector<ggml_cuda_graph_variant> entries;
+    size_t max_variants_seen = 0;
+};
+#endif
+

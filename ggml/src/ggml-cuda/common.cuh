@@ -868,6 +868,7 @@ struct ggml_tensor_extra_gpu {
 #endif
 
 struct ggml_cuda_graph;
+struct ggml_cuda_graph_variants;
 
 struct ggml_backend_cuda_context {
     int device;
@@ -890,6 +891,11 @@ struct ggml_backend_cuda_context {
     ggml_cuda_graph * cur_graph = nullptr;
 
     std::unordered_map<const void *, std::unique_ptr<ggml_cuda_graph>> cuda_graphs;
+    std::unordered_map<const void *, std::unique_ptr<ggml_cuda_graph_variants>> cuda_graph_variants;
+    uint64_t cuda_graph_variant_lru_tick = 0;
+    uint64_t cuda_graph_variants_created = 0;
+    uint64_t cuda_graph_variant_hits = 0;
+    uint64_t cuda_graph_variant_evictions = 0;
 
 #endif
 

@@ -313,6 +313,7 @@ extern "C" void ggml_backend_cuda_invalidate_graphs(const void * model) {
         for (auto ctx : it->second) {
             if (ctx) {
                 ctx->cuda_graphs.clear();
+                ctx->cuda_graph_variants.clear();
             }
         }
     } else {
@@ -555,6 +556,18 @@ ggml_backend_cuda_context::~ggml_backend_cuda_context() {
     // Let's leave this debug log in for now, so we have a trace in case
     // number of CUDA graphs goes crazy
     GGML_CUDA_LOG_INFO("%s: have %d graphs\n", __func__, int(cuda_graphs.size()));
+    if (getenv("LONGSPEAR_CG_DEBUG") != nullptr && !cuda_graph_variants.empty()) {
+        fprintf(stderr,
+                "[cg] variants_summary created=%llu hits=%llu evictions=%llu keys=%zu\n",
+                (unsigned long long) cuda_graph_variants_created,
+                (unsigned long long) cuda_graph_variant_hits,
+                (unsigned long long) cuda_graph_variant_evictions,
+                cuda_graph_variants.size());
+        for (const auto & item : cuda_graph_variants) {
+            fprintf(stderr, "[cg] variants_key key=%p max_variants_seen=%zu\n",
+                    item.first, item.second->max_variants_seen);
+        }
+    }
 #endif
 
     std::unique_lock<std::mutex> lock(ggml_cuda_lock);
@@ -4420,6 +4433,51 @@ static inline const void * ggml_cuda_graph_get_key(ggml_cgraph * cgraph) {
     return cgraph->nodes[0];
 }
 
+static bool ggml_cuda_graph_variants_enabled() {
+    static const bool enabled = [] {
+        const char * env = getenv("LONGSPEAR_CG_VARIANTS");
+        return env != nullptr && env[0] == '1' && env[1] == '\0';
+    }();
+    return enabled;
+}
+
+static uint64_t ggml_cuda_graph_fingerprint_append(uint64_t hash, const void * data, size_t size) {
+    const uint8_t * bytes = static_cast<const uint8_t *>(data);
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+static uint64_t ggml_cuda_graph_structural_fingerprint(const ggml_cgraph * cgraph) {
+    static_assert(GGML_MAX_DIMS >= 4, "CUDA graph fingerprints require four tensor dimensions");
+    static_assert(GGML_MAX_SRC <= 64, "CUDA graph source presence mask exceeds 64 bits");
+
+    // Tensor and source addresses plus view offsets are intentionally excluded: they are the dynamic
+    // properties that a matching structural variant may update without changing graph identity.
+    uint64_t fingerprint = UINT64_C(14695981039346656037);
+    fingerprint = ggml_cuda_graph_fingerprint_append(fingerprint, &cgraph->n_nodes, sizeof(cgraph->n_nodes));
+
+    for (int i = 0; i < cgraph->n_nodes; ++i) {
+        const ggml_tensor * node = cgraph->nodes[i];
+        uint64_t src_presence_mask = 0;
+        for (int src = 0; src < GGML_MAX_SRC; ++src) {
+            src_presence_mask |= uint64_t(node->src[src] != nullptr) << src;
+        }
+
+        fingerprint = ggml_cuda_graph_fingerprint_append(fingerprint, &node->op, sizeof(node->op));
+        fingerprint = ggml_cuda_graph_fingerprint_append(fingerprint, &node->type, sizeof(node->type));
+        fingerprint = ggml_cuda_graph_fingerprint_append(fingerprint, node->ne, 4*sizeof(node->ne[0]));
+        fingerprint = ggml_cuda_graph_fingerprint_append(fingerprint, node->nb, 4*sizeof(node->nb[0]));
+        fingerprint = ggml_cuda_graph_fingerprint_append(fingerprint, node->op_params, GGML_MAX_OP_PARAMS);
+        fingerprint = ggml_cuda_graph_fingerprint_append(
+                fingerprint, &src_presence_mask, sizeof(src_presence_mask));
+    }
+
+    return fingerprint;
+}
+
 static bool ggml_cuda_graph_debug2_enabled() {
     static const bool enabled = [] {
         const char * env = getenv("LONGSPEAR_CG_DEBUG2");
@@ -4541,6 +4599,52 @@ static inline ggml_cuda_graph * ggml_cuda_get_graph(ggml_backend_cuda_context & 
         graph = std::make_unique<ggml_cuda_graph>();
     }
     return graph.get();
+}
+
+static ggml_cuda_graph * ggml_cuda_get_graph_variant(
+        ggml_backend_cuda_context & ctx, const void * key, uint64_t fingerprint, bool debug) {
+    static constexpr size_t MAX_VARIANTS = 4;
+
+    auto & variants = ctx.cuda_graph_variants[key];
+    if (!variants) {
+        variants = std::make_unique<ggml_cuda_graph_variants>();
+    }
+
+    const uint64_t last_used = ++ctx.cuda_graph_variant_lru_tick;
+    for (auto & variant : variants->entries) {
+        if (variant.fingerprint == fingerprint) {
+            variant.last_used = last_used;
+            ++ctx.cuda_graph_variant_hits;
+            if (debug) {
+                fprintf(stderr, "[cg] variant=hit key=%p fingerprint=%016llx variants_count=%zu\n",
+                        key, (unsigned long long) fingerprint, variants->entries.size());
+            }
+            return variant.graph.get();
+        }
+    }
+
+    if (variants->entries.size() == MAX_VARIANTS) {
+        auto lru = std::min_element(
+                variants->entries.begin(), variants->entries.end(),
+                [](const ggml_cuda_graph_variant & a, const ggml_cuda_graph_variant & b) {
+                    return a.last_used < b.last_used;
+                });
+        if (debug) {
+            fprintf(stderr, "[cg] variant=evict key=%p fingerprint=%016llx variants_count=%zu\n",
+                    key, (unsigned long long) lru->fingerprint, variants->entries.size());
+        }
+        variants->entries.erase(lru);
+        ++ctx.cuda_graph_variant_evictions;
+    }
+
+    variants->entries.emplace_back(fingerprint, last_used);
+    ++ctx.cuda_graph_variants_created;
+    variants->max_variants_seen = std::max(variants->max_variants_seen, variants->entries.size());
+    if (debug) {
+        fprintf(stderr, "[cg] variant=miss key=%p fingerprint=%016llx variants_count=%zu\n",
+                key, (unsigned long long) fingerprint, variants->entries.size());
+    }
+    return variants->entries.back().graph.get();
 }
 
 static bool check_node_graph_compatibility_and_refresh_copy_ops(ggml_cuda_graph * graph, ggml_cgraph * cgraph,
@@ -4845,7 +4949,12 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
     [[maybe_unused]] const bool integrated = false; //ggml_cuda_info().devices[cuda_ctx->device].integrated;
 
 #ifdef USE_CUDA_GRAPH
-    auto graph = use_cuda_graph ? ggml_cuda_get_graph(*cuda_ctx, ggml_cuda_graph_get_key(cgraph)) : nullptr;
+    ggml_cuda_graph * graph = nullptr;
+    if (ggml_cuda_graph_variants_enabled()) {
+        graph = use_cuda_graph ? cuda_ctx->cur_graph : nullptr;
+    } else {
+        graph = use_cuda_graph ? ggml_cuda_get_graph(*cuda_ctx, ggml_cuda_graph_get_key(cgraph)) : nullptr;
+    }
 #endif
 
 #if IK_PRINT_TIMING
@@ -4920,7 +5029,13 @@ GGML_CALL static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t
     ggml_cuda_graph * graph = nullptr;
     if (use_cuda_graph) {
         auto graph_key = ggml_cuda_graph_get_key(cgraph);
-        graph = ggml_cuda_get_graph(*cuda_ctx, graph_key);
+        if (ggml_cuda_graph_variants_enabled()) {
+            const uint64_t fingerprint = ggml_cuda_graph_structural_fingerprint(cgraph);
+            static const bool cg_dbg_variants = getenv("LONGSPEAR_CG_DEBUG") != nullptr;
+            graph = ggml_cuda_get_graph_variant(*cuda_ctx, graph_key, fingerprint, cg_dbg_variants);
+        } else {
+            graph = ggml_cuda_get_graph(*cuda_ctx, graph_key);
+        }
     }
     cuda_ctx->cur_graph = graph;
 
