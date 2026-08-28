@@ -12173,8 +12173,8 @@ int32_t llama_decode(
     }
 
     if (vt) {
-        fprintf(stderr, "[vt] K=%d mtp_op=%d us=%lld build=%lld compute=%lld logits=%lld embd=%lld reused=%d nodes=%d splits=%d\n",
-                (int) batch.n_tokens, (int) ctx->cparams.mtp_op_type,
+        fprintf(stderr, "[vt] K=%d n_kv=%u mtp_op=%d us=%lld build=%lld compute=%lld logits=%lld embd=%lld reused=%d nodes=%d splits=%d\n",
+                (int) batch.n_tokens, ctx->kv_self.used, (int) ctx->cparams.mtp_op_type,
                 (long long) (ggml_time_us() - vt_t0),
                 (long long) g_vt_build_us, (long long) g_vt_compute_us,
                 (long long) g_vt_logits_us, (long long) g_vt_embd_us, g_vt_reused,
