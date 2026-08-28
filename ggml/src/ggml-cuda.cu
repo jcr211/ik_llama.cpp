@@ -4440,6 +4440,10 @@ static bool check_node_graph_compatibility_and_refresh_copy_ops(ggml_cuda_graph 
     const std::string ffn_moe_up_bias_prefix = "ffn_moe_up_biased";
     const std::string ffn_moe_down_bias_prefix = "ffn_moe_down_biased";
 
+    // Diagnostic veto tracing (env LONGSPEAR_CG_DEBUG=1): the NDEBUG-guarded logs
+    // below are compiled out in Release, so mirror each veto with an env-gated line.
+    static const bool cg_dbg = getenv("LONGSPEAR_CG_DEBUG") != nullptr;
+
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
 
@@ -4447,11 +4451,14 @@ static bool check_node_graph_compatibility_and_refresh_copy_ops(ggml_cuda_graph 
 
         if (node->op == GGML_OP_REDUCE) {
             use_cuda_graph = false;
+            if (cg_dbg) fprintf(stderr, "[cg] veto=reduce node=%s\n", node->name);
             break;
         }
 
         if (node->op == GGML_OP_MUL_MAT_ID && (node->ne[2] != 1 || node->src[2]->ne[0] != 1)) {
             use_cuda_graph = false; // This node type is not supported by CUDA graph capture
+            if (cg_dbg) fprintf(stderr, "[cg] veto=mul_mat_id node=%s src0=%s ne2=%lld src2ne0=%lld\n",
+                    node->name, node->src[0]->name, (long long) node->ne[2], (long long) node->src[2]->ne[0]);
 #ifndef NDEBUG
             GGML_CUDA_LOG_DEBUG("%s(%s): disabling CUDA graphs due to unsupported node type %ld %ld\n",
                     __func__, node->src[0]->name, node->ne[2], node->src[2]->ne[0]);
@@ -4464,6 +4471,8 @@ static bool check_node_graph_compatibility_and_refresh_copy_ops(ggml_cuda_graph 
             if (src1->ne[1] != 1 || src1->ne[2] != 1 || src1->ne[3] != 1 || src1->type != GGML_TYPE_F32 ||
                 !ggml_is_quantized(src0_1->type) || (src0_2 && !ggml_is_quantized(src0_2->type))) {
                 use_cuda_graph = false;
+                if (cg_dbg) fprintf(stderr, "[cg] veto=moe_fused node=%s src1ne=%lld,%lld,%lld type=%d\n",
+                        node->name, (long long) src1->ne[1], (long long) src1->ne[2], (long long) src1->ne[3], (int) src1->type);
             } else {
                 if (i < cgraph->n_nodes-1) {
                     auto next = cgraph->nodes[i+1];
@@ -4503,6 +4512,9 @@ static bool check_node_graph_compatibility_and_refresh_copy_ops(ggml_cuda_graph 
             void * ptr = ggml_cuda_cpy_fn(node->src[0], node->src[1]);
             if (!ptr) {
                 use_cuda_graph = false;
+                if (cg_dbg) fprintf(stderr, "[cg] veto=cpy node=%s src0=%s(%s) src1=%s(%s)\n",
+                        node->name, node->src[0]->name, ggml_type_name(node->src[0]->type),
+                        node->src[1]->name, ggml_type_name(node->src[1]->type));
 #ifndef NDEBUG
                 GGML_CUDA_LOG_DEBUG("%s: disabling CUDA graphs due to unsupported copy op\n", __func__);
 #endif
@@ -4700,10 +4712,14 @@ GGML_CALL static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t
         }
     }
 
+    static const bool cg_dbg_top = getenv("LONGSPEAR_CG_DEBUG") != nullptr;
     if (use_cuda_graph && (
         graph->disable_due_to_gpu_arch ||
         graph->disable_due_to_too_many_updates ||
         graph->disable_due_to_failed_graph_capture)) {
+        if (cg_dbg_top) fprintf(stderr, "[cg] veto=sticky key=%p arch=%d updates=%d capfail=%d\n",
+                (const void *) ggml_cuda_graph_get_key(cgraph), (int) graph->disable_due_to_gpu_arch,
+                (int) graph->disable_due_to_too_many_updates, (int) graph->disable_due_to_failed_graph_capture);
         use_cuda_graph = false;
     }
 
@@ -4724,6 +4740,8 @@ GGML_CALL static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t
         if (graph->number_consecutive_updates >= 4) {
             graph->disable_due_to_too_many_updates = true;
             use_cuda_graph = false;
+            if (cg_dbg_top) fprintf(stderr, "[cg] veto=too_many_updates key=%p\n",
+                    (const void *) ggml_cuda_graph_get_key(cgraph));
             cuda_ctx->cur_graph = nullptr;
 #ifndef NDEBUG
             GGML_CUDA_LOG_DEBUG("%s: disabling CUDA graphs due to too many consecutive updates\n", __func__);
@@ -4752,6 +4770,12 @@ GGML_CALL static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t
 #endif // USE_CUDA_GRAPH
 
     bool graph_evaluated_or_captured = false;
+
+#ifdef USE_CUDA_GRAPH
+    if (cg_dbg_top) fprintf(stderr, "[cg] pass key=%p n_nodes=%d use=%d upd=%d\n",
+            (const void *) ggml_cuda_graph_get_key(cgraph), cgraph->n_nodes,
+            (int) use_cuda_graph, (int) cuda_graph_update_required);
+#endif // USE_CUDA_GRAPH
 
     evaluate_and_capture_cuda_graph(cuda_ctx, cgraph, graph_evaluated_or_captured, use_cuda_graph, cuda_graph_update_required);
 
