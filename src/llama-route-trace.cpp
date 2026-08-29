@@ -96,6 +96,12 @@ public:
         if (std::fwrite(record.data(), 1, record.size(), file_) != record.size()) {
             report_error("failed to write route record");
         }
+        // Serving processes are routinely force-killed (never reach atexit),
+        // so flush periodically to keep collected traces recoverable.
+        if (++records_since_flush_ >= 512) {
+            std::fflush(file_);
+            records_since_flush_ = 0;
+        }
     }
 
 private:
@@ -151,6 +157,7 @@ private:
     uint16_t n_main_layers_ = 0;
     bool failed_ = false;
     bool reported_ = false;
+    uint32_t records_since_flush_ = 0;
 };
 
 struct pending_route {
