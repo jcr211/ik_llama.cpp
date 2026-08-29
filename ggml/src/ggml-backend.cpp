@@ -1201,6 +1201,8 @@ struct ggml_backend_sched {
 
     ggml_backend_sched_eval_callback callback_eval;
     void * callback_eval_user_data;
+    ggml_backend_sched_moe_ids_callback callback_moe_ids;
+    void * callback_moe_ids_user_data;
 
     char * context_buffer;
     size_t context_buffer_size;
@@ -2068,7 +2070,7 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
 }
 
 static void ggml_backend_sched_copy_inputs(ggml_backend_sched_t sched, ggml_backend_sched_split * split, std::array<bool, GGML_SCHED_MAX_BACKENDS> & needs_sync,
-        std::vector<int32_t> & ids, std::vector<uint32_t> & unique_ids, ggml_tensor * last_ids_tensor) {
+        std::vector<int32_t> & ids, std::vector<uint32_t> & unique_ids, ggml_tensor * & last_ids_tensor) {
     if (split->n_inputs < 1) return;
     constexpr bool k_set_sync = false;
     int split_backend_id = split->backend_id;
@@ -2139,6 +2141,10 @@ static void ggml_backend_sched_copy_inputs(ggml_backend_sched_t sched, ggml_back
                         needs_sync[id] = k_set_sync;
                     }
                     //needs_sync[tensor_backend_id(ids_tensor)] = k_set_sync;
+
+                    if (sched->callback_moe_ids != nullptr) {
+                        sched->callback_moe_ids(ids_tensor, ids.data(), sched->callback_moe_ids_user_data);
+                    }
 
                     unique_ids.resize((n_expert + 31)/32);
                     std::memset(unique_ids.data(), 0, unique_ids.size()*sizeof(uint32_t));
@@ -2868,6 +2874,11 @@ void ggml_backend_sched_synchronize(ggml_backend_sched_t sched) {
 void ggml_backend_sched_set_eval_callback(ggml_backend_sched_t sched, ggml_backend_sched_eval_callback callback, void * user_data) {
     sched->callback_eval = callback;
     sched->callback_eval_user_data = user_data;
+}
+
+void ggml_backend_sched_set_moe_ids_callback(ggml_backend_sched_t sched, ggml_backend_sched_moe_ids_callback callback, void * user_data) {
+    sched->callback_moe_ids = callback;
+    sched->callback_moe_ids_user_data = user_data;
 }
 
 int ggml_backend_sched_get_n_splits(ggml_backend_sched_t sched) {

@@ -6,20 +6,43 @@ struct ggml_backend_sched;
 struct ggml_cgraph;
 struct ggml_tensor;
 
+struct llama_route_trace_pass {
+    uint16_t n_rows = 0;
+    uint16_t n_experts = 0;
+    uint16_t top_k = 0;
+    uint16_t n_layers = 0;
+    uint16_t n_main_layers = 0;
+    bool enabled = false;
+    bool full = false;
+};
+
 bool llama_route_trace_enabled();
 
-// Keep routed IDs alive until the post-compute readback. This is a no-op when
-// LONGSPEAR_ROUTE_TRACE is unset or the tensor is not the configured top-k.
+// Keep routed IDs alive until the post-compute readback in full mode. This is a
+// no-op unless LONGSPEAR_ROUTE_TRACE_FULL=1.
 void llama_route_trace_mark_output(
         struct ggml_tensor * tensor,
         const char *         name,
         uint16_t             top_k);
 
-// Collect all marked qwen4exp route tensors from one decode/prefill graph pass.
+// Open and flush the header before graph submission. Default mode registers a
+// callback for IDs already copied host-side by selective CPU-MoE offload.
+void llama_route_trace_begin(
+        struct ggml_backend_sched * sched,
+        llama_route_trace_pass &    pass,
+        uint16_t                    n_rows,
+        uint16_t                    n_experts,
+        uint16_t                    top_k,
+        uint16_t                    n_layers,
+        uint16_t                    n_main_layers);
+
+// In LONGSPEAR_ROUTE_TRACE_FULL=1 mode, collect all marked tensors after graph
+// submission and pay one scheduler-wide synchronization.
 void llama_route_trace_collect(
         struct ggml_backend_sched * sched,
-        struct ggml_cgraph * graph,
-        uint16_t             n_experts,
-        uint16_t             top_k,
-        uint16_t             n_layers,
-        uint16_t             n_main_layers);
+        struct ggml_cgraph *        graph,
+        const llama_route_trace_pass & pass);
+
+void llama_route_trace_end(
+        struct ggml_backend_sched * sched,
+        const llama_route_trace_pass & pass);

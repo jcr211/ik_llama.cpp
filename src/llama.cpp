@@ -6952,16 +6952,22 @@ static int llama_decode_internal(
 #endif
         //fprintf(stderr, "%s: invoking llama_graph_compute\n", __func__);
         const int64_t vt_c0 = ggml_time_us();
-        llama_graph_compute(lctx, gf, n_threads);
+        llama_route_trace_pass trace_pass;
         if (lctx.model.arch == LLM_ARCH_QWEN4EXP) {
             const llama_hparams & trace_hparams = lctx.model.hparams;
-            llama_route_trace_collect(
+            llama_route_trace_begin(
                     lctx.sched,
-                    gf,
+                    trace_pass,
+                    static_cast<uint16_t>(u_batch.n_tokens),
                     static_cast<uint16_t>(trace_hparams.n_expert),
                     static_cast<uint16_t>(trace_hparams.n_expert_used),
                     static_cast<uint16_t>(trace_hparams.n_layer),
                     static_cast<uint16_t>(trace_hparams.n_layer - trace_hparams.nextn_predict_layers));
+        }
+        llama_graph_compute(lctx, gf, n_threads);
+        if (lctx.model.arch == LLM_ARCH_QWEN4EXP) {
+            llama_route_trace_collect(lctx.sched, gf, trace_pass);
+            llama_route_trace_end(lctx.sched, trace_pass);
         }
         g_vt_compute_us += ggml_time_us() - vt_c0;
         g_vt_nodes  = gf->n_nodes;

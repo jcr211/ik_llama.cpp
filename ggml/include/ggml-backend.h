@@ -178,6 +178,12 @@ extern "C" {
     //
     typedef int (*ggml_backend_sched_eval_callback)(struct ggml_tensor * t, bool ask, void * user_data);
 
+    // Called after selectively offloaded MoE dispatch IDs have already been copied to host memory.
+    typedef void (*ggml_backend_sched_moe_ids_callback)(
+            const struct ggml_tensor * ids,
+            const int32_t *            data,
+            void *                     user_data);
+
     // Initialize a backend scheduler
     GGML_API ggml_backend_sched_t ggml_backend_sched_new(ggml_backend_t * backends, ggml_backend_buffer_type_t * bufts, int n_backends, size_t graph_size, bool parallel);
     GGML_API void                 ggml_backend_sched_free(ggml_backend_sched_t sched);
@@ -209,6 +215,7 @@ extern "C" {
 
     // Set a callback to be called for each resulting node during graph compute
     GGML_API void                 ggml_backend_sched_set_eval_callback(ggml_backend_sched_t sched, ggml_backend_sched_eval_callback callback, void * user_data);
+    GGML_API void                 ggml_backend_sched_set_moe_ids_callback(ggml_backend_sched_t sched, ggml_backend_sched_moe_ids_callback callback, void * user_data);
 
     // enable or disable op offload for a given op
     GGML_API void                 ggml_backend_sched_set_op_offload(ggml_backend_sched_t sched, enum ggml_op op, bool on_or_off);
