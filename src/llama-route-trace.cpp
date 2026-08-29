@@ -58,6 +58,11 @@ public:
             std::fflush(file_);
             std::fclose(file_);
         }
+        if (rows_skipped_ != 0) {
+            std::fprintf(stderr,
+                    "longspear route trace: rows_skipped=%llu first_bad_layer=%u first_bad_value=%d\n",
+                    static_cast<unsigned long long>(rows_skipped_), first_bad_layer_, first_bad_value_);
+        }
     }
 
     void write(
@@ -75,26 +80,42 @@ public:
             return;
         }
 
-        std::vector<uint8_t> record;
-        record.reserve(4 + static_cast<size_t>(n_rows) * top_k * sizeof(uint16_t));
-        append_u16_le(record, layer);
-        append_u16_le(record, n_rows);
+        std::vector<uint8_t> payload;
+        payload.reserve(static_cast<size_t>(n_rows) * top_k * sizeof(uint16_t));
+        uint16_t rows_written = 0;
 
         for (uint16_t row = 0; row < n_rows; ++row) {
+            const size_t row_begin = payload.size();
+            bool valid = true;
             for (uint16_t rank = 0; rank < top_k; ++rank) {
                 int32_t expert = -1;
                 std::memcpy(&expert, source + static_cast<size_t>(row) * tensor->nb[1] +
                         static_cast<size_t>(rank) * tensor->nb[0], sizeof(expert));
                 if (expert < 0 || expert >= n_experts) {
-                    report_error("route tensor contains an out-of-range expert ID");
-                    return;
+                    payload.resize(row_begin);
+                    note_bad_row(layer, expert);
+                    valid = false;
+                    break;
                 }
-                append_u16_le(record, static_cast<uint16_t>(expert));
+                append_u16_le(payload, static_cast<uint16_t>(expert));
+            }
+            if (valid) {
+                ++rows_written;
             }
         }
 
+        if (rows_written == 0) {
+            return;
+        }
+
+        std::vector<uint8_t> record;
+        record.reserve(4 + payload.size());
+        append_u16_le(record, layer);
+        append_u16_le(record, rows_written);
+        record.insert(record.end(), payload.begin(), payload.end());
+
         if (std::fwrite(record.data(), 1, record.size(), file_) != record.size()) {
-            report_error("failed to write route record");
+            report_io_error("failed to write route record");
         }
         // Serving processes are routinely force-killed (never reach atexit),
         // so flush periodically to keep collected traces recoverable.
@@ -112,7 +133,7 @@ private:
         if (file_ != nullptr) {
             if (n_experts != n_experts_ || top_k != top_k_ ||
                     n_layers != n_layers_ || n_main_layers != n_main_layers_) {
-                report_error("route parameters changed after the trace was opened");
+                report_nonfatal_error("route parameters changed after the trace was opened");
                 return false;
             }
             return true;
@@ -120,7 +141,7 @@ private:
 
         file_ = std::fopen(route_trace_path(), "wb");
         if (file_ == nullptr) {
-            report_error("could not open LONGSPEAR_ROUTE_TRACE path");
+            report_io_error("could not open LONGSPEAR_ROUTE_TRACE path");
             return false;
         }
 
@@ -134,16 +155,34 @@ private:
                 "LONGSPEAR_ROUTE_TRACE v1 model=qwen4exp experts=%u top_k=%u layers=%u main_layers=%u "
                 "endian=little record=u16_layer,u16_n_rows,n_rows*top_k*u16_expert\n",
                 n_experts, top_k, n_layers, n_main_layers) < 0) {
-            report_error("failed to write route trace header");
+            report_io_error("failed to write route trace header");
+            return false;
+        }
+        if (std::fflush(file_) != 0) {
+            report_io_error("failed to flush route trace header");
             return false;
         }
         return true;
     }
 
-    void report_error(const char * message) {
+    void note_bad_row(uint16_t layer, int32_t value) {
+        if (rows_skipped_++ == 0) {
+            first_bad_layer_ = layer;
+            first_bad_value_ = value;
+        }
+    }
+
+    void report_nonfatal_error(const char * message) {
+        if (!reported_) {
+            std::fprintf(stderr, "longspear route trace: %s\n", message);
+            reported_ = true;
+        }
+    }
+
+    void report_io_error(const char * message) {
         if (!reported_) {
             std::fprintf(stderr, "longspear route trace: %s: %s\n", message,
-                    errno != 0 ? std::strerror(errno) : "trace disabled");
+                    errno != 0 ? std::strerror(errno) : "I/O failure; trace disabled");
             reported_ = true;
         }
         failed_ = true;
@@ -158,6 +197,9 @@ private:
     bool failed_ = false;
     bool reported_ = false;
     uint32_t records_since_flush_ = 0;
+    uint64_t rows_skipped_ = 0;
+    uint16_t first_bad_layer_ = 0;
+    int32_t first_bad_value_ = 0;
 };
 
 struct pending_route {
