@@ -69,6 +69,10 @@ public:
         if (file_ != nullptr) {
             std::fflush(file_);
             std::fclose(file_);
+            file_ = nullptr;
+        }
+        if (route_trace_full() && !layer_rows_.empty()) {
+            report_full_self_check();
         }
         if (rows_skipped_ != 0) {
             std::fprintf(stderr,
@@ -102,27 +106,39 @@ public:
         if (!open(n_experts, top_k, n_layers, n_main_layers)) {
             return;
         }
+        if (layer >= n_layers_) {
+            report_nonfatal_error("route record layer is outside the declared layer count");
+            return;
+        }
 
-        std::vector<uint8_t> payload;
-        payload.reserve(static_cast<size_t>(n_rows) * top_k * sizeof(uint16_t));
+        payload_.clear();
+        payload_.reserve(static_cast<size_t>(n_rows) * top_k * sizeof(uint16_t));
+        row_experts_.resize(top_k);
         uint16_t rows_written = 0;
 
         for (uint16_t row = 0; row < n_rows; ++row) {
-            const size_t row_begin = payload.size();
             bool valid = true;
             for (uint16_t rank = 0; rank < top_k; ++rank) {
                 int32_t expert = -1;
                 std::memcpy(&expert, source + static_cast<size_t>(row) * tensor->nb[1] +
                         static_cast<size_t>(rank) * tensor->nb[0], sizeof(expert));
                 if (expert < 0 || expert >= n_experts) {
-                    payload.resize(row_begin);
                     note_bad_row(layer, expert);
                     valid = false;
                     break;
                 }
-                append_u16_le(payload, static_cast<uint16_t>(expert));
+                row_experts_[rank] = static_cast<uint16_t>(expert);
             }
             if (valid) {
+                for (uint16_t expert : row_experts_) {
+                    append_u16_le(payload_, expert);
+                    if (!expert_frequencies_.empty()) {
+                        ++expert_frequencies_[static_cast<size_t>(layer) * n_experts_ + expert];
+                    }
+                }
+                if (!layer_rows_.empty()) {
+                    ++layer_rows_[layer];
+                }
                 ++rows_written;
             }
         }
@@ -131,13 +147,13 @@ public:
             return;
         }
 
-        std::vector<uint8_t> record;
-        record.reserve(4 + payload.size());
-        append_u16_le(record, layer);
-        append_u16_le(record, rows_written);
-        record.insert(record.end(), payload.begin(), payload.end());
+        record_.clear();
+        record_.reserve(4 + payload_.size());
+        append_u16_le(record_, layer);
+        append_u16_le(record_, rows_written);
+        record_.insert(record_.end(), payload_.begin(), payload_.end());
 
-        if (std::fwrite(record.data(), 1, record.size(), file_) != record.size()) {
+        if (std::fwrite(record_.data(), 1, record_.size(), file_) != record_.size()) {
             report_io_error("failed to write route record");
             return;
         }
@@ -177,6 +193,10 @@ private:
         top_k_         = top_k;
         n_layers_      = n_layers;
         n_main_layers_ = n_main_layers;
+        if (route_trace_full()) {
+            expert_frequencies_.assign(static_cast<size_t>(n_layers) * n_experts, 0);
+            layer_rows_.assign(n_layers, 0);
+        }
 
         if (std::fprintf(file_,
                 "LONGSPEAR_ROUTE_TRACE v1 model=qwen4exp experts=%u top_k=%u layers=%u main_layers=%u "
@@ -197,6 +217,36 @@ private:
             first_bad_layer_ = layer;
             first_bad_value_ = value;
         }
+    }
+
+    void report_full_self_check() const {
+        uint64_t identical_pairs = 0;
+        uint64_t compared_pairs  = 0;
+        uint32_t observed_layers = 0;
+
+        for (uint16_t lhs = 0; lhs < n_layers_; ++lhs) {
+            if (layer_rows_[lhs] == 0) {
+                continue;
+            }
+            ++observed_layers;
+            const auto lhs_begin = expert_frequencies_.begin() + static_cast<size_t>(lhs) * n_experts_;
+            for (uint16_t rhs = lhs + 1; rhs < n_layers_; ++rhs) {
+                if (layer_rows_[rhs] == 0) {
+                    continue;
+                }
+                ++compared_pairs;
+                const auto rhs_begin = expert_frequencies_.begin() + static_cast<size_t>(rhs) * n_experts_;
+                if (std::equal(lhs_begin, lhs_begin + n_experts_, rhs_begin)) {
+                    ++identical_pairs;
+                }
+            }
+        }
+
+        std::fprintf(stderr,
+                "longspear route trace: full_self_check identical_layer_pairs=%llu "
+                "compared_layer_pairs=%llu observed_layers=%u\n",
+                static_cast<unsigned long long>(identical_pairs),
+                static_cast<unsigned long long>(compared_pairs), observed_layers);
     }
 
     void report_nonfatal_error(const char * message) {
@@ -227,6 +277,11 @@ private:
     uint64_t rows_skipped_ = 0;
     uint16_t first_bad_layer_ = 0;
     int32_t first_bad_value_ = 0;
+    std::vector<uint8_t> payload_;
+    std::vector<uint8_t> record_;
+    std::vector<uint16_t> row_experts_;
+    std::vector<uint64_t> expert_frequencies_;
+    std::vector<uint64_t> layer_rows_;
 };
 
 struct pending_route {
