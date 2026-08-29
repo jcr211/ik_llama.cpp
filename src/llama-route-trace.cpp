@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -14,7 +15,8 @@
 
 namespace {
 
-constexpr const char * ROUTE_TENSOR_PREFIX = "ffn_moe_topk-";
+constexpr const char * ROUTE_TENSOR_PREFIX   = "ffn_moe_topk-";
+constexpr const char * CAPTURE_TENSOR_PREFIX = "route_trace_topk-";
 
 const char * route_trace_path() {
     static const char * path = [] {
@@ -32,16 +34,16 @@ bool route_trace_full() {
     return full;
 }
 
-bool parse_route_layer(const ggml_tensor * tensor, uint16_t & layer) {
+bool parse_route_layer(const ggml_tensor * tensor, const char * tensor_prefix, uint16_t & layer) {
     if (tensor == nullptr || tensor->type != GGML_TYPE_I32) {
         return false;
     }
 
-    const char * prefix = std::strstr(tensor->name, ROUTE_TENSOR_PREFIX);
+    const char * prefix = std::strstr(tensor->name, tensor_prefix);
     if (prefix == nullptr) {
         return false;
     }
-    prefix += std::strlen(ROUTE_TENSOR_PREFIX);
+    prefix += std::strlen(tensor_prefix);
 
     char * end = nullptr;
     errno = 0;
@@ -78,6 +80,12 @@ public:
     bool begin(uint16_t n_experts, uint16_t top_k, uint16_t n_layers, uint16_t n_main_layers) {
         std::lock_guard<std::mutex> lock(mutex_);
         return open(n_experts, top_k, n_layers, n_main_layers);
+    }
+
+    void disable(const char * message) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        report_nonfatal_error(message);
+        failed_ = true;
     }
 
     void write(
@@ -237,7 +245,7 @@ void collect_host_moe_ids(const ggml_tensor * tensor, const int32_t * data, void
     const llama_route_trace_pass & pass = *static_cast<const llama_route_trace_pass *>(user_data);
     uint16_t layer = 0;
     if (!pass.enabled || pass.full || tensor == nullptr || data == nullptr ||
-            !parse_route_layer(tensor, layer) || layer >= pass.n_main_layers ||
+            !parse_route_layer(tensor, ROUTE_TENSOR_PREFIX, layer) || layer >= pass.n_main_layers ||
             tensor->ne[0] != pass.top_k || tensor->ne[1] <= 0 ||
             tensor->ne[2] != 1 || tensor->ne[3] != 1) {
         return;
@@ -254,13 +262,21 @@ bool llama_route_trace_enabled() {
     return route_trace_path() != nullptr;
 }
 
-void llama_route_trace_mark_output(ggml_tensor * tensor, const char * name, uint16_t top_k) {
-    if (!llama_route_trace_enabled() || !route_trace_full() || tensor == nullptr || name == nullptr ||
-            std::strcmp(name, "ffn_moe_topk") != 0 || tensor->type != GGML_TYPE_I32 ||
-            tensor->ne[0] != top_k) {
+void llama_route_trace_capture(
+        ggml_context * ctx,
+        ggml_cgraph *  graph,
+        ggml_tensor *  tensor,
+        int            layer,
+        uint16_t       top_k) {
+    if (!llama_route_trace_enabled() || !route_trace_full() || ctx == nullptr || graph == nullptr ||
+            tensor == nullptr || layer < 0 || tensor->type != GGML_TYPE_I32 || tensor->ne[0] != top_k) {
         return;
     }
-    ggml_set_output(tensor);
+
+    ggml_tensor * capture = ggml_cpy(ctx, tensor, ggml_dup_tensor(ctx, tensor));
+    ggml_format_name(capture, "%s%d", CAPTURE_TENSOR_PREFIX, layer);
+    ggml_set_output(capture);
+    ggml_build_forward_expand(graph, capture);
 }
 
 void llama_route_trace_begin(
@@ -297,7 +313,8 @@ void llama_route_trace_collect(
     for (int i = 0; i < graph->n_nodes; ++i) {
         ggml_tensor * tensor = graph->nodes[i];
         uint16_t layer = 0;
-        if (!parse_route_layer(tensor, layer) || tensor->ne[0] != pass.top_k ||
+        if (!parse_route_layer(tensor, CAPTURE_TENSOR_PREFIX, layer) || layer >= pass.n_layers ||
+                !(tensor->flags & GGML_TENSOR_FLAG_OUTPUT) || tensor->ne[0] != pass.top_k ||
                 tensor->ne[1] <= 0 || tensor->ne[1] > std::numeric_limits<uint16_t>::max() ||
                 tensor->ne[2] != 1 || tensor->ne[3] != 1) {
             continue;
@@ -315,6 +332,30 @@ void llama_route_trace_collect(
 
     if (pending.empty()) {
         return;
+    }
+
+    // FULL captures must occupy disjoint retained storage. Refuse to emit a
+    // trace rather than silently recording aliased arena contents.
+    for (size_t i = 0; i < pending.size(); ++i) {
+        const pending_route & lhs = pending[i];
+        if (lhs.tensor->buffer == nullptr || lhs.tensor->data == nullptr) {
+            writer().disable("full capture output has no allocated storage; trace disabled");
+            return;
+        }
+        const uintptr_t lhs_begin = reinterpret_cast<uintptr_t>(lhs.tensor->data);
+        const uintptr_t lhs_end   = lhs_begin + lhs.data.size();
+        for (size_t j = i + 1; j < pending.size(); ++j) {
+            const pending_route & rhs = pending[j];
+            if (lhs.tensor->buffer != rhs.tensor->buffer || rhs.tensor->data == nullptr) {
+                continue;
+            }
+            const uintptr_t rhs_begin = reinterpret_cast<uintptr_t>(rhs.tensor->data);
+            const uintptr_t rhs_end   = rhs_begin + rhs.data.size();
+            if (lhs_begin < rhs_end && rhs_begin < lhs_end) {
+                writer().disable("full capture outputs overlap in arena storage; trace disabled");
+                return;
+            }
+        }
     }
 
     // The CPU backend has no async-get implementation, so get_async falls back

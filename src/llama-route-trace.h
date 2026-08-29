@@ -4,6 +4,7 @@
 
 struct ggml_backend_sched;
 struct ggml_cgraph;
+struct ggml_context;
 struct ggml_tensor;
 
 struct llama_route_trace_pass {
@@ -18,12 +19,14 @@ struct llama_route_trace_pass {
 
 bool llama_route_trace_enabled();
 
-// Keep routed IDs alive until the post-compute readback in full mode. This is a
-// no-op unless LONGSPEAR_ROUTE_TRACE_FULL=1.
-void llama_route_trace_mark_output(
-        struct ggml_tensor * tensor,
-        const char *         name,
-        uint16_t             top_k);
+// Snapshot routed IDs into a dedicated terminal graph output immediately after
+// top-k selection. No-op unless LONGSPEAR_ROUTE_TRACE_FULL=1.
+void llama_route_trace_capture(
+        struct ggml_context * ctx,
+        struct ggml_cgraph *  graph,
+        struct ggml_tensor *  tensor,
+        int                   layer,
+        uint16_t              top_k);
 
 // Open and flush the header before graph submission. Default mode registers a
 // callback for IDs already copied host-side by selective CPU-MoE offload.

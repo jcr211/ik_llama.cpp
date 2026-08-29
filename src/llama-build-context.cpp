@@ -1527,6 +1527,9 @@ llm_expert_gating_func_type   gating_op,
         }
     }
     cb(selected_experts, "ffn_moe_topk", il);
+    if (lctx.model.arch == LLM_ARCH_QWEN4EXP) {
+        llama_route_trace_capture(ctx, graph, selected_experts, il, static_cast<uint16_t>(n_expert_used));
+    }
     ggml_tensor * weights = ggml_get_rows(ctx,
             ggml_reshape_3d(ctx, probs, 1, n_expert, n_tokens), selected_experts); // [1, n_expert_used, n_tokens]
     cb(weights, "ffn_moe_weights", il);
@@ -2695,10 +2698,6 @@ ggml_cgraph * llm_build_context::llama_build_graph(
             //ggml_format_name(cur, "%s-%d", name, il);
         } else {
             ggml_set_name(cur, name);
-        }
-
-        if (model.arch == LLM_ARCH_QWEN4EXP) {
-            llama_route_trace_mark_output(cur, name, static_cast<uint16_t>(model.hparams.n_expert_used));
         }
 
         if (!lctx.cparams.offload_kqv) {
