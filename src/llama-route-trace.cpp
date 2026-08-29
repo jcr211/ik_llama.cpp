@@ -311,15 +311,23 @@ void llama_route_trace_collect(
         pending.push_back({ tensor, layer,
                 static_cast<uint16_t>(std::min<int64_t>(pass.n_rows, tensor->ne[1])),
                 std::vector<uint8_t>(ggml_nbytes(tensor)) });
-        pending_route & item = pending.back();
-        ggml_backend_tensor_get_async(backend, tensor, item.data.data(), 0, item.data.size());
     }
 
     if (pending.empty()) {
         return;
     }
 
-    // One gated synchronization covers every GPU-resident layer readback in the pass.
+    // The CPU backend has no async-get implementation, so get_async falls back
+    // to an immediate memcpy. Complete the graph first; this is also the only
+    // safe observation boundary for a CUDA-graph replay.
+    ggml_backend_sched_synchronize(sched);
+
+    for (pending_route & item : pending) {
+        ggml_backend_t backend = ggml_backend_sched_get_tensor_backend(sched, item.tensor);
+        ggml_backend_tensor_get_async(backend, item.tensor, item.data.data(), 0, item.data.size());
+    }
+
+    // Drain device-to-host copies queued after the compute synchronization.
     ggml_backend_sched_synchronize(sched);
 
     for (const pending_route & item : pending) {
