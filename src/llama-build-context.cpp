@@ -4,6 +4,7 @@
 #include "llama-model.h"
 #include "llama-context.h"
 #include "llama-delta-net.h"
+#include "llama-route-trace.h"
 
 #include "ggml.h"
 
@@ -2694,6 +2695,10 @@ ggml_cgraph * llm_build_context::llama_build_graph(
             //ggml_format_name(cur, "%s-%d", name, il);
         } else {
             ggml_set_name(cur, name);
+        }
+
+        if (model.arch == LLM_ARCH_QWEN4EXP) {
+            llama_route_trace_mark_output(cur, name, static_cast<uint16_t>(model.hparams.n_expert_used));
         }
 
         if (!lctx.cparams.offload_kqv) {

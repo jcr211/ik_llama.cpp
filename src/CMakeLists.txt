@@ -52,6 +52,8 @@ add_library(llama
             llama-load-tensors.cpp
             llama-build-context.h
             llama-build-context.cpp
+            llama-route-trace.h
+            llama-route-trace.cpp
             llama-model.h
             llama-model.cpp
             llama-reload-info.h

@@ -21,6 +21,7 @@
 #include "llama-dflash.h"
 #include "llama-dsv4.h"
 #include "llama-quantize.h"
+#include "llama-route-trace.h"
 
 #include "unicode.h"
 
@@ -6952,6 +6953,16 @@ static int llama_decode_internal(
         //fprintf(stderr, "%s: invoking llama_graph_compute\n", __func__);
         const int64_t vt_c0 = ggml_time_us();
         llama_graph_compute(lctx, gf, n_threads);
+        if (lctx.model.arch == LLM_ARCH_QWEN4EXP) {
+            const llama_hparams & trace_hparams = lctx.model.hparams;
+            llama_route_trace_collect(
+                    lctx.sched,
+                    gf,
+                    static_cast<uint16_t>(trace_hparams.n_expert),
+                    static_cast<uint16_t>(trace_hparams.n_expert_used),
+                    static_cast<uint16_t>(trace_hparams.n_layer),
+                    static_cast<uint16_t>(trace_hparams.n_layer - trace_hparams.nextn_predict_layers));
+        }
         g_vt_compute_us += ggml_time_us() - vt_c0;
         g_vt_nodes  = gf->n_nodes;
         g_vt_splits = ggml_backend_sched_get_n_splits(lctx.sched);
