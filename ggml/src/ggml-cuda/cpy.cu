@@ -582,6 +582,13 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
         } else {
             ggml_cpy_flt_cuda<float, float> (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
         }
+    } else if (src0->type == GGML_TYPE_I32 && src1->type == GGML_TYPE_I32) {
+        // same-width integer copy (route-trace capture tensors)
+        if (fast_cpy) {
+            ggml_cpy_flt_contiguous_cuda<int, int>(src0_ddc, src1_ddc, ne, main_stream, dest_ptrs_d, graph_cpynode_index);
+        } else {
+            ggml_cpy_flt_cuda<int, int> (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream, dest_ptrs_d, graph_cpynode_index);
+        }
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_BF16) {
         if (fast_cpy) {
             ggml_cpy_flt_contiguous_cuda<float, nv_bfloat16>(src0_ddc, src1_ddc, ne, main_stream, dest_ptrs_d, graph_cpynode_index);
@@ -695,6 +702,8 @@ void* ggml_cuda_cpy_fn(const ggml_tensor * src0, ggml_tensor * src1) {
         }
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F32) {
         return fast_cpy ? (void *)cpy_flt_contiguous<float, float> : (void*) cpy_flt<cpy_1_flt<float, float>>;
+    } else if (src0->type == GGML_TYPE_I32 && src1->type == GGML_TYPE_I32) {
+        return fast_cpy ? (void *)cpy_flt_contiguous<int, int> : (void*) cpy_flt<cpy_1_flt<int, int>>;
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_BF16) {
         return fast_cpy ? (void *)cpy_flt_contiguous<float, nv_bfloat16> : (void*) cpy_flt<cpy_1_flt<float, nv_bfloat16>>;
     } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_F16) {
