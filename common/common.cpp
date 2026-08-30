@@ -268,6 +268,11 @@ int32_t common_params_speculative::get_max_stage_n_max() const {
     return std::max(max_n_max, 0);
 }
 
+int32_t common_params_speculative::get_max_verify_batch_tokens() const {
+    const int32_t n_draft_max = get_max_stage_n_max();
+    return n_draft_max < INT_MAX ? n_draft_max + 1 : INT_MAX;
+}
+
 int32_t common_params_speculative::get_min_usable_stage_n_min() const {
     const auto resolved = get_resolved_stages();
     if (resolved.empty()) {

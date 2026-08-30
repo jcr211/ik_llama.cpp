@@ -279,6 +279,7 @@ struct common_params_speculative {
     bool needs_dft_model() const;
     void clear_dft();
     int32_t get_max_stage_n_max() const;
+    int32_t get_max_verify_batch_tokens() const;
     int32_t get_min_usable_stage_n_min() const;
 
 };

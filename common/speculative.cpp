@@ -1393,7 +1393,8 @@ common_speculative * common_speculative_init(
     }
 
     if (!configs.empty() && common_speculative_needs_checkpoint(target_model)) {
-        const int ckpt_tokens = std::max(1, params.get_max_stage_n_max() + 1);
+        // A verify batch contains the sampled root plus the longest draft from any stage.
+        const int ckpt_tokens = params.get_max_verify_batch_tokens();
         const int actual_mode = llama_spec_ckpt_init(ctx_tgt, params.spec_ckpt_mode, ckpt_tokens);
         if (actual_mode == LLAMA_SPEC_CKPT_NONE) {
             LOG_ERR("%s: failed to prepare speculative checkpoint mode '%s' during speculative init (max_tokens=%d)\n",

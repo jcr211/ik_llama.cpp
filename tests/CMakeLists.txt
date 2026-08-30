@@ -202,6 +202,8 @@ llama_build_and_test(
 )
 llama_build_and_test(test-regex-partial.cpp)
 
+llama_build_and_test(test-speculative-params.cpp)
+
 llama_build_and_test(test-iq4-ks-kt-decode.cpp)
 target_include_directories(test-iq4-ks-kt-decode PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src)
 

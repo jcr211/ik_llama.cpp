@@ -5099,8 +5099,12 @@ GGML_CALL static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t
     }
 
     if (use_cuda_graph) {
+        // REVIVE observes node properties rather than graph UIDs while a graph is disabled because a
+        // cgraph can retain its UID across allocator-driven pointer changes. Preserve that invariant
+        // after revival too: otherwise the first stable recapture is safe, but a later same-UID graph
+        // can replay the captured executable with stale tensor addresses.
         cuda_graph_update_required = is_cuda_graph_update_required(
-                graph, cgraph, cg_dbg2, cg_dbg2, cg_revive && graph->use_cpy_indirection);
+                graph, cgraph, cg_revive || cg_dbg2, cg_dbg2, cg_revive && graph->use_cpy_indirection);
 
         use_cuda_graph = check_node_graph_compatibility_and_refresh_copy_ops(graph, cgraph, use_cuda_graph, cuda_ctx->stream());
 
