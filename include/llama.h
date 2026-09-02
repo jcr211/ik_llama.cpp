@@ -1501,6 +1501,18 @@ LLAMA_API struct llama_grammar* llama_sampler_init_grammar_lazy_patterns(
     const llama_token* trigger_tokens,
     size_t num_trigger_tokens);
 
+/// @details Lazy grammar sampler with optional EOG suppression until a trigger matches.
+/// @param lazy_require_trigger When true, EOG tokens are rejected while the lazy grammar is awaiting its trigger.
+LLAMA_API struct llama_grammar* llama_sampler_init_grammar_lazy_patterns_ex(
+    const struct llama_vocab* vocab,
+    const char* grammar_str,
+    const char* grammar_root,
+    const char** trigger_patterns,
+    size_t num_trigger_patterns,
+    const llama_token* trigger_tokens,
+    size_t num_trigger_tokens,
+    bool lazy_require_trigger);
+
     ///  @details DRY sampler, designed by p-e-w, as described in: https://github.com/oobabooga/text-generation-webui/pull/5677, porting Koboldcpp implementation authored by pi6am: https://github.com/LostRuins/koboldcpp/pull/982
     LLAMA_API struct llama_sampler_dry * llama_sampler_init_dry(
         const struct llama_vocab* model,

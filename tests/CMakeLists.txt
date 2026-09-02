@@ -142,6 +142,8 @@ if (LLAMA_LLGUIDANCE)
     llama_target_and_test(test-grammar-llguidance.cpp ARGS ${CMAKE_CURRENT_SOURCE_DIR}/../models/ggml-vocab-llama-bpe.gguf)
 endif ()
 
+llama_target_and_test(test-grammar-lazy-trigger.cpp ARGS ${CMAKE_CURRENT_SOURCE_DIR}/../models/ggml-vocab-qwen2.gguf)
+
 if (NOT WIN32)
     # these tests are disabled on Windows because they use internal functions not exported with LLAMA_API
     #llama_target_and_test(test-sampling.cpp)

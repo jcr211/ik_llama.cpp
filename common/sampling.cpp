@@ -86,9 +86,10 @@ struct common_sampler * common_sampler_init(const struct llama_model * model, co
 
         if (!grammar_str.empty()) {
             grmr = params.grammar_lazy
-                ? llama_sampler_init_grammar_lazy_patterns(vocab, grammar_str.c_str(), "root",
+                ? llama_sampler_init_grammar_lazy_patterns_ex(vocab, grammar_str.c_str(), "root",
                     trigger_patterns_c.data(), trigger_patterns_c.size(),
-                    trigger_tokens.data(), trigger_tokens.size())
+                    trigger_tokens.data(), trigger_tokens.size(),
+                    params.grammar_lazy_require_trigger)
                 : llama_sampler_init_grammar(vocab, grammar_str.c_str(), "root");
             if (grmr) {
                 result->prev.resize(params.n_prev);
@@ -211,7 +212,7 @@ static void llama_grammar_reset(common_sampler * ctx) {
     }
 
     auto* grammar_new = llama_grammar_init_impl(ctx->grammar->vocab, ctx->grammar_str.c_str(), ctx->grammar_root.c_str(),
-        ctx->grammar->lazy, trigger_patterns_c.data(), trigger_patterns_c.size(),
+        ctx->grammar->lazy, ctx->grammar->lazy_require_trigger, trigger_patterns_c.data(), trigger_patterns_c.size(),
         ctx->grammar->trigger_tokens.data(), ctx->grammar->trigger_tokens.size());
 
     llama_grammar_free_impl(ctx->grammar);
@@ -499,7 +500,10 @@ static bool grammar_should_apply(struct common_sampler * gsmpl) {
         return true;
     }
     if (gsmpl->params.grammar_lazy) {
-        // if grammar is lazy, only apply when reasoning budget is not active
+        if (!gsmpl->grammar->awaiting_trigger || gsmpl->params.grammar_lazy_require_trigger) {
+            return true;
+        }
+        // while awaiting the trigger, only apply when reasoning budget is not active
         const auto state = common_reasoning_budget_get_state(gsmpl->rbudget);
         return state == REASONING_BUDGET_IDLE || state == REASONING_BUDGET_DONE;
     }
@@ -735,8 +739,10 @@ void common_sampler_accept(
     }
     ctx_sampling->prev.push_back(token);
 
-    // grammar_should_apply() checks the reasoning budget state, so calculate this before we accept
-    const auto accept_grammar = is_generated && grammar_should_apply(ctx_sampling);
+    // Lazy grammars must observe every generated token so their trigger can fire even when
+    // reasoning-budget state suppresses grammar constraints inside a thinking block.
+    const auto accept_grammar = is_generated && ctx_sampling->grammar &&
+        (ctx_sampling->params.grammar_lazy || grammar_should_apply(ctx_sampling));
     if (ctx_sampling->rbudget && is_generated) {
         common_reasoning_budget_accept(ctx_sampling->rbudget, token);
     }
