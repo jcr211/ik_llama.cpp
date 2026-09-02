@@ -522,6 +522,12 @@ node index.js
 
     `grammar`: Set grammar for grammar-based sampling.  Default: no grammar
 
+    `grammar_lazy`: Delay grammar constraints until one of `grammar_triggers` matches. Default: `false`
+
+    `grammar_lazy_require_trigger`: When `true` with a lazy grammar, reject every end-of-generation token until a trigger matches. This prevents a thinking model from ending inside its think block before a required trigger such as `</think>`; `max_tokens` remains the hard generation limit. It is a no-op for non-lazy grammars. Default: `false`
+
+    `grammar_triggers`: Triggers for a lazy grammar. Each entry contains `type` and `value`; type `0` is a token trigger (and also requires `token`), type `1` is a literal word, type `2` is a pattern, and type `3` is a full-match pattern. Default: `[]`
+
     `json_schema`: Set a JSON schema for grammar-based sampling (e.g. `{"items": {"type": "string"}, "minItems": 10, "maxItems": 100}` of a list of strings, or `{}` for any JSON). See [tests](../../tests/test-json-schema-to-grammar.cpp) for supported features.  Default: no JSON schema.
 
     `seed`: Set the random number generator (RNG) seed.  Default: `-1`, which is a random seed.
