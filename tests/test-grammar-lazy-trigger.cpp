@@ -10,6 +10,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 static common_sampler * make_sampler(const llama_model * model, bool lazy, bool require_trigger) {
@@ -86,7 +87,52 @@ static void accept_text(common_sampler * sampler, llama_context * ctx, const std
     }
 }
 
+static common_params_sampling make_envelope_params(const llama_vocab * vocab) {
+    common_params_sampling params;
+    params.grammar = { COMMON_GRAMMAR_TYPE_USER, R"(root ::= "</think>" "{" "}")" };
+    params.grammar_lazy = true;
+    params.grammar_triggers.push_back({ COMMON_GRAMMAR_TRIGGER_TYPE_WORD, "</think>" });
+    params.reasoning_budget_start = common_tokenize(vocab, "<think>", false, true);
+    params.reasoning_budget_end = common_tokenize(vocab, "</think>", false, true);
+    params.reasoning_budget_forced = params.reasoning_budget_end;
+    params.penalty_last_n = 0;
+    params.temp = 0.0f;
+    return params;
+}
+
+static void accept_generated_text(common_sampler * sampler, llama_context * ctx, const std::string & text) {
+    const llama_vocab * vocab = llama_model_get_vocab(llama_get_model(ctx));
+    const std::vector<llama_token> tokens = common_tokenize(vocab, text, false, true);
+    assert(!tokens.empty());
+    for (llama_token token : tokens) {
+        common_sampler_accept(sampler, ctx, token, true);
+    }
+}
+
+static std::vector<llama_token_data> make_envelope_candidates(
+        llama_token plain_token,
+        llama_token open_brace_token) {
+    return {
+        { plain_token,      10.0f, 0.0f },
+        { open_brace_token,  9.0f, 0.0f },
+    };
+}
+
+static void assert_envelope_grammar_applies(
+        common_sampler * sampler,
+        llama_context * ctx,
+        llama_token plain_token,
+        llama_token open_brace_token) {
+    auto candidates = make_envelope_candidates(plain_token, open_brace_token);
+    apply_grammar(sampler, ctx, candidates);
+    assert(std::isinf(candidates[0].logit));
+    assert(candidates[0].logit < 0.0f);
+    assert(candidates[1].logit == 9.0f);
+}
+
 int main(int argc, char ** argv) {
+    setvbuf(stdout, nullptr, _IONBF, 0);
+
     if (argc != 2) {
         fprintf(stderr, "usage: %s VOCAB_GGUF\n", argv[0]);
         return 1;
@@ -110,6 +156,13 @@ int main(int argc, char ** argv) {
     assert(!non_eog_tokens.empty());
     assert(!llama_vocab_is_eog(vocab, non_eog_tokens.front()));
     const llama_token non_eog = non_eog_tokens.front();
+
+    const std::vector<llama_token> plain_tokens = common_tokenize(vocab, "plain", false, true);
+    const std::vector<llama_token> open_brace_tokens = common_tokenize(vocab, "{", false, true);
+    assert(!plain_tokens.empty());
+    assert(!open_brace_tokens.empty());
+    const llama_token plain_token = plain_tokens.front();
+    const llama_token open_brace_token = open_brace_tokens.front();
 
     {
         common_sampler * sampler = make_sampler(model, true, true);
@@ -200,6 +253,95 @@ int main(int argc, char ** argv) {
 
         common_sampler_free(sampler);
         fprintf(stdout, "test_lazy_require_trigger_observes_trigger_during_reasoning: OK\n");
+    }
+
+    {
+        common_params_sampling params = make_envelope_params(vocab);
+        params.grammar_lazy_require_trigger = false;
+        params.reasoning_budget_tokens = 1024;
+        params.reasoning_budget_end = common_tokenize(vocab, "</reasoning>", false, true);
+
+        common_sampler * sampler = common_sampler_init(model, params);
+        assert(sampler != nullptr);
+        assert(sampler->grammar != nullptr);
+        assert(sampler->rbudget != nullptr);
+
+        accept_generated_text(sampler, ctx, "<think>");
+        assert(sampler->grammar->awaiting_trigger);
+
+        accept_generated_text(sampler, ctx, "some thinking text </think>");
+        assert(!sampler->grammar->awaiting_trigger);
+        assert_envelope_grammar_applies(sampler, ctx, plain_token, open_brace_token);
+
+        common_sampler_free(sampler);
+        fprintf(stdout, "test_lazy_default_observes_trigger_while_reasoning_counting: OK\n");
+    }
+
+    {
+        common_params_sampling params = make_envelope_params(vocab);
+        params.grammar_lazy_require_trigger = false;
+        params.reasoning_budget_tokens = 0;
+
+        common_sampler * sampler = common_sampler_init(model, params);
+        assert(sampler != nullptr);
+        assert(sampler->grammar != nullptr);
+        assert(sampler->rbudget != nullptr);
+
+        accept_generated_text(sampler, ctx, "<think>");
+        assert(sampler->grammar->awaiting_trigger);
+
+        for (llama_token expected : params.reasoning_budget_forced) {
+            common_sampler_accept(sampler, ctx, expected, true);
+        }
+        assert(!sampler->grammar->awaiting_trigger);
+        assert_envelope_grammar_applies(sampler, ctx, plain_token, open_brace_token);
+
+        common_sampler_free(sampler);
+        fprintf(stdout, "test_lazy_default_observes_budget_forced_trigger: OK\n");
+    }
+
+    {
+        common_params_sampling params;
+        params.grammar = { COMMON_GRAMMAR_TYPE_USER, R"(root ::= "<think>" "{" "}")" };
+        params.reasoning_budget_start = common_tokenize(vocab, "<think>", false, true);
+        params.reasoning_budget_end = common_tokenize(vocab, "</think>", false, true);
+        params.reasoning_budget_forced = params.reasoning_budget_end;
+
+        params.reasoning_budget_tokens = -1;
+        common_sampler * without_budget = common_sampler_init(model, params);
+        assert(without_budget != nullptr);
+        assert(without_budget->grammar != nullptr);
+        assert(without_budget->rbudget == nullptr);
+
+        params.reasoning_budget_tokens = 1024;
+        common_sampler * with_budget = common_sampler_init(model, params);
+        assert(with_budget != nullptr);
+        assert(with_budget->grammar != nullptr);
+        assert(with_budget->rbudget != nullptr);
+
+        const llama_token start_token = params.reasoning_budget_start.front();
+        auto first_token_without_budget = make_envelope_candidates(plain_token, start_token);
+        auto first_token_with_budget = first_token_without_budget;
+        apply_grammar(without_budget, ctx, first_token_without_budget);
+        apply_grammar(with_budget, ctx, first_token_with_budget);
+        assert_logits_equal(first_token_with_budget, first_token_without_budget);
+        assert(std::isinf(first_token_with_budget[0].logit));
+        assert(first_token_with_budget[1].logit == 9.0f);
+
+        accept_generated_text(without_budget, ctx, "<think>");
+        accept_generated_text(with_budget, ctx, "<think>");
+
+        auto next_token_without_budget = make_envelope_candidates(plain_token, open_brace_token);
+        auto next_token_with_budget = next_token_without_budget;
+        apply_grammar(without_budget, ctx, next_token_without_budget);
+        apply_grammar(with_budget, ctx, next_token_with_budget);
+        assert_logits_equal(next_token_with_budget, next_token_without_budget);
+        assert(std::isinf(next_token_with_budget[0].logit));
+        assert(next_token_with_budget[1].logit == 9.0f);
+
+        common_sampler_free(with_budget);
+        common_sampler_free(without_budget);
+        fprintf(stdout, "test_non_lazy_grammar_with_reasoning_budget_is_byte_identical: OK\n");
     }
 
     llama_free(ctx);
