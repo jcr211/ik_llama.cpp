@@ -150,6 +150,7 @@ typedef struct common_params_sampling {
     //std::string grammar;  // optional BNF-like grammar to constrain sampling
     common_grammar              grammar;      // optional grammar constraint (user / output-format / tool-calls)
     bool                                grammar_lazy = false;
+    bool                grammar_lazy_require_trigger = false;
     std::vector<common_grammar_trigger> grammar_triggers; // optional triggers (for lazy grammars)
     std::set<llama_token>               preserved_tokens;
     // Classifier-Free Guidance

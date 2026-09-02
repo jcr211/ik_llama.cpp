@@ -1328,6 +1328,8 @@ bool server_context::launch_slot_with_task(server_slot& slot, server_task& task)
         }
         slot.sparams.grammar_lazy = json_value(data, "grammar_lazy", default_sparams.grammar_lazy);
         LLAMA_LOG_DEBUG("Grammar lazy: %s\n", slot.sparams.grammar_lazy ? "true" : "false");
+        slot.sparams.grammar_lazy_require_trigger = json_value(data, "grammar_lazy_require_trigger", default_sparams.grammar_lazy_require_trigger);
+        LLAMA_LOG_DEBUG("Grammar lazy require trigger: %s\n", slot.sparams.grammar_lazy_require_trigger ? "true" : "false");
     }
 
     if (slot.params.cache_prompt && slot.ga_n != 1) {
@@ -2369,6 +2371,7 @@ json server_context::get_formatted_generation(const server_slot& slot) const {
         {"n_probs",                   slot.sparams.n_probs},
         {"min_keep",                  slot.sparams.min_keep},
         {"grammar",                   slot.sparams.grammar.grammar},
+        {"grammar_lazy_require_trigger", slot.sparams.grammar_lazy_require_trigger},
         {"grammar_triggers",          grammar_triggers},
         {"preserved_tokens",          slot.sparams.preserved_tokens},
         {"chat_format",               common_chat_format_name(slot.params.chat_parser_params.format)},
