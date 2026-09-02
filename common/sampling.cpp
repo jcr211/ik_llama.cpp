@@ -500,10 +500,10 @@ static bool grammar_should_apply(struct common_sampler * gsmpl) {
         return true;
     }
     if (gsmpl->params.grammar_lazy) {
-        if (gsmpl->params.grammar_lazy_require_trigger && gsmpl->grammar->awaiting_trigger) {
+        if (!gsmpl->grammar->awaiting_trigger || gsmpl->params.grammar_lazy_require_trigger) {
             return true;
         }
-        // if grammar is lazy, only apply when reasoning budget is not active
+        // while awaiting the trigger, only apply when reasoning budget is not active
         const auto state = common_reasoning_budget_get_state(gsmpl->rbudget);
         return state == REASONING_BUDGET_IDLE || state == REASONING_BUDGET_DONE;
     }
@@ -739,8 +739,10 @@ void common_sampler_accept(
     }
     ctx_sampling->prev.push_back(token);
 
-    // grammar_should_apply() checks the reasoning budget state, so calculate this before we accept
-    const auto accept_grammar = is_generated && grammar_should_apply(ctx_sampling);
+    // Lazy grammars must observe every generated token so their trigger can fire even when
+    // reasoning-budget state suppresses grammar constraints inside a thinking block.
+    const auto accept_grammar = is_generated && ctx_sampling->grammar &&
+        (ctx_sampling->params.grammar_lazy || grammar_should_apply(ctx_sampling));
     if (ctx_sampling->rbudget && is_generated) {
         common_reasoning_budget_accept(ctx_sampling->rbudget, token);
     }
