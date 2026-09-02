@@ -522,7 +522,7 @@ node index.js
 
     `grammar`: Set grammar for grammar-based sampling.  Default: no grammar
 
-    `grammar_lazy`: Delay grammar constraints until one of `grammar_triggers` matches. Default: `false`
+    `grammar_lazy`: Delay grammar constraints until one of `grammar_triggers` matches. The lazy trigger is observed inside reasoning blocks; the grammar constrains only after it fires. Default: `false`
 
     `grammar_lazy_require_trigger`: When `true` with a lazy grammar, reject every end-of-generation token until a trigger matches. This prevents a thinking model from ending inside its think block before a required trigger such as `</think>`; `max_tokens` remains the hard generation limit. It is a no-op for non-lazy grammars. Default: `false`
 
