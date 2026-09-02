@@ -880,13 +880,23 @@ json oaicompat_chat_params_parse(
         llama_params["grammar"] = chat_params.grammar;
         llama_params["grammar_type"] = std::string("tool_calls");
     }
-    llama_params["grammar_lazy"] = chat_params.grammar_lazy;
-    auto grammar_triggers = json::array();
-    for (const auto & trigger : chat_params.grammar_triggers) {
-        server_grammar_trigger ct(trigger);
-        grammar_triggers.push_back(ct.to_json());
+    // A caller that supplies its own "grammar" (no tools) may also supply "grammar_lazy" /
+    // "grammar_triggers" so the grammar activates only after a trigger (e.g. "</think>",
+    // letting a thinking model reason unconstrained first). The template produced no
+    // tool-call grammar in that case, so its grammar_lazy=false / empty trigger list must
+    // not overwrite the caller's fields; they are copied verbatim by the loop below.
+    const bool caller_lazy_grammar = inputs.tools.empty()
+        && body.contains("grammar")
+        && (body.contains("grammar_lazy") || body.contains("grammar_triggers"));
+    if (!caller_lazy_grammar) {
+        llama_params["grammar_lazy"] = chat_params.grammar_lazy;
+        auto grammar_triggers = json::array();
+        for (const auto & trigger : chat_params.grammar_triggers) {
+            server_grammar_trigger ct(trigger);
+            grammar_triggers.push_back(ct.to_json());
+        }
+        llama_params["grammar_triggers"] = grammar_triggers;
     }
-    llama_params["grammar_triggers"] = grammar_triggers;
     llama_params["preserved_tokens"] = chat_params.preserved_tokens;
     llama_params["generation_prompt"] = chat_params.generation_prompt;
 
