@@ -123,7 +123,7 @@ static common_chat_templates_ptr read_templates(const std::string & path) {
 
 static std::unique_ptr<llama_grammar> build_grammar(const std::string & grammar_str) {
     return std::unique_ptr<llama_grammar>(
-        llama_grammar_init_impl(nullptr, grammar_str.c_str(), "root", false, nullptr, 0, nullptr, 0));
+        llama_grammar_init_impl(nullptr, grammar_str.c_str(), "root", false, false, nullptr, 0, nullptr, 0));
 }
 
 // Helper to format a code point as a readable string

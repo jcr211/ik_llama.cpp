@@ -16,7 +16,7 @@
 using json = nlohmann::ordered_json;
 
 static llama_grammar * build_grammar_with_root(const std::string & grammar_str, const char * grammar_root) {
-    return llama_grammar_init_impl(nullptr, grammar_str.c_str(), grammar_root, false, nullptr, 0, nullptr, 0);
+    return llama_grammar_init_impl(nullptr, grammar_str.c_str(), grammar_root, false, false, nullptr, 0, nullptr, 0);
 }
 
 static llama_grammar * build_grammar(const std::string & grammar_str) {

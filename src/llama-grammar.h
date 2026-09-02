@@ -137,6 +137,7 @@ struct llama_grammar {
     // we still have trigger_tokens for non-lazy grammars to force printing of special trigger tokens.
     // (useful e.g. for tool_choice=required)
     bool                     lazy = false;
+    bool                     lazy_require_trigger = false;
     bool                     awaiting_trigger = false; // Initialized to true for lazy grammars only
     std::string              trigger_buffer;           // Output buffered by lazy grammar. Will be cleared once trigger is found.
     std::vector<token_pos>   trigger_buffer_positions; // Tokens buffered by lazy grammar. Used to replay when a trigger is found.
@@ -161,6 +162,7 @@ struct llama_grammar* llama_grammar_init_impl(
     const char* grammar_str,
     const char* grammar_root,
     bool lazy,
+    bool lazy_require_trigger,
     const char** trigger_patterns,
     size_t num_trigger_patterns,
     const llama_token* trigger_tokens,

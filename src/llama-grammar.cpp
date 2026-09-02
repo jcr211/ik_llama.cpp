@@ -1221,6 +1221,7 @@ struct llama_grammar* llama_grammar_init_impl(
         std::move(stacks),
         /* .partial_utf8 = */             {},
         /* .lazy = */                     false,
+        /* .lazy_require_trigger = */     false,
         /* .awaiting_trigger = */         false,
         /* .trigger_buffer = */           "",
         /* .trigger_buffer_positions = */ {},
@@ -1234,6 +1235,7 @@ struct llama_grammar* llama_grammar_init_impl(
     const char* grammar_str,
     const char* grammar_root,
     bool lazy,
+    bool lazy_require_trigger,
     const char** trigger_patterns,
     size_t num_trigger_patterns,
     const llama_token* trigger_tokens,
@@ -1329,6 +1331,7 @@ struct llama_grammar* llama_grammar_init_impl(
         std::move(stacks),
         /* .partial_utf8 = */             {},
         /* .lazy = */                     lazy,
+        /* .lazy_require_trigger = */     lazy_require_trigger,
         /* .awaiting_trigger = */         lazy,
         /* .trigger_buffer = */           "",
         /* .trigger_buffer_positions = */ {},
@@ -1351,6 +1354,7 @@ struct llama_grammar* llama_grammar_clone_impl(const struct llama_grammar& gramm
         grammar.stacks,
         grammar.partial_utf8,
         grammar.lazy,
+        grammar.lazy_require_trigger,
         grammar.awaiting_trigger,
         grammar.trigger_buffer,
         grammar.trigger_buffer_positions,
@@ -1378,6 +1382,13 @@ void llama_grammar_sample_impl(const struct llama_grammar * grammar, const struc
     GGML_ASSERT(grammar);
     GGML_ASSERT(vocab);
     if (grammar->awaiting_trigger) {
+        if (grammar->lazy_require_trigger) {
+            for (size_t i = 0; i < candidates->size; ++i) {
+                if (vocab->is_eog(candidates->data[i].id)) {
+                    candidates->data[i].logit = -INFINITY;
+                }
+            }
+        }
         return;
     }
     int64_t t_start_sample_us = ggml_time_us();

@@ -1306,6 +1306,7 @@ static struct llama_grammar* llama_sampler_init_grammar_impl(
     const char* grammar_str,
     const char* grammar_root,
     bool lazy,
+    bool lazy_require_trigger,
     const char** trigger_words,
     size_t num_trigger_words,
     const llama_token* trigger_tokens,
@@ -1325,7 +1326,7 @@ static void llama_sampler_grammar_reset(struct llama_sampler* smpl) {
         trigger_patterns_c.push_back(trigger_pattern.pattern.c_str());
     }
     auto* grammar_new = llama_grammar_init_impl(ctx->grammar->vocab, ctx->grammar_str.c_str(), ctx->grammar_root.c_str(),
-        ctx->grammar->lazy, trigger_patterns_c.data(), trigger_patterns_c.size(),
+        ctx->grammar->lazy, ctx->grammar->lazy_require_trigger, trigger_patterns_c.data(), trigger_patterns_c.size(),
         ctx->grammar->trigger_tokens.data(), ctx->grammar->trigger_tokens.size());
 
     llama_grammar_free_impl(ctx->grammar);
@@ -1377,6 +1378,7 @@ struct llama_grammar* llama_sampler_init_grammar_impl(
     const char* grammar_str,
     const char* grammar_root,
     bool lazy,
+    bool lazy_require_trigger,
     const char** trigger_words,
     size_t num_trigger_words,
     const llama_token* trigger_tokens,
@@ -1404,7 +1406,8 @@ struct llama_grammar* llama_sampler_init_grammar_impl(
             trigger_patterns = &trigger_pattern_c;
             num_trigger_patterns = 1;
         }
-        grammar = llama_grammar_init_impl(vocab, grammar_str, grammar_root, lazy, trigger_patterns, num_trigger_patterns, trigger_tokens, num_trigger_tokens);
+        grammar = llama_grammar_init_impl(vocab, grammar_str, grammar_root, lazy, lazy_require_trigger,
+            trigger_patterns, num_trigger_patterns, trigger_tokens, num_trigger_tokens);
         if (!grammar) {
             return nullptr;
         }
@@ -1418,7 +1421,8 @@ struct llama_grammar* llama_sampler_init_grammar(
     const struct llama_vocab* vocab,
     const char* grammar_str,
     const char* grammar_root) {
-    return llama_sampler_init_grammar_impl(vocab, grammar_str, grammar_root, /* lazy= */ false, nullptr, 0, nullptr, 0, nullptr, 0);
+    return llama_sampler_init_grammar_impl(vocab, grammar_str, grammar_root,
+        /* lazy= */ false, /* lazy_require_trigger= */ false, nullptr, 0, nullptr, 0, nullptr, 0);
 }
 
 struct llama_grammar* llama_sampler_init_grammar_lazy(
@@ -1429,7 +1433,9 @@ struct llama_grammar* llama_sampler_init_grammar_lazy(
     size_t num_trigger_words,
     const llama_token* trigger_tokens,
     size_t num_trigger_tokens) {
-    return llama_sampler_init_grammar_impl(vocab, grammar_str, grammar_root, /* lazy= */ true, trigger_words, num_trigger_words, trigger_tokens, num_trigger_tokens, nullptr, 0);
+    return llama_sampler_init_grammar_impl(vocab, grammar_str, grammar_root,
+        /* lazy= */ true, /* lazy_require_trigger= */ false,
+        trigger_words, num_trigger_words, trigger_tokens, num_trigger_tokens, nullptr, 0);
 }
 
 struct llama_grammar* llama_sampler_init_grammar_lazy_patterns(
@@ -1440,5 +1446,21 @@ struct llama_grammar* llama_sampler_init_grammar_lazy_patterns(
     size_t num_trigger_patterns,
     const llama_token* trigger_tokens,
     size_t num_trigger_tokens) {
-    return llama_sampler_init_grammar_impl(vocab, grammar_str, grammar_root, /* lazy= */ true, nullptr, 0, trigger_tokens, num_trigger_tokens, trigger_patterns, num_trigger_patterns);
+    return llama_sampler_init_grammar_impl(vocab, grammar_str, grammar_root,
+        /* lazy= */ true, /* lazy_require_trigger= */ false,
+        nullptr, 0, trigger_tokens, num_trigger_tokens, trigger_patterns, num_trigger_patterns);
+}
+
+struct llama_grammar* llama_sampler_init_grammar_lazy_patterns_ex(
+    const struct llama_vocab* vocab,
+    const char* grammar_str,
+    const char* grammar_root,
+    const char** trigger_patterns,
+    size_t num_trigger_patterns,
+    const llama_token* trigger_tokens,
+    size_t num_trigger_tokens,
+    bool lazy_require_trigger) {
+    return llama_sampler_init_grammar_impl(vocab, grammar_str, grammar_root,
+        /* lazy= */ true, lazy_require_trigger,
+        nullptr, 0, trigger_tokens, num_trigger_tokens, trigger_patterns, num_trigger_patterns);
 }

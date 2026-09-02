@@ -211,7 +211,7 @@ static void llama_grammar_reset(common_sampler * ctx) {
     }
 
     auto* grammar_new = llama_grammar_init_impl(ctx->grammar->vocab, ctx->grammar_str.c_str(), ctx->grammar_root.c_str(),
-        ctx->grammar->lazy, trigger_patterns_c.data(), trigger_patterns_c.size(),
+        ctx->grammar->lazy, ctx->grammar->lazy_require_trigger, trigger_patterns_c.data(), trigger_patterns_c.size(),
         ctx->grammar->trigger_tokens.data(), ctx->grammar->trigger_tokens.size());
 
     llama_grammar_free_impl(ctx->grammar);
