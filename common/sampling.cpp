@@ -500,6 +500,9 @@ static bool grammar_should_apply(struct common_sampler * gsmpl) {
         return true;
     }
     if (gsmpl->params.grammar_lazy) {
+        if (gsmpl->params.grammar_lazy_require_trigger && gsmpl->grammar->awaiting_trigger) {
+            return true;
+        }
         // if grammar is lazy, only apply when reasoning budget is not active
         const auto state = common_reasoning_budget_get_state(gsmpl->rbudget);
         return state == REASONING_BUDGET_IDLE || state == REASONING_BUDGET_DONE;

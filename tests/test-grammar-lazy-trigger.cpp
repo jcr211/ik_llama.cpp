@@ -123,6 +123,12 @@ int main(int argc, char ** argv) {
         assert_eog_masked(candidates, eog_tokens.size());
         assert(candidates.back().logit == non_eog_logit);
 
+        llama_grammar * cloned = llama_grammar_copy(sampler->grammar);
+        assert(cloned != nullptr);
+        assert(cloned->lazy_require_trigger);
+        assert(cloned->awaiting_trigger);
+        llama_grammar_free(cloned);
+
         accept_text(sampler, ctx, "trigger");
         assert(!sampler->grammar->awaiting_trigger);
 
@@ -165,6 +171,35 @@ int main(int argc, char ** argv) {
 
         common_sampler_free(sampler);
         fprintf(stdout, "test_lazy_require_trigger_non_lazy_noop: OK\n");
+    }
+
+    {
+        common_params_sampling params;
+        params.grammar = { COMMON_GRAMMAR_TYPE_USER, R"(root ::= "trigger")" };
+        params.grammar_lazy = true;
+        params.grammar_lazy_require_trigger = true;
+        params.grammar_triggers.push_back({ COMMON_GRAMMAR_TRIGGER_TYPE_WORD, "trigger" });
+        params.reasoning_budget_start = common_tokenize(vocab, "start", false, true);
+        params.reasoning_budget_end = common_tokenize(vocab, "trigger", false, true);
+        params.reasoning_budget_forced = params.reasoning_budget_end;
+
+        common_sampler * sampler = common_sampler_init(model, params);
+        assert(sampler != nullptr);
+        assert(sampler->grammar != nullptr);
+        assert(sampler->rbudget != nullptr);
+
+        for (llama_token token : params.reasoning_budget_start) {
+            common_sampler_accept(sampler, ctx, token, true);
+        }
+        assert(sampler->grammar->awaiting_trigger);
+
+        for (llama_token token : params.reasoning_budget_end) {
+            common_sampler_accept(sampler, ctx, token, true);
+        }
+        assert(!sampler->grammar->awaiting_trigger);
+
+        common_sampler_free(sampler);
+        fprintf(stdout, "test_lazy_require_trigger_observes_trigger_during_reasoning: OK\n");
     }
 
     llama_free(ctx);
