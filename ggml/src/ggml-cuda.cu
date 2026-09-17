@@ -525,7 +525,38 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
 };
 #endif // !defined(GGML_USE_HIPBLAS) && !defined(GGML_CUDA_NO_VMM) && !defined(GGML_USE_MUSA)
 
+// Diagnostic pool: every allocation is its own cudaMalloc and every free is a cudaFree, so
+// compute-sanitizer memcheck (with --padding) bounds-checks each LOGICAL buffer instead of the pool
+// chunk it was carved from. Sub-allocation overruns (e.g. the DSA inv_sum sizing bug) are invisible
+// on the VMM/legacy pools; on this pool they are reported at the exact kernel line. Slow — never for
+// serving. Enabled at runtime with GGML_CUDA_POOL_EXACT=1 (any build).
+struct ggml_cuda_pool_exact : public ggml_cuda_pool {
+    int device;
+    size_t live_bytes = 0;
+
+    explicit ggml_cuda_pool_exact(int device) : device(device) {}
+
+    void * alloc(size_t size, size_t * actual_size) override {
+        ggml_cuda_set_device(device);
+        void * ptr = nullptr;
+        CUDA_CHECK(cudaMalloc(&ptr, size));
+        *actual_size = size;
+        live_bytes += size;
+        return ptr;
+    }
+
+    void free(void * ptr, size_t size) override {
+        ggml_cuda_set_device(device);
+        CUDA_CHECK(cudaFree(ptr));
+        live_bytes -= size;
+    }
+};
+
 std::unique_ptr<ggml_cuda_pool> ggml_backend_cuda_context::new_pool_for_device(int device) {
+    if (getenv("GGML_CUDA_POOL_EXACT") != nullptr) {
+        GGML_CUDA_LOG_INFO("GGML_CUDA_POOL_EXACT set: device %d uses the exact-allocation diagnostic pool (slow)", device);
+        return std::unique_ptr<ggml_cuda_pool>(new ggml_cuda_pool_exact(device));
+    }
 #if !defined(GGML_USE_HIPBLAS) && !defined(GGML_CUDA_NO_VMM) && !defined(GGML_USE_MUSA)
     if (ggml_cuda_info().devices[device].vmm) {
         return std::unique_ptr<ggml_cuda_pool>(new ggml_cuda_pool_vmm(device));
