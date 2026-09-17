@@ -292,7 +292,12 @@ bool ggml_cuda_dsa_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) 
     ggml_cuda_pool_alloc<float> kqv32(ctx.pool(), kqv_size);
     ggml_cuda_pool_alloc<half> mask16(ctx.pool(), mask_size);
     ggml_cuda_pool_alloc<half> k16(ctx.pool(), k_cache_size);
-    ggml_cuda_pool_alloc<float> inv_sum(ctx.pool(), max_rows);
+    // inv_sum is indexed per (query head, row): the softmax writes store_inv_sum[rowx] for
+    // rowx in [0, Q->ne[2]*nrows) and k_copy_dst reads inv_sum[i / ncols] over the same range,
+    // so it must hold max_rows * Q->ne[2] entries, not max_rows (driver 616.92 exposed the overrun).
+    GGML_ASSERT(Q->ne[2] > 0);
+    GGML_ASSERT((size_t) max_rows <= SIZE_MAX / (size_t) Q->ne[2]);
+    ggml_cuda_pool_alloc<float> inv_sum(ctx.pool(), (size_t) max_rows * (size_t) Q->ne[2]);
     ggml_cuda_pool_alloc<half> v16(ctx.pool());
     size_t v_offset = 0;
     if (is_k_view) {
