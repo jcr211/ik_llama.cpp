@@ -3609,6 +3609,7 @@ static __global__ void mul_mat_q_id(
                 return;
             }
 
+            const int tile_cols = min(mmq_x, col_diff - jt*mmq_x);
             // __syncthreads(); // There is no previous tile that could cause a race condition.
 #pragma unroll
             for (int j0 = 0; j0 < mmq_x; j0 += nwarps*warp_size) {
@@ -3618,7 +3619,7 @@ static __global__ void mul_mat_q_id(
                     break;
                 }
 
-                ids_dst_shared[j] = ids_dst[col_low + jt*mmq_x + j];
+                ids_dst_shared[j] = j < tile_cols ? ids_dst[col_low + jt*mmq_x + j] : 0;
             }
             __syncthreads();
         }
@@ -3654,7 +3655,7 @@ static __global__ void mul_mat_q_id(
     int kb0_start = kbc % blocks_per_ne00;
     int kb0_stop  = min(blocks_per_ne00, kb0_start + kbc_stop - kbc);
     while (kbc < kbc_stop && kb0_stop == blocks_per_ne00) {
-        int tmp = kbc;
+        int64_t tmp = kbc;
         const int it = tmp / (nsamples_y*nchannels_y*ntx*blocks_per_ne00);
         tmp -= it * (nsamples_y*nchannels_y*ntx*blocks_per_ne00);
         const int wt = tmp / (nchannels_y*ntx*blocks_per_ne00);
@@ -3688,6 +3689,7 @@ static __global__ void mul_mat_q_id(
                 continue;
             }
 
+            const int tile_cols = min(mmq_x, col_diff - jt*mmq_x);
             __syncthreads();
 #pragma unroll
             for (int j0 = 0; j0 < mmq_x; j0 += nwarps*warp_size) {
@@ -3697,7 +3699,7 @@ static __global__ void mul_mat_q_id(
                     break;
                 }
 
-                ids_dst_shared[j] = ids_dst[col_low + jt*mmq_x + j];
+                ids_dst_shared[j] = j < tile_cols ? ids_dst[col_low + jt*mmq_x + j] : 0;
             }
             __syncthreads();
         }
@@ -3727,7 +3729,7 @@ static __global__ void mul_mat_q_id(
         return;
     }
 
-    int tmp = kbc;
+    int64_t tmp = kbc;
     const int it = tmp / (nsamples_y*nchannels_y*ntx*blocks_per_ne00);
     tmp -= it * (nsamples_y*nchannels_y*ntx*blocks_per_ne00);
     const int wt = tmp / (nchannels_y*ntx*blocks_per_ne00);
@@ -3821,6 +3823,29 @@ static __global__ void mul_mat_q_stream_k_fixup_id(
         return;
     }
 
+    // ncols_max defines a rectangular tile domain for every expert, while
+    // expert_bounds defines the ragged per-expert domain. Producer blocks skip
+    // rectangular holes; the fixup must apply the same predicate before reading
+    // the producer-owned temporary slot.
+    int64_t tmp = kbc0;
+    const int it = tmp / (nsamples_y*nchannels_y*ntx*blocks_per_ne00);
+    tmp -= int64_t(it) * (nsamples_y*nchannels_y*ntx*blocks_per_ne00);
+    const int wt = tmp / (nchannels_y*ntx*blocks_per_ne00);
+    tmp -= int64_t(wt) * (nchannels_y*ntx*blocks_per_ne00);
+    const int zt = tmp / (ntx*blocks_per_ne00);
+    tmp -= int64_t(zt) * (ntx*blocks_per_ne00);
+    const int jt = tmp / blocks_per_ne00;
+
+    int col_low  = 0;
+    int col_diff = ncols_dst;
+    if (ids_dst) {
+        col_low  = expert_bounds[zt + 0];
+        col_diff = expert_bounds[zt + 1] - col_low;
+        if (int64_t(jt)*mmq_x >= col_diff) {
+            return;
+        }
+    }
+
     bool any_fixup = false;
 
     // Iterate over previous blocks and sum up partial sums written to fixup buffer.
@@ -3863,15 +3888,6 @@ static __global__ void mul_mat_q_stream_k_fixup_id(
         return;
     }
 
-    int tmp = kbc0;
-    const int it = tmp / (nsamples_y*nchannels_y*ntx*blocks_per_ne00);
-    tmp -= it * (nsamples_y*nchannels_y*ntx*blocks_per_ne00);
-    const int wt = tmp / (nchannels_y*ntx*blocks_per_ne00);
-    tmp -= wt * (nchannels_y*ntx*blocks_per_ne00);
-    const int zt = tmp / (ntx*blocks_per_ne00);
-    tmp -= zt * (ntx*blocks_per_ne00);
-    const int jt = tmp / blocks_per_ne00;
-
     if (!ids_dst) {
         const int offset_dst = wt*stride_sample_dst + zt*stride_channel_dst + jt*mmq_x*stride_col_dst + it*mmq_y;
         dst += offset_dst;
@@ -3902,12 +3918,10 @@ static __global__ void mul_mat_q_stream_k_fixup_id(
     }
 
     __shared__ int ids_dst_shared[mmq_x];
-    const int col_low  = expert_bounds[zt + 0];
-    const int col_high = expert_bounds[zt + 1];
-    const int col_diff = col_high - col_low;
+    const int tile_cols = min(mmq_x, col_diff - jt*mmq_x);
 
     for (int j = threadIdx.y*warp_size + threadIdx.x; j < mmq_x; j += nwarps*warp_size) {
-        ids_dst_shared[j] = ids_dst[col_low + jt*mmq_x + j];
+        ids_dst_shared[j] = j < tile_cols ? ids_dst[col_low + jt*mmq_x + j] : 0;
     }
     __syncthreads();
 
