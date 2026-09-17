@@ -530,24 +530,45 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
 // chunk it was carved from. Sub-allocation overruns (e.g. the DSA inv_sum sizing bug) are invisible
 // on the VMM/legacy pools; on this pool they are reported at the exact kernel line. Slow — never for
 // serving. Enabled at runtime with GGML_CUDA_POOL_EXACT=1 (any build).
+// Freed blocks are cached by EXACT size and only returned to the driver when the pool dies: CUDA graphs
+// replay kernels with the device pointers captured on the first pass, so a pool that cudaFree'd on free
+// would make every replay write released memory (false "out of bounds" at the first kernel of the graph,
+// then a sticky launch failure). Reuse is exact-size only, so --padding bounds stay per logical buffer.
 struct ggml_cuda_pool_exact : public ggml_cuda_pool {
     int device;
     size_t live_bytes = 0;
+    std::vector<std::pair<size_t, void *>> cache;
 
     explicit ggml_cuda_pool_exact(int device) : device(device) {}
+
+    ~ggml_cuda_pool_exact() {
+        ggml_cuda_set_device(device);
+        for (auto & e : cache) {
+            (void) cudaFree(e.second);
+        }
+    }
 
     void * alloc(size_t size, size_t * actual_size) override {
         ggml_cuda_set_device(device);
         void * ptr = nullptr;
-        CUDA_CHECK(cudaMalloc(&ptr, size));
+        for (size_t i = 0; i < cache.size(); ++i) {
+            if (cache[i].first == size) {
+                ptr = cache[i].second;
+                cache[i] = cache.back();
+                cache.pop_back();
+                break;
+            }
+        }
+        if (ptr == nullptr) {
+            CUDA_CHECK(cudaMalloc(&ptr, size));
+        }
         *actual_size = size;
         live_bytes += size;
         return ptr;
     }
 
     void free(void * ptr, size_t size) override {
-        ggml_cuda_set_device(device);
-        CUDA_CHECK(cudaFree(ptr));
+        cache.emplace_back(size, ptr);
         live_bytes -= size;
     }
 };
