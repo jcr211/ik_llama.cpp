@@ -9,21 +9,53 @@ static inline bool v_is_k_view(const ggml_tensor * K, const ggml_tensor * V) {
     return v_data >= k_data && v_data + v_row_size <= k_data + k_row_size;
 }
 
-static __global__ void k_prepare_mask(int nidx, const int * __restrict__ idx, const half * __restrict__ m_in,
-        half * __restrict__ m_out, size_t stride_idx, size_t stride_m) {
+// LONGSPEAR DSA index guard: the indexer's top-k rows are gathered from K/V and the mask by raw index; only
+// the negative side used to be clamped. An index >= n_kv reads outside the tensor (silently inside the KV
+// pool, or a hard fault). Such indices are now treated as masked slots AND counted in a host-mapped counter
+// that the crash-context printer and `[vt]` telemetry can read without a CUDA call.
+static unsigned long long * g_dsa_oob_host = nullptr;
+static unsigned long long * g_dsa_oob_dev  = nullptr;
+
+static void dsa_oob_counter_init() {
+    if (g_dsa_oob_host == nullptr) {
+        void * p = nullptr;
+        if (cudaHostAlloc(&p, sizeof(unsigned long long), cudaHostAllocMapped) == cudaSuccess) {
+            g_dsa_oob_host = (unsigned long long *) p;
+            *g_dsa_oob_host = 0;
+            void * d = nullptr;
+            if (cudaHostGetDevicePointer(&d, p, 0) == cudaSuccess) {
+                g_dsa_oob_dev = (unsigned long long *) d;
+            }
+        }
+    }
+}
+
+unsigned long long ggml_cuda_dsa_idx_oob_count() {
+    return g_dsa_oob_host ? *g_dsa_oob_host : ~0ull;
+}
+
+static __global__ void k_prepare_mask(int nidx, int n_kv, const int * __restrict__ idx, const half * __restrict__ m_in,
+        half * __restrict__ m_out, size_t stride_idx, size_t stride_m, unsigned long long * oob) {
     int row = blockIdx.x;
     int col = blockIdx.y*blockDim.x + threadIdx.x;
     idx += row*stride_idx;
     int ii = idx[col];
+    if (ii >= n_kv) {
+        if (oob) atomicAdd(oob, 1ull);
+        ii = -1;
+    }
     m_out[row*nidx + col] = ii >= 0 ? m_in[row*stride_m + ii] : __float2half(-INFINITY);
 }
 
-static __global__ void k_prepare_one_batch_kv(int nk, int ncol, const int * idx, const char * k_in,
-        half * k_out, size_t stride_k, size_t stride_idx) {
+static __global__ void k_prepare_one_batch_kv(int nk, int ncol, int n_kv, const int * idx, const char * k_in,
+        half * k_out, size_t stride_k, size_t stride_idx, unsigned long long * oob) {
     int row = blockIdx.y;
     int col = blockIdx.x;
     int i = idx[row*stride_idx + col];
     if (i < 0) {
+        i = 0;
+    } else if (i >= n_kv) {
+        if (oob) atomicAdd(oob, 1ull);
         i = 0;
     }
     auto k_row = (const half *)(k_in + stride_k * i);
@@ -33,12 +65,15 @@ static __global__ void k_prepare_one_batch_kv(int nk, int ncol, const int * idx,
     }
 }
 
-static __global__ void k_prepare_one_batch_kv_q8_0(int nk, int ncol, const int * idx, const char * k_in,
-        half * k_out, size_t stride_k, size_t stride_idx) {
+static __global__ void k_prepare_one_batch_kv_q8_0(int nk, int ncol, int n_kv, const int * idx, const char * k_in,
+        half * k_out, size_t stride_k, size_t stride_idx, unsigned long long * oob) {
     int row = blockIdx.y;
     int col = blockIdx.x;
     int i = idx[row*stride_idx + col];
     if (i < 0) {
+        i = 0;
+    } else if (i >= n_kv) {
+        if (oob) atomicAdd(oob, 1ull);
         i = 0;
     }
     auto k_row = (const block_q8_0 *)(k_in + stride_k * i);
@@ -308,10 +343,12 @@ bool ggml_cuda_dsa_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) 
         v16.alloc(v_cache_size);
     }
     auto stride_idx = indexer->nb[1]/sizeof(int);
+    dsa_oob_counter_init();
+    const int n_kv_rows = (int) K->ne[1];   // valid gather range for the indexer's rows
     {
         dim3 grid(Q->ne[1], indexer->ne[0]/256, 1);
-        k_prepare_mask<<<grid, 256, 0, ctx.stream()>>>(indexer->ne[0], (const int * )indexer->data,
-                (const half *)mask->data, mask16.get(), stride_idx, mask->nb[1]/sizeof(half));
+        k_prepare_mask<<<grid, 256, 0, ctx.stream()>>>(indexer->ne[0], n_kv_rows, (const int * )indexer->data,
+                (const half *)mask->data, mask16.get(), stride_idx, mask->nb[1]/sizeof(half), g_dsa_oob_dev);
     }
 
     int nstep = (Q->ne[1] + max_rows - 1)/max_rows;
@@ -323,23 +360,23 @@ bool ggml_cuda_dsa_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) 
         {
             dim3 grid(indexer->ne[0], nrows, 1);
             if (K->type == GGML_TYPE_F16) {
-                k_prepare_one_batch_kv<<<grid, 256, 0, ctx.stream()>>>(K->ne[0], indexer->ne[0],
+                k_prepare_one_batch_kv<<<grid, 256, 0, ctx.stream()>>>(K->ne[0], indexer->ne[0], n_kv_rows,
                         (const int *)indexer->data + stride_idx*first,
-                        (const char *)K->data, k16.get(), K->nb[1], stride_idx);
+                        (const char *)K->data, k16.get(), K->nb[1], stride_idx, g_dsa_oob_dev);
             } else {
-                k_prepare_one_batch_kv_q8_0<<<grid, 256, 0, ctx.stream()>>>(K->ne[0], indexer->ne[0],
+                k_prepare_one_batch_kv_q8_0<<<grid, 256, 0, ctx.stream()>>>(K->ne[0], indexer->ne[0], n_kv_rows,
                         (const int *)indexer->data + stride_idx*first,
-                        (const char *)K->data, k16.get(), K->nb[1], stride_idx);
+                        (const char *)K->data, k16.get(), K->nb[1], stride_idx, g_dsa_oob_dev);
             }
             if (!is_k_view) {
                 if (V->type == GGML_TYPE_F16) {
-                    k_prepare_one_batch_kv<<<grid, 256, 0, ctx.stream()>>>(V->ne[0], indexer->ne[0],
+                    k_prepare_one_batch_kv<<<grid, 256, 0, ctx.stream()>>>(V->ne[0], indexer->ne[0], (int) V->ne[1],
                             (const int *)indexer->data + stride_idx*first,
-                            (const char *)V->data, v16.get(), V->nb[1], stride_idx);
+                            (const char *)V->data, v16.get(), V->nb[1], stride_idx, g_dsa_oob_dev);
                 } else {
-                    k_prepare_one_batch_kv_q8_0<<<grid, 256, 0, ctx.stream()>>>(V->ne[0], indexer->ne[0],
+                    k_prepare_one_batch_kv_q8_0<<<grid, 256, 0, ctx.stream()>>>(V->ne[0], indexer->ne[0], (int) V->ne[1],
                             (const int *)indexer->data + stride_idx*first,
-                            (const char *)V->data, v16.get(), V->nb[1], stride_idx);
+                            (const char *)V->data, v16.get(), V->nb[1], stride_idx, g_dsa_oob_dev);
                 }
             }
         }

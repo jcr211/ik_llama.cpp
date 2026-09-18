@@ -144,7 +144,8 @@ void ggml_cuda_error(const char * stmt, const char * func, const char * file, in
         // LONGSPEAR crash context (set by the scheduler / llama_decode; formatted by ggml-backend.cpp)
         char ls_ctx[512];
         ggml_ls_format_crash_ctx(ls_ctx, sizeof(ls_ctx));
-        GGML_CUDA_LOG_ERROR("  %s\n", ls_ctx);
+        extern unsigned long long ggml_cuda_dsa_idx_oob_count();
+        GGML_CUDA_LOG_ERROR("  %s dsa_idx_oob=%llu\n", ls_ctx, ggml_cuda_dsa_idx_oob_count());
         fflush(stderr);
     }
     // abort with GGML_ASSERT to get a stack trace
@@ -4482,6 +4483,18 @@ GGML_CALL static void ggml_backend_cuda_synchronize(ggml_backend_t backend) {
 
     ggml_cuda_set_device(cuda_ctx->device);
     CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
+    {
+        // LONGSPEAR_DSA_IDX_CHECK=1 (diagnostic, off by default): report the DSA out-of-range index counter
+        // every 4096 synchronizations (host-mapped counter, no CUDA call).
+        static const bool idx_check = getenv("LONGSPEAR_DSA_IDX_CHECK") != nullptr;
+        if (idx_check) {
+            static unsigned long long n_sync = 0;
+            if ((++n_sync & 4095) == 0) {
+                extern unsigned long long ggml_cuda_dsa_idx_oob_count();
+                fprintf(stderr, "[dsa-idx] syncs=%llu oob=%llu\n", n_sync, ggml_cuda_dsa_idx_oob_count());
+            }
+        }
+    }
 
     GGML_UNUSED(backend);
 }
