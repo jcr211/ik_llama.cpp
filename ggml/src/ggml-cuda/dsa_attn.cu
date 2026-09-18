@@ -34,6 +34,12 @@ unsigned long long ggml_cuda_dsa_idx_oob_count() {
     return g_dsa_oob_host ? *g_dsa_oob_host : ~0ull;
 }
 
+// Shared with indexer_topk.cu (same DLL): device pointer of the out-of-range index counter (initialised on demand).
+unsigned long long * ggml_cuda_dsa_idx_oob_dev() {
+    dsa_oob_counter_init();
+    return g_dsa_oob_dev;
+}
+
 static __global__ void k_prepare_mask(int nidx, int n_kv, const int * __restrict__ idx, const half * __restrict__ m_in,
         half * __restrict__ m_out, size_t stride_idx, size_t stride_m, unsigned long long * oob) {
     int row = blockIdx.x;

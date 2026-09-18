@@ -54,8 +54,10 @@ static __global__ void k_copy_topk(const int * __restrict__ sorted, int * dst, c
     const int col = threadIdx.x;
     sorted += int64_t(ncols)*row;
     dst    += int64_t(n_top_k)*row;
+    // LONGSPEAR: never read past the sorted row when fewer candidates exist than top-k slots; pad with -1
+    // (the mask kernel skips negative indices).
     for (int i = col; i < n_top_k; i += blockDim.x) {
-        dst[i] = sorted[i];
+        dst[i] = i < ncols ? sorted[i] : -1;
     }
 }
 
@@ -243,7 +245,7 @@ static __global__ void k_indexer_mask(int ne0, int ne1, int ne2, int ntopk, int 
         size_t nb01, size_t nb02, size_t nb03,
         size_t nb11, size_t nb12, size_t nb13,
         size_t nb1,  size_t nb2,  size_t nb3,
-        const mask_t * mask, const int * idx, mask_t * dst) {
+        const mask_t * mask, const int * idx, mask_t * dst, unsigned long long * oob) {
     int i1 = blockIdx.x;
     int i3 = i1 / (ne1*ne2); i1 -= i3*ne1*ne2;
     int i2 = i1 / (ne1);     i1 -= i2*ne1;
@@ -264,7 +266,16 @@ static __global__ void k_indexer_mask(int ne0, int ne1, int ne2, int ntopk, int 
     if (i1 < ne11) {
         for (int j = threadIdx.x; j < ne0;   j += blockDim.x) d[j] = inf;
         __syncthreads();
-        for (int j = threadIdx.x; j < ntopk; j += blockDim.x) d[i[j]] = zero;
+        // LONGSPEAR index guard: a top-k index outside [0, ne0) used to be an out-of-bounds WRITE into the
+        // pool (invisible to memcheck, corrupting the neighbouring buffers). Skip it and count it.
+        for (int j = threadIdx.x; j < ntopk; j += blockDim.x) {
+            const int jj = i[j];
+            if (jj >= 0 && jj < ne0) {
+                d[jj] = zero;
+            } else if (jj >= 0 && oob) {
+                atomicAdd(oob, 1ull);
+            }
+        }
         __syncthreads();
         for (int j = threadIdx.x; j < ne0;   j += blockDim.x) d[j] += m[j];
     } else {
@@ -285,18 +296,21 @@ void ggml_cuda_op_indexer_mask(ggml_backend_cuda_context & ctx, ggml_tensor * ds
 
     int nrows = ggml_nrows(dst);
 
+    extern unsigned long long * ggml_cuda_dsa_idx_oob_dev();   // dsa_attn.cu: host-mapped out-of-range counter
+    unsigned long long * oob = ggml_cuda_dsa_idx_oob_dev();
+
     if (dst->type == GGML_TYPE_F16) {
         k_indexer_mask<<<nrows, 256, 0, ctx.stream()>>>(dst->ne[0], dst->ne[1], dst->ne[2], topk->ne[0], topk->ne[1],
                 mask->nb[1], mask->nb[2], mask->nb[3],
                 topk->nb[1], topk->nb[2], topk->nb[3],
                 dst->nb[1],  dst->nb[2],  dst->nb[3],
-                (const half *)mask->data, (const int *)topk->data, (half *)dst->data);
+                (const half *)mask->data, (const int *)topk->data, (half *)dst->data, oob);
     } else {
         k_indexer_mask<<<nrows, 256, 0, ctx.stream()>>>(dst->ne[0], dst->ne[1], dst->ne[2], topk->ne[0], topk->ne[1],
                 mask->nb[1], mask->nb[2], mask->nb[3],
                 topk->nb[1], topk->nb[2], topk->nb[3],
                 dst->nb[1],  dst->nb[2],  dst->nb[3],
-                (const float *)mask->data, (const int *)topk->data, (float *)dst->data);
+                (const float *)mask->data, (const int *)topk->data, (float *)dst->data, oob);
     }
 
 }
