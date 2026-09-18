@@ -4322,8 +4322,24 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
 #endif
 
     cudaError_t err = cudaGetLastError();
+    {
+        // LONGSPEAR_OP_SYNC=1 (diagnostic, off by default): synchronize after EVERY op so an asynchronous
+        // launch failure is attributed to the op that caused it (run with GGML_CUDA_DISABLE_GRAPHS=1).
+        static const bool op_sync = getenv("LONGSPEAR_OP_SYNC") != nullptr;
+        if (op_sync && err == cudaSuccess) {
+            err = cudaStreamSynchronize(ctx.stream());
+        }
+    }
     if (err != cudaSuccess) {
-        GGML_CUDA_LOG_ERROR("%s: %s failed\n", __func__, ggml_op_desc(dst));
+        const ggml_tensor * s0 = dst->src[0];
+        const ggml_tensor * s1 = dst->src[1];
+        GGML_CUDA_LOG_ERROR("%s: %s failed  node=%s dst=%s[%lld,%lld,%lld,%lld] src0=%s %s[%lld,%lld,%lld,%lld] src1=%s %s[%lld,%lld,%lld,%lld]\n",
+                __func__, ggml_op_desc(dst), dst->name, ggml_type_name(dst->type),
+                (long long) dst->ne[0], (long long) dst->ne[1], (long long) dst->ne[2], (long long) dst->ne[3],
+                s0 ? s0->name : "-", s0 ? ggml_type_name(s0->type) : "-",
+                s0 ? (long long) s0->ne[0] : 0, s0 ? (long long) s0->ne[1] : 0, s0 ? (long long) s0->ne[2] : 0, s0 ? (long long) s0->ne[3] : 0,
+                s1 ? s1->name : "-", s1 ? ggml_type_name(s1->type) : "-",
+                s1 ? (long long) s1->ne[0] : 0, s1 ? (long long) s1->ne[1] : 0, s1 ? (long long) s1->ne[2] : 0, s1 ? (long long) s1->ne[3] : 0);
         CUDA_CHECK(err);
     }
 
