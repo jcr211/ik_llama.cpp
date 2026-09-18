@@ -2551,6 +2551,12 @@ bool common_speculative_checkpoint_restore(
         return false;
     }
 
+    // The restore rewound the TARGET context only. Whatever the MTP companion holds at or after
+    // the checkpoint position (KV rows, cached draft token/embedding, cached target hidden state)
+    // now describes a target state that no longer exists, so invalidate it here. The
+    // accepted-prefix commit below re-populates it from the restored rows.
+    common_speculative_mtp_invalidate(spec, seq_id, ckpt.n_past);
+
     if (restore_result == LLAMA_SPEC_CKPT_RESTORE_DIRECT) {
         if (ckpt.sampler != nullptr && sampler_dst != nullptr) {
             common_sampler_clone(ckpt.sampler, sampler_dst);
@@ -2934,6 +2940,28 @@ void common_speculative_clear_sequence(
     }
 }
 
+void common_speculative_mtp_invalidate(
+        common_speculative * spec,
+        llama_seq_id seq_id,
+        llama_pos pos_begin) {
+    if (spec == nullptr) {
+        return;
+    }
+
+    // The cached draft token/embedding and the cached target hidden state were produced for a
+    // target state that no longer exists at this logical position, so they must not be reused.
+    // common_speculative_clear_sequence_hidden() drops both the hidden-feature cache and the
+    // per-sequence draft cache (last_id / embd).
+    common_speculative_clear_sequence_hidden(spec, seq_id);
+
+    if (auto * ctx_mtp = common_speculative_get_companion_ctx(spec); ctx_mtp != nullptr) {
+        const llama_pos companion_max = llama_kv_cache_seq_pos_max(ctx_mtp, seq_id);
+        if (companion_max >= pos_begin) {
+            llama_kv_cache_seq_rm(ctx_mtp, seq_id, pos_begin, -1);
+        }
+    }
+}
+
 bool common_speculative_trim_sequence(
         common_speculative * spec,
         llama_context * ctx,
@@ -2941,7 +2969,11 @@ bool common_speculative_trim_sequence(
         llama_pos pos_begin) {
     const bool target_trimmed = llama_kv_cache_seq_rm(ctx, seq_id, pos_begin, -1);
     if (auto * ctx_mtp = common_speculative_get_companion_ctx(spec); ctx_mtp != nullptr) {
-        return target_trimmed && llama_kv_cache_seq_rm(ctx_mtp, seq_id, pos_begin, -1);
+        const bool trimmed = target_trimmed && llama_kv_cache_seq_rm(ctx_mtp, seq_id, pos_begin, -1);
+        // A trim is non-monotonic: the cached draft/hidden state describes the dropped suffix.
+        // The companion KV removal above already satisfies the position guard in the helper.
+        common_speculative_mtp_invalidate(spec, seq_id, pos_begin);
+        return trimmed;
     }
 
     return target_trimmed;
@@ -3224,11 +3256,14 @@ std::vector<llama_token> mtp_speculative_gen_draft(
 
     common_sampler_reset(smpl);
 
-    if (llama_model_is_openpangu(llama_get_model(ctx)) &&
-        llama_kv_cache_seq_pos_max(ctx, seq_id) >= n_past) {
-        // Position-addressed cache: drafting restarts at n_past, so any rows at or beyond
-        // it (the accepted-update writes one row past the accepted prefix) must be dropped
-        // first to keep the draft decode position-contiguous with the cache head.
+    // Drafting always restarts at n_past, so any companion rows at or beyond it must be dropped
+    // first to keep the draft decode position-contiguous with the cache head. openPangu needs
+    // this because its position-addressed cache keeps one accepted-update row past the accepted
+    // prefix; every other arch needs it because a target cache trim or a context-checkpoint
+    // restore rewinds only the target context and can leave the companion at or past n_past.
+    // In the steady state the companion ends at n_past - 1, so this is a no-op.
+    const llama_pos companion_max = llama_kv_cache_seq_pos_max(ctx, seq_id);
+    if (companion_max >= n_past) {
         llama_kv_cache_seq_rm(ctx, seq_id, n_past, -1);
     }
 

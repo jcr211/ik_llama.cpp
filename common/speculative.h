@@ -237,6 +237,16 @@ void common_speculative_clear_sequence(
     llama_seq_id seq_id,
     bool clear_companion_ctx = false);
 
+// Invalidate everything the MTP/draft companion holds at or after pos_begin for seq_id: the
+// companion KV tail, the cached draft token/embedding and the cached target hidden state.
+// Call this after any non-monotonic move of the target context (cache trim, context-checkpoint
+// restore) that does not itself rewind the companion. Cheap, and a no-op when the companion is
+// already consistent (no extra decode).
+void common_speculative_mtp_invalidate(
+    common_speculative * spec,
+    llama_seq_id seq_id,
+    llama_pos pos_begin);
+
 bool common_speculative_trim_sequence(
     common_speculative * spec,
     llama_context * ctx,
