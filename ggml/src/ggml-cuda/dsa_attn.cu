@@ -20,10 +20,12 @@ static unsigned long long * g_dsa_oob_dev  = nullptr;
 static void dsa_oob_counter_init() {
     if (g_dsa_oob_host == nullptr) {
         void * p = nullptr;
-        if (cudaHostAlloc(&p, 2*sizeof(unsigned long long), cudaHostAllocMapped) == cudaSuccess) {
+        if (cudaHostAlloc(&p, 4*sizeof(unsigned long long), cudaHostAllocMapped) == cudaSuccess) {
             g_dsa_oob_host = (unsigned long long *) p;
-            g_dsa_oob_host[0] = 0;
-            g_dsa_oob_host[1] = 0;
+            g_dsa_oob_host[0] = 0;   // index >= row length
+            g_dsa_oob_host[1] = 0;   // index == -1 (padding)
+            g_dsa_oob_host[2] = 0;   // index < -1 (corruption)
+            g_dsa_oob_host[3] = 0;
             void * d = nullptr;
             if (cudaHostGetDevicePointer(&d, p, 0) == cudaSuccess) {
                 g_dsa_oob_dev = (unsigned long long *) d;
@@ -38,6 +40,10 @@ unsigned long long ggml_cuda_dsa_idx_oob_count() {
 
 unsigned long long ggml_cuda_dsa_idx_neg_count() {
     return g_dsa_oob_host ? g_dsa_oob_host[1] : ~0ull;
+}
+
+unsigned long long ggml_cuda_dsa_idx_corrupt_count() {
+    return g_dsa_oob_host ? g_dsa_oob_host[2] : ~0ull;
 }
 
 // Shared with indexer_topk.cu (same DLL): device pointer of the out-of-range index counter (initialised on demand).

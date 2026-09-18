@@ -4509,7 +4509,9 @@ GGML_CALL static void ggml_backend_cuda_synchronize(ggml_backend_t backend) {
             if ((++n_sync & 4095) == 0) {
                 extern unsigned long long ggml_cuda_dsa_idx_oob_count();
                 extern unsigned long long ggml_cuda_dsa_idx_neg_count();
-                fprintf(stderr, "[dsa-idx] syncs=%llu oob=%llu neg=%llu\n", n_sync, ggml_cuda_dsa_idx_oob_count(), ggml_cuda_dsa_idx_neg_count());
+                extern unsigned long long ggml_cuda_dsa_idx_corrupt_count();
+                fprintf(stderr, "[dsa-idx] syncs=%llu oob=%llu pad=%llu corrupt=%llu\n", n_sync,
+                        ggml_cuda_dsa_idx_oob_count(), ggml_cuda_dsa_idx_neg_count(), ggml_cuda_dsa_idx_corrupt_count());
             }
         }
     }

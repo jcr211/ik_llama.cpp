@@ -175,10 +175,28 @@ void ggml_cuda_op_mul_mat_q(
     GGML_UNUSED(src1_ddf_i);
 }
 
+// LONGSPEAR stability switch (Pro round 3, 2026-09-18): GGML_CUDA_DISABLE_SM120_Q8_0_MMQ=1 routes Q8_0
+// matmuls wider than the MMVQ range to cuBLAS on SM120 (cc 1200) instead of the Q8_0 int8-MMA MMQ path,
+// which is the prime suspect for the "unspecified launch failure" on the RTX 5090 / driver 616.92 (an
+// independent 5090 report faulted in the same kernel family's shared-memory write-back epilogue).
+// Narrower than GGML_CUDA_FORCE_CUBLAS: MMVQ (K <= MMVQ_MAX_BATCH_SIZE), MXFP4 MMQ and every other type
+// are unaffected. Off by default.
+static bool ggml_cuda_disable_sm120_q8_0_mmq() {
+    static const bool disabled = [] {
+        const char * v = getenv("GGML_CUDA_DISABLE_SM120_Q8_0_MMQ");
+        return v != nullptr && v[0] == '1' && v[1] == '\0';
+    }();
+    return disabled;
+}
+
 bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11) {
 #ifdef GGML_CUDA_FORCE_CUBLAS
     return false;
 #endif // GGML_CUDA_FORCE_CUBLAS
+
+    if (cc == 1200 && type == GGML_TYPE_Q8_0 && ggml_cuda_disable_sm120_q8_0_mmq()) {
+        return false;
+    }
 
     bool mmq_supported;
 

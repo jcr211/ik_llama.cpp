@@ -273,7 +273,8 @@ static __global__ void k_indexer_mask(int ne0, int ne1, int ne2, int ntopk, int 
             if (jj >= 0 && jj < ne0) {
                 d[jj] = zero;
             } else if (oob) {
-                atomicAdd(jj >= 0 ? oob : oob + 1, 1ull);   // [0] = >= row length, [1] = negative
+                // [0] = >= row length (positive OOB), [1] = -1 (expected padding), [2] = < -1 (corruption)
+                atomicAdd(jj >= 0 ? oob : (jj == -1 ? oob + 1 : oob + 2), 1ull);
             }
         }
         __syncthreads();
