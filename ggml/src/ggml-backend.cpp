@@ -2221,12 +2221,47 @@ static void ggml_backend_sched_copy_inputs(ggml_backend_sched_t sched, ggml_back
     }
 }
 
+// LONGSPEAR crash context (diagnostic, always on, no hot-path cost beyond a few stores): what the scheduler
+// was computing when a backend aborted. Read by ggml_cuda_error() so a CUDA launch failure names the split,
+// its first node, and the verify pass in flight (set by llama_decode).
+static int          ggml_ls_cur_split    = -1;
+static int          ggml_ls_n_splits     = 0;
+static int          ggml_ls_cur_n_nodes  = 0;
+static const char * ggml_ls_cur_node     = "";
+static const char * ggml_ls_cur_node_op  = "";
+static const char * ggml_ls_cur_backend  = "";
+static int          ggml_ls_vt_K         = -1;
+static unsigned     ggml_ls_vt_n_kv      = 0;
+static int          ggml_ls_vt_mtp_op    = -1;
+
+void ggml_ls_set_vt_ctx(int K, unsigned n_kv, int mtp_op) {
+    ggml_ls_vt_K      = K;
+    ggml_ls_vt_n_kv   = n_kv;
+    ggml_ls_vt_mtp_op = mtp_op;
+}
+
+void ggml_ls_format_crash_ctx(char * buf, size_t n) {
+    snprintf(buf, n, "[ls-crash-ctx] split=%d/%d backend=%s n_nodes=%d first_node=%s op=%s | pass K=%d n_kv=%u mtp_op=%d",
+            ggml_ls_cur_split, ggml_ls_n_splits, ggml_ls_cur_backend, ggml_ls_cur_n_nodes, ggml_ls_cur_node, ggml_ls_cur_node_op,
+            ggml_ls_vt_K, ggml_ls_vt_n_kv, ggml_ls_vt_mtp_op);
+}
+
+static void ggml_ls_set_crash_ctx(ggml_backend_sched_t sched, ggml_backend_t split_backend, ggml_backend_sched_split * split, const struct ggml_cgraph * g) {
+    ggml_ls_cur_split   = (int) (split - sched->splits);
+    ggml_ls_n_splits    = sched->n_splits;
+    ggml_ls_cur_n_nodes = g->n_nodes;
+    ggml_ls_cur_node    = g->n_nodes > 0 ? g->nodes[0]->name : "";
+    ggml_ls_cur_node_op = g->n_nodes > 0 ? ggml_op_name(g->nodes[0]->op) : "";
+    ggml_ls_cur_backend = ggml_backend_name(split_backend);
+}
+
 static ggml_status ggml_backend_sched_eval(ggml_backend_sched_t sched, ggml_backend_t split_backend, ggml_backend_sched_split * split) {
     if (!sched->callback_eval) {
 #if IK_PRINT_TIMING
         int64_t tim2 = ggml_time_us();
         printf("%s(.1.): %d us\n", __func__, (int)(tim2-tim1));
 #endif
+        ggml_ls_set_crash_ctx(sched, split_backend, split, &split->graph);
         enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
         if (ec != GGML_STATUS_SUCCESS) {
             return ec;
@@ -2254,6 +2289,7 @@ static ggml_status ggml_backend_sched_eval(ggml_backend_sched_t sched, ggml_back
             printf("%s(.2.): %d us\n", __func__, (int)(tim2-tim1));
 #endif
 
+            ggml_ls_set_crash_ctx(sched, split_backend, split, &gv);
             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &gv);
             if (ec != GGML_STATUS_SUCCESS) {
                 return ec;

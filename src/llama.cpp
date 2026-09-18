@@ -12152,6 +12152,8 @@ int32_t llama_decode(
     // role, env-gated so production stays silent
     static const bool vt = getenv("LONGSPEAR_VERIFY_TIMING") != nullptr;
     const int64_t vt_t0 = vt ? ggml_time_us() : 0;
+    // LONGSPEAR crash context: record the pass about to run so a CUDA abort can name it (ggml-backend.cpp)
+    ggml_ls_set_vt_ctx((int) batch.n_tokens, ctx->kv_self.used, (int) ctx->cparams.mtp_op_type);
     if (vt) {
         g_vt_build_us = g_vt_compute_us = g_vt_logits_us = g_vt_embd_us = 0;
         g_vt_reused = 0;

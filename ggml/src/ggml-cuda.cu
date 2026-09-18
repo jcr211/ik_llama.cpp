@@ -140,6 +140,13 @@ void ggml_cuda_error(const char * stmt, const char * func, const char * file, in
     GGML_CUDA_LOG_ERROR("CUDA error: %s\n", msg);
     GGML_CUDA_LOG_ERROR("  current device: %d, in function %s at %s:%d\n", id, func, file, line);
     GGML_CUDA_LOG_ERROR("  %s\n", stmt);
+    {
+        // LONGSPEAR crash context (set by the scheduler / llama_decode; formatted by ggml-backend.cpp)
+        char ls_ctx[512];
+        ggml_ls_format_crash_ctx(ls_ctx, sizeof(ls_ctx));
+        GGML_CUDA_LOG_ERROR("  %s\n", ls_ctx);
+        fflush(stderr);
+    }
     // abort with GGML_ASSERT to get a stack trace
     GGML_ABORT("CUDA error");
 }

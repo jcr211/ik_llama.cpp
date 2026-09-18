@@ -219,6 +219,11 @@ extern "C" {
 
     // enable or disable op offload for a given op
     GGML_API void                 ggml_backend_sched_set_op_offload(ggml_backend_sched_t sched, enum ggml_op op, bool on_or_off);
+
+    // LONGSPEAR crash context (diagnostic, always on): llama_decode records the pass about to run, the
+    // scheduler records the split about to be computed, and a CUDA abort prints both (ggml-backend.cpp).
+    GGML_API void ggml_ls_set_vt_ctx(int K, unsigned n_kv, int mtp_op);
+    GGML_API void ggml_ls_format_crash_ctx(char * buf, size_t n);
     GGML_API void                 ggml_backend_sched_set_only_active_experts(ggml_backend_sched_t sched, bool on_or_off);
     GGML_API void                 ggml_backend_sched_set_split_mode_graph(ggml_backend_sched_t sched, bool on_or_off, bool async);
     GGML_API void                 ggml_backend_sched_set_max_extra_alloc(ggml_backend_sched_t sched, int extra_alloc_MiB);
