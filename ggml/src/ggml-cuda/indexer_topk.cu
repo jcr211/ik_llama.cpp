@@ -272,8 +272,8 @@ static __global__ void k_indexer_mask(int ne0, int ne1, int ne2, int ntopk, int 
             const int jj = i[j];
             if (jj >= 0 && jj < ne0) {
                 d[jj] = zero;
-            } else if (jj >= 0 && oob) {
-                atomicAdd(oob, 1ull);
+            } else if (oob) {
+                atomicAdd(jj >= 0 ? oob : oob + 1, 1ull);   // [0] = >= row length, [1] = negative
             }
         }
         __syncthreads();

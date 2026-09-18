@@ -16,12 +16,14 @@ static inline bool v_is_k_view(const ggml_tensor * K, const ggml_tensor * V) {
 static unsigned long long * g_dsa_oob_host = nullptr;
 static unsigned long long * g_dsa_oob_dev  = nullptr;
 
+// Two counters: [0] = index >= row length, [1] = negative index (both were unchecked writes/reads before).
 static void dsa_oob_counter_init() {
     if (g_dsa_oob_host == nullptr) {
         void * p = nullptr;
-        if (cudaHostAlloc(&p, sizeof(unsigned long long), cudaHostAllocMapped) == cudaSuccess) {
+        if (cudaHostAlloc(&p, 2*sizeof(unsigned long long), cudaHostAllocMapped) == cudaSuccess) {
             g_dsa_oob_host = (unsigned long long *) p;
-            *g_dsa_oob_host = 0;
+            g_dsa_oob_host[0] = 0;
+            g_dsa_oob_host[1] = 0;
             void * d = nullptr;
             if (cudaHostGetDevicePointer(&d, p, 0) == cudaSuccess) {
                 g_dsa_oob_dev = (unsigned long long *) d;
@@ -31,7 +33,11 @@ static void dsa_oob_counter_init() {
 }
 
 unsigned long long ggml_cuda_dsa_idx_oob_count() {
-    return g_dsa_oob_host ? *g_dsa_oob_host : ~0ull;
+    return g_dsa_oob_host ? g_dsa_oob_host[0] : ~0ull;
+}
+
+unsigned long long ggml_cuda_dsa_idx_neg_count() {
+    return g_dsa_oob_host ? g_dsa_oob_host[1] : ~0ull;
 }
 
 // Shared with indexer_topk.cu (same DLL): device pointer of the out-of-range index counter (initialised on demand).
