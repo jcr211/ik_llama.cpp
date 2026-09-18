@@ -3713,6 +3713,13 @@ void server_context::apply_checkpoint(server_slot & slot) {
 
                     slot.checkpoint_pos = it->pos_max;
 
+                    // LONGSPEAR (Pro r3 §5.2): the restore above rewinds only the TARGET context; the MTP
+                    // companion KV, its cached last token/embedding and hidden cache must be invalidated
+                    // from the restored position or the next draft reads state for a rewound target.
+                    if (slot.spec) {
+                        common_speculative_mtp_invalidate(slot.spec, slot.id, pos_next);
+                    }
+
                     SLT_WRN(slot, "restored context checkpoint took  %.2f ms (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_past = %d, size = %.3f MiB)\n", (ggml_time_us() - t_start) / 1000.0, it->pos_min, it->pos_max, it->n_tokens, slot.n_past, (float)checkpoint_size / 1024 / 1024);
                 }
             }
