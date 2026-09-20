@@ -488,6 +488,7 @@ void server_slot::prompt_load(server_prompt_cache& prompt_cache, const server_to
 
     const llama_pos pos_next = server_cached_prompt.tokens.pos_next();
     if (spec) {
+        LOG_VERBOSE(string_format("MTP invalidate: prompt_load slot=%d pos=%d", id, pos_next).c_str(), {});
         common_speculative_mtp_invalidate(spec, id, pos_next);
     }
     for (auto it = server_cached_prompt.checkpoints.begin(); it != server_cached_prompt.checkpoints.end();) {
@@ -3039,6 +3040,7 @@ void server_context::process_single_task(server_task&& task) {
 
         const llama_pos pos_next = slot->cache_tokens.pos_next();
         if (slot->spec) {
+            LOG_VERBOSE(string_format("MTP invalidate: SLOT_RESTORE slot=%d pos=%d", slot->id, pos_next).c_str(), {});
             common_speculative_mtp_invalidate(slot->spec, slot->id, pos_next);
         }
         for (auto it = slot->server_cached_prompt.checkpoints.begin(); it != slot->server_cached_prompt.checkpoints.end();) {
