@@ -476,9 +476,26 @@ void server_slot::prompt_save(server_prompt_cache& prompt_cache) const {
 }
 
 void server_slot::prompt_load(server_prompt_cache& prompt_cache, const server_tokens& tokens, float min_reusable_fraction) {
+    const size_t n_states_before = prompt_cache.states.size();
     bool res = prompt_cache.load(server_cached_prompt, tokens, ctx, id, min_reusable_fraction);
     if (!res) {
         LLAMA_LOG_INFO("failed to load prompt from cache\n");
+        return;
+    }
+    if (prompt_cache.states.size() == n_states_before) {
+        return;
+    }
+
+    const llama_pos pos_next = server_cached_prompt.tokens.pos_next();
+    if (spec) {
+        common_speculative_mtp_invalidate(spec, id, pos_next);
+    }
+    for (auto it = server_cached_prompt.checkpoints.begin(); it != server_cached_prompt.checkpoints.end();) {
+        if (it->pos_max >= pos_next) {
+            it = server_cached_prompt.checkpoints.erase(it);
+        } else {
+            ++it;
+        }
     }
 }
 
@@ -3019,6 +3036,18 @@ void server_context::process_single_task(server_task&& task) {
         }
         load_server_tokens_from_file(filepath+".tokens.json", slot->cache_tokens);
         size_t loaded = load_checkpoints_from_file(filepath + ".checkpoints", slot->server_cached_prompt.checkpoints);
+
+        const llama_pos pos_next = slot->cache_tokens.pos_next();
+        if (slot->spec) {
+            common_speculative_mtp_invalidate(slot->spec, slot->id, pos_next);
+        }
+        for (auto it = slot->server_cached_prompt.checkpoints.begin(); it != slot->server_cached_prompt.checkpoints.end();) {
+            if (it->pos_max >= pos_next) {
+                it = slot->server_cached_prompt.checkpoints.erase(it);
+            } else {
+                ++it;
+            }
+        }
 
         const int64_t t_end = ggml_time_us();
         const double t_restore_ms = (t_end - t_start) / 1000.0;
