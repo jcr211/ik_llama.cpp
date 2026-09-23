@@ -14,3 +14,6 @@ Checklist:
 
 Log:
 - 17:50 ET pure module stateos-header.{h,cpp} written (sha256, H/S/I header, verify, container scan, checkpoint codec)
+- 17:53 ET llama API (append/range-load/layout desc) + speculative companion accessors committed
+- 17:57 ET server save/restore + /list + legacy-queue slot errors + tests/test-stateos-header.cpp committed
+- 18:10 ET writing .lane/gpu-verify-l1.ps1 + GPU-VERIFY.md (no GPU use; coordinator runs it)

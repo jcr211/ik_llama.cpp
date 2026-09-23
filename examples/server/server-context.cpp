@@ -3101,7 +3101,9 @@ void server_context::stateos_slot_restore(const server_task & task, server_slot 
         case STATEOS_SCAN_OK:
             break;
         case STATEOS_SCAN_NOT_FOUND:
-            send_slot_error(task, 404, "not_found_error", scan.error + ": '" + filename + "'", { {"slot_untouched", true} });
+            // 409, not 404: clients read 404 as "this server has no /slots support"
+            send_slot_error(task, 409, "state_missing", scan.error + ": '" + filename + "'",
+                    { {"refused_field", "file"}, {"slot_untouched", true} });
             return;
         case STATEOS_SCAN_LEGACY:
             send_slot_error(task, 409, "state_legacy_unkeyed", scan.error,
