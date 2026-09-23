@@ -349,6 +349,9 @@ struct server_context {
 
     stateos_fields stateos_identity_fields(std::string* err);
 
+    // true when a slot drafts with the in-GGUF MTP head, i.e. saves carry a COMP section (GET /props "stateos")
+    bool stateos_companion_supported() const;
+
     // slot tasks answer on the legacy result queue that the /slots handlers wait on
     void send_slot_error(const server_task& task, int code, const std::string& type, const std::string& message, json extra = json::object());
 

@@ -32,6 +32,19 @@ static uint64_t get_u64(const uint8_t * p) {
     return v;
 }
 
+std::filesystem::path stateos_path(const std::string & utf8) {
+#if defined(__cpp_char8_t)
+    return std::filesystem::path(std::u8string(utf8.begin(), utf8.end()));
+#else
+    return std::filesystem::u8path(utf8);
+#endif
+}
+
+std::string stateos_path_utf8(const std::filesystem::path & p) {
+    const auto s = p.u8string();
+    return std::string(s.begin(), s.end());
+}
+
 std::string stateos_tag_name(uint32_t tag) {
     std::string s;
     for (int i = 0; i < 4; ++i) {
@@ -350,7 +363,7 @@ static bool read_exact(std::ifstream & f, void * dst, size_t n) {
 stateos_scan_result stateos_scan_file(const std::string & path) {
     stateos_scan_result r;
     std::error_code ec;
-    const std::filesystem::path p = std::filesystem::u8path(path);
+    const std::filesystem::path p = stateos_path(path);
     if (!std::filesystem::is_regular_file(p, ec) || ec) {
         r.status = STATEOS_SCAN_NOT_FOUND;
         r.error  = "state file not found";
@@ -456,7 +469,7 @@ stateos_scan_result stateos_scan_file(const std::string & path) {
 }
 
 bool stateos_read_range(const std::string & path, uint64_t offset, uint64_t size, std::vector<uint8_t> & out, std::string * err) {
-    std::ifstream f(std::filesystem::u8path(path), std::ios::binary);
+    std::ifstream f(stateos_path(path), std::ios::binary);
     if (!f.is_open()) {
         set_err(err, "cannot open state file");
         return false;

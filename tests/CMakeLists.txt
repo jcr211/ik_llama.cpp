@@ -212,7 +212,6 @@ llama_build_and_test(test-stateos-header.cpp
     ${PROJECT_SOURCE_DIR}/examples/server/stateos-model.cpp
     ARGS ${PROJECT_SOURCE_DIR}/models/ggml-vocab-qwen2.gguf ${PROJECT_SOURCE_DIR}/models/ggml-vocab-llama-bpe.gguf)
 target_include_directories(test-stateos-header PRIVATE ${PROJECT_SOURCE_DIR}/examples/server)
-target_compile_features(test-stateos-header PRIVATE cxx_std_17)
 
 llama_build_and_test(test-iq4-ks-kt-decode.cpp)
 target_include_directories(test-iq4-ks-kt-decode PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src)

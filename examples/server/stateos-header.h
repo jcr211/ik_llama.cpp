@@ -17,8 +17,14 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <vector>
+
+// UTF-8 std::string <-> filesystem::path, identical under C++17 and C++20 (u8path is deprecated in C++20 and
+// path::u8string() changes its return type there)
+std::filesystem::path stateos_path(const std::string & utf8);
+std::string stateos_path_utf8(const std::filesystem::path & p);
 
 constexpr uint32_t STATEOS_MAGIC             = 0x534F534Cu; // bytes "LSOS"
 constexpr uint32_t STATEOS_CONTAINER_VERSION = 1;

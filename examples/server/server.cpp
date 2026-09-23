@@ -1,5 +1,6 @@
 #pragma warning(disable : 4996)
 #include "server-context.h"
+#include "stateos-props.h"
 #include "server-common.h"
 #include "server-chat.h"
 #include "server-cors-proxy.h"
@@ -1090,6 +1091,7 @@ int main(int argc, char ** argv) {
             } },
             { "n_ctx",                       ctx_server.n_ctx },
             { "cors_proxy_enabled",          ctx_server.params_base.webui_mcp_proxy},
+            { "stateos",                     stateos_props_capability(ctx_server.stateos_companion_supported()) },
 
         };
 
@@ -1780,11 +1782,12 @@ int main(int argc, char ** argv) {
                 std::string file_format = "llama-seq";
 
                 // State-OS keyed container: tokens come from its TOKS section
-                const stateos_scan_result scan = stateos_scan_file(entry.path().u8string());
+                const std::string entry_path = stateos_path_utf8(entry.path());
+                const stateos_scan_result scan = stateos_scan_file(entry_path);
                 const stateos_section * toks = scan.status == STATEOS_SCAN_OK ? scan.find(STATEOS_TAG_TOKS) : nullptr;
                 if (toks != nullptr && toks->size % 4 == 0) {
                     std::vector<uint8_t> bytes;
-                    if (!stateos_read_range(entry.path().u8string(), toks->offset, toks->size, bytes, nullptr)) {
+                    if (!stateos_read_range(entry_path, toks->offset, toks->size, bytes, nullptr)) {
                         continue;
                     }
                     n_token_count = (uint32_t) (bytes.size() / 4);

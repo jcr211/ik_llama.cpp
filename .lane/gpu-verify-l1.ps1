@@ -229,6 +229,10 @@ try {
     # ================= Leg A: speculation OFF (acceptance) =================
     $proc = Start-TestServer 'specoff' @()
     $logA = Join-Path $Root 'specoff.log'
+    $props = Api 'GET' '/props' $null
+    $propsOk = ($props.Status -eq 200) -and ($props.Body.stateos.version -ge 1) -and ($props.Body.stateos.keyed_header -eq $true) -and ($props.Body.stateos.companion -eq $false)
+    $Results.legA.props_stateos = [ordered]@{ value = $props.Body.stateos; pass = $propsOk }
+    Log "GET /props stateos (spec off, expect companion=false): $($props.Body.stateos | ConvertTo-Json -Compress) pass=$propsOk"
     $text = New-SyntheticText 9000 7
     $all = Get-Tokens $text
     if ($all.Length -lt 200000) { $all = Concat $all (Get-Tokens (New-SyntheticText 9000 11)) }
@@ -323,6 +327,10 @@ try {
     if (-not $SkipSpecOn) {
         $proc = Start-TestServer 'specon' $SpecArgs
         $logB = Join-Path $Root 'specon.log'
+        $props = Api 'GET' '/props' $null
+        $propsOk = ($props.Status -eq 200) -and ($props.Body.stateos.version -ge 1) -and ($props.Body.stateos.keyed_header -eq $true) -and ($props.Body.stateos.companion -eq $true)
+        $Results.legB.props_stateos = [ordered]@{ value = $props.Body.stateos; pass = $propsOk }
+        Log "GET /props stateos (spec on, expect companion=true): $($props.Body.stateos | ConvertTo-Json -Compress) pass=$propsOk"
         $Results.legB.companion_32k = Test-Identity 'on32k' (Head $all 32768) $Z $Q 128 -NoCold -LogPath $logB
         # the spec-off 32K file has no COMP section: restore it here to see acceptance without the companion
         [void] (Slot 'erase' $null); [void] (Complete $Q 8)

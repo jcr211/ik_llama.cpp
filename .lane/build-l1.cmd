@@ -9,7 +9,7 @@ set "LOG=%~dp0build-l1.log"
 
 call :run > "%LOG%" 2>&1
 set "RC=%ERRORLEVEL%"
-echo build-l1 exit=%RC%>> "%LOG%"
+>> "%LOG%" echo build-l1 exit=%RC%
 exit /b %RC%
 
 :run

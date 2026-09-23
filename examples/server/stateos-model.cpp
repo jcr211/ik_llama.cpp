@@ -15,16 +15,18 @@ std::string stateos_model_fingerprint(const std::string & path, std::string * er
         *err = "cannot parse the model GGUF header at '" + path + "'";
         return std::string();
     }
-    const uint64_t data_offset = gguf_get_data_offset(g);
+    uint64_t data_offset = gguf_get_data_offset(g);
     gguf_free(g);
 
     std::error_code ec;
-    const std::filesystem::path p = std::filesystem::u8path(path);
+    const std::filesystem::path p = stateos_path(path);
     const uint64_t file_size = (uint64_t) std::filesystem::file_size(p, ec);
-    if (ec || data_offset > file_size) {
+    if (ec) {
         *err = "cannot size the model file '" + path + "'";
         return std::string();
     }
+    // a GGUF without tensor data (vocab-only) ends before its aligned data offset
+    data_offset = std::min(data_offset, file_size);
     std::ifstream f(p, std::ios::binary);
     if (!f.is_open()) {
         *err = "cannot open the model file '" + path + "'";

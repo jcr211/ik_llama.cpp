@@ -2820,6 +2820,16 @@ static llama_context * stateos_own_companion(const server_slot & slot, const lla
     return ctx_mtp;
 }
 
+bool server_context::stateos_companion_supported() const {
+    for (const auto & slot : slots) {
+        std::string why_not;
+        if (stateos_own_companion(slot, model, why_not) != nullptr) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void server_context::stateos_slot_save(const server_task & task, server_slot & slot) {
     const int64_t t_start = ggml_time_us();
     const std::string filename = task.data.at("filename");
@@ -2915,7 +2925,7 @@ void server_context::stateos_slot_save(const server_task & task, server_slot & s
     // every write goes to the .tmp file; the rename at the end is the commit point
     auto fail = [&](const std::string & step) {
         std::error_code ec_rm;
-        std::filesystem::remove(std::filesystem::u8path(tmppath), ec_rm);
+        std::filesystem::remove(stateos_path(tmppath), ec_rm);
         send_slot_error(task, 500, "server_error", "State-OS save failed (" + step + "); no file was written under '" + filename + "'");
     };
     auto append_bytes = [&](const std::vector<std::pair<uint32_t, const std::vector<uint8_t> *>> & parts, const char * mode) {
@@ -2976,13 +2986,13 @@ void server_context::stateos_slot_save(const server_task & task, server_slot & s
     }
 
     std::error_code ec;
-    const std::filesystem::path final_path = std::filesystem::u8path(filepath);
-    std::filesystem::rename(std::filesystem::u8path(tmppath), final_path, ec);
+    const std::filesystem::path final_path = stateos_path(filepath);
+    std::filesystem::rename(stateos_path(tmppath), final_path, ec);
     if (ec) {
         std::error_code ec_rm;
         std::filesystem::remove(final_path, ec_rm);
         ec.clear();
-        std::filesystem::rename(std::filesystem::u8path(tmppath), final_path, ec);
+        std::filesystem::rename(stateos_path(tmppath), final_path, ec);
     }
     if (ec) {
         fail("cannot rename the finished file into place: " + ec.message());

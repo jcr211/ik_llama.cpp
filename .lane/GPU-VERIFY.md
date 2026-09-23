@@ -64,6 +64,10 @@ round (`P` = 190000 ids, `n_predict=16`, no cold control) measures the state byt
 
 ## Pass criteria (Leg A) and kill criteria
 
+- `GET /props` carries `"stateos": {"version": 1, "keyed_header": true, "companion": false}` on the spec-off server
+  (`legA.props_stateos.pass`) and `companion: true` on the spec-on server (`legB.props_stateos.pass`). The appliance
+  enables "Model state rewind" only when this object is present with version ≥ 1. Manual check:
+  `(Invoke-RestMethod http://127.0.0.1:8101/props).stateos`.
 - `identity_4k.verdict` and `identity_32k.verdict` = `PASS`: restored output == in-memory (warm) output, byte-exact
   text, for both restores, and `prompt_n` equal to warm's and ≤ |Z|+1 (no re-prefill). `PASS-IDENTITY /
   REUSE-INCONCLUSIVE` means identity held but the warm run itself re-prefilled (read `prompt_n` in results.json).

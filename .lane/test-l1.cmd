@@ -9,7 +9,7 @@ set "CUDA_VISIBLE_DEVICES=-1"
 
 call :run > "%LOG%" 2>&1
 set "RC=%ERRORLEVEL%"
-echo test-l1 exit=%RC%>> "%LOG%"
+>> "%LOG%" echo test-l1 exit=%RC%
 exit /b %RC%
 
 :run

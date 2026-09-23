@@ -3,6 +3,7 @@
 
 #include "stateos-header.h"
 #include "stateos-model.h"
+#include "stateos-props.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -216,7 +217,7 @@ static void test_verify() {
 static std::filesystem::path g_tmp;
 
 static std::string tmp_file(const std::string & name) {
-    return (g_tmp / name).u8string();
+    return stateos_path_utf8(g_tmp / name);
 }
 
 static bool write_container(const std::string & path, const std::string & header,
@@ -236,12 +237,12 @@ static bool write_container(const std::string & path, const std::string & header
 }
 
 static void write_raw(const std::string & path, const std::vector<uint8_t> & bytes) {
-    std::ofstream f(std::filesystem::u8path(path), std::ios::binary);
+    std::ofstream f(stateos_path(path), std::ios::binary);
     f.write((const char *) bytes.data(), (std::streamsize) bytes.size());
 }
 
 static std::vector<uint8_t> read_all(const std::string & path) {
-    std::ifstream f(std::filesystem::u8path(path), std::ios::binary);
+    std::ifstream f(stateos_path(path), std::ios::binary);
     return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
@@ -425,18 +426,36 @@ static void test_companion() {
     }
 }
 
+// GET /props "stateos": the appliance enables model-state rewind only when this object is present with version >= 1
+static void test_props_capability() {
+    for (const bool companion : { true, false }) {
+        const nlohmann::ordered_json caps = stateos_props_capability(companion);
+        const nlohmann::ordered_json props = { { "n_ctx", 196608 }, { "stateos", caps } }; // as handle_props embeds it
+        const nlohmann::ordered_json back = nlohmann::ordered_json::parse(props.dump());
+        CHECK(back.contains("stateos") && back["stateos"].is_object());
+        CHECK(back["stateos"]["version"].is_number_integer() && back["stateos"]["version"].get<int>() >= 1);
+        CHECK(back["stateos"]["version"].get<int>() == (int) STATEOS_CONTAINER_VERSION);
+        CHECK(back["stateos"]["keyed_header"].is_boolean() && back["stateos"]["keyed_header"].get<bool>());
+        CHECK(back["stateos"]["companion"].is_boolean() && back["stateos"]["companion"].get<bool>() == companion);
+        CHECK(back["stateos"].size() == 3);
+    }
+}
+
 // the current server's model identity (argv[1] = a small GGUF, e.g. models/ggml-vocab-qwen2.gguf)
 static void test_model_fingerprint(const std::string & gguf, const std::string & other_gguf) {
     std::string err;
     const std::string a = stateos_model_fingerprint(gguf, &err);
     CHECK(a.size() == 64);
+    if (a.size() != 64) {
+        std::fprintf(stderr, "  fingerprint error for %s: %s\n", gguf.c_str(), err.c_str());
+    }
     CHECK(stateos_model_fingerprint(gguf, &err) == a); // stable
 
     // same bytes plus a tail: the size is part of the identity
     const std::string grown = tmp_file("grown.gguf");
-    std::filesystem::copy_file(std::filesystem::u8path(gguf), std::filesystem::u8path(grown));
+    std::filesystem::copy_file(stateos_path(gguf), stateos_path(grown));
     {
-        std::ofstream f(std::filesystem::u8path(grown), std::ios::binary | std::ios::app);
+        std::ofstream f(stateos_path(grown), std::ios::binary | std::ios::app);
         const std::string tail(64, 'z');
         f.write(tail.data(), (std::streamsize) tail.size());
     }
@@ -467,6 +486,7 @@ int main(int argc, char ** argv) {
     test_container();
     test_checkpoints();
     test_companion();
+    test_props_capability();
     if (argc > 1) {
         test_model_fingerprint(argv[1], argc > 2 ? argv[2] : "");
     } else {
