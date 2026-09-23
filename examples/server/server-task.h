@@ -361,6 +361,9 @@ struct server_prompt_checkpoint {
 
     std::vector<uint8_t> data;
 
+    // LONGSPEAR State-OS v2: stateos_ckpt_origin (stateos-v2.h). Not serialized.
+    uint8_t origin = 0;
+
     size_t size() const {
         return data.size();
     }

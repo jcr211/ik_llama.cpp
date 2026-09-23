@@ -123,6 +123,20 @@ struct server_slot {
     bool do_checkpoint = false;
     bool image_just_processed = false;
 
+    // LONGSPEAR State-OS v2 divergence telemetry (written only when LONGSPEAR_STATEOS_DIV_LOG=1).
+    // round_* describe the current generation's last decode round; prev_* are copied at release and
+    // reported (then cleared) by the next apply_checkpoint decision. reset() leaves them alone.
+    uint8_t stateos_round_kind = 0;        // stateos_round_kind
+    int32_t stateos_round_n_draft = 0;
+    int32_t stateos_round_n_acc = 0;
+    int32_t stateos_round_stop_idx = -1;   // index in the round's accepted ids where the stop hit, -1 = none
+    uint8_t stateos_prev_round_kind = 0;
+    int32_t stateos_prev_round_n_draft = 0;
+    int32_t stateos_prev_round_n_acc = 0;
+    int32_t stateos_prev_stop_cached_after = -1; // cached tokens after the stopping token (-1: stop token not cached)
+    uint8_t stateos_prev_stop = 0;         // stateos_stop_cause
+    int32_t stateos_prev_n_decoded = 0;
+
     // sampling
     llama_token sampled; // in speculative mode, this is the last accepted token
     llama_tokens drafted;
@@ -390,11 +404,12 @@ struct server_context {
     // Re-aggregates all active vectors and updates the model state
     bool apply_control_vectors_internal();
 
-    bool create_checkpoint(server_slot & slot);
+    // origin: stateos_ckpt_origin (stateos-v2.h), recorded on the checkpoint and in [stateos-div] lines
+    bool create_checkpoint(server_slot & slot, uint8_t origin);
 
     void apply_checkpoint(server_slot & slot);
 
-    void create_checkpoint_at_interval(server_slot & slot);
+    void create_checkpoint_at_interval(server_slot & slot, uint8_t origin);
 
     void release_slot_after_final_response(server_slot & slot);
 };

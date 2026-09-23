@@ -3,6 +3,7 @@
 #include "server-common.h"
 #include "server-task.h"
 #include "server-queue.h"
+#include "stateos-v2.h"
 
 #include "common.h"
 #include "llama.h"
@@ -3607,6 +3608,11 @@ void server_context::add_sampled_tokens() {
             const int min_usable_draft = slot.params.speculative.get_min_usable_stage_n_min();
             if (!slot.spec_target_only && min_usable_draft > (int)draft.size()) {
                 SLT_DBG(slot, "ignoring small draft: %d < %d\n", (int)draft.size(), min_usable_draft);
+                if (stateos_div_log()) {
+                    slot.stateos_round_kind    = STATEOS_ROUND_ROOT_ONLY;
+                    slot.stateos_round_n_draft = 0;
+                    slot.stateos_round_n_acc   = 0;
+                }
                 // fallback to normal decoding
                 slot.i_batch = slot.i_batch_dft[0];
                 slot.drafted.clear();
@@ -3637,6 +3643,11 @@ void server_context::add_sampled_tokens() {
         }
         else {
             // no speculative decoding
+            if (stateos_div_log()) {
+                slot.stateos_round_kind    = STATEOS_ROUND_NON_SPEC;
+                slot.stateos_round_n_draft = 0;
+                slot.stateos_round_n_acc   = 0;
+            }
             slot.i_batch = batch.n_tokens;
 
             common_batch_add(batch, slot.sampled, slot.cache_tokens.pos_next(), { slot.id }, true);
@@ -3667,7 +3678,7 @@ static bool verify_restored_checkpoint(
     return true;
 }
 
-void server_context::create_checkpoint_at_interval(server_slot & slot) {
+void server_context::create_checkpoint_at_interval(server_slot & slot, uint8_t origin) {
     if (!this->params_base.do_checkpoint) {
         return;
     }
@@ -3676,11 +3687,32 @@ void server_context::create_checkpoint_at_interval(server_slot & slot) {
     }
     auto pos = llama_kv_cache_seq_pos_max(slot.ctx, slot.id);
     if (slot.checkpoint_pos + this->params_base.ctx_checkpoints_interval <= pos) {
-        bool created = create_checkpoint(slot);
+        bool created = create_checkpoint(slot, origin);
         if (created) {
             slot.checkpoint_pos = pos;
         }
     }
+}
+
+// LONGSPEAR State-OS v2: tokens [center-2, center+2] as `id:"piece"`, the token at center marked '*'.
+static std::string stateos_token_window(llama_context * ctx, const server_tokens & toks, int32_t center) {
+    std::string out = "[";
+    const int32_t n = (int32_t) toks.size();
+    for (int32_t i = std::max(0, center - 2); i <= center + 2 && i < n; ++i) {
+        const llama_token t = toks[i];
+        if (out.size() > 1) {
+            out += ' ';
+        }
+        if (i == center) {
+            out += '*';
+        }
+        out += std::to_string(t);
+        out += ":\"";
+        out += t == LLAMA_TOKEN_NULL ? std::string("<media>") : stateos_escape_piece(common_token_to_piece(ctx, t, true));
+        out += '"';
+    }
+    out += ']';
+    return out;
 }
 
 void server_context::apply_checkpoint(server_slot & slot) {
@@ -3695,6 +3727,34 @@ void server_context::apply_checkpoint(server_slot & slot) {
         if (pos_min >= pos_min_thold || is_dsv4 || is_openpangu) {
             SLT_WRN(slot, "n_past = %d, slot.prompt.tokens.size() = %d, seq_id = %d, pos_min = %d\n", slot.n_past, (int)slot.cache_tokens.size(), slot.id, pos_min);
 
+            // LONGSPEAR State-OS v2 divergence telemetry. Captured here: a reset below clears cache_tokens.
+            const int32_t stateos_d = slot.n_past;
+            std::string stateos_head;
+            std::string stateos_wins;
+            if (stateos_div_log()) {
+                const int32_t cache_n = slot.cache_tokens.n_tokens();
+                const llama_token cache_tok = slot.cache_tokens[stateos_d];
+                stateos_div_input din;
+                din.cache_n = cache_n;
+                din.n_past = stateos_d;
+                din.cache_tok_is_eog = cache_tok != LLAMA_TOKEN_NULL && llama_token_is_eog(model, cache_tok);
+                din.prev_stop = slot.stateos_prev_stop;
+                stateos_head = string_format(
+                    "[stateos-div] event=restore slot=%d task=%d cache_n=%d n_past=%d n_past_prompt=%d tail_dist=%d bucket=%s class=%s"
+                    " prev_stop=%s prev_round=%s prev_n_draft=%d prev_n_acc=%d prev_cached_after_stop=%d prev_n_decoded=%d",
+                    slot.id, slot.id_task, cache_n, stateos_d, slot.n_past_prompt, cache_n - stateos_d,
+                    stateos_tail_bucket(cache_n - stateos_d), stateos_classify_divergence(din),
+                    stateos_stop_name(slot.stateos_prev_stop), stateos_round_name(slot.stateos_prev_round_kind),
+                    slot.stateos_prev_round_n_draft, slot.stateos_prev_round_n_acc,
+                    slot.stateos_prev_stop_cached_after, slot.stateos_prev_n_decoded);
+                stateos_wins = " cache_win=" + stateos_token_window(ctx, slot.cache_tokens, stateos_d) +
+                               " prompt_win=" + stateos_token_window(ctx, slot.prompt_tokens, slot.n_past_prompt);
+            }
+            int         stateos_chosen_origin  = -1;
+            llama_pos   stateos_chosen_pos_max = -1;
+            double      stateos_restore_ms     = 0.0;
+            const char * stateos_outcome       = "reset:no-checkpoint";
+
             // search for a context checkpoint
             const auto it = std::find_if(
                 slot.server_cached_prompt.checkpoints.rbegin(),
@@ -3707,6 +3767,8 @@ void server_context::apply_checkpoint(server_slot & slot) {
             bool do_reset = it == slot.server_cached_prompt.checkpoints.rend();
 
             if (!do_reset) {
+                stateos_chosen_origin  = it->origin;
+                stateos_chosen_pos_max = it->pos_max;
                 // restore the context checkpoint
                 const int64_t t_start = ggml_time_us();
                 const size_t checkpoint_size = it->data.size();
@@ -3719,15 +3781,20 @@ void server_context::apply_checkpoint(server_slot & slot) {
                 if (!rewound) {
                     SLT_ERR(slot, "checkpoint rewind to %d was refused; reprocessing from scratch\n", it->pos_max + 1);
                     do_reset = true;
+                    stateos_outcome = "reset:rewind-refused";
                 } else if (n != checkpoint_size) {
                     SLT_ERR(slot, "failed to restore context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n", it->pos_min, it->pos_max, it->n_tokens, (float)checkpoint_size / 1024 / 1024);
                     do_reset = true;
+                    stateos_outcome = "reset:restore-failed";
                     //printf("[DEBUG] `do_reset` was set to `true` after failing to restore a checkpoint");
                 } else if (!verify_restored_checkpoint(*it, slot, "")) {
                     do_reset = true;
+                    stateos_outcome = "reset:verify-failed";
                 }
 
                 if (!do_reset) {
+                    stateos_outcome    = "restored";
+                    stateos_restore_ms = (ggml_time_us() - t_start) / 1000.0;
                     if (is_dsv4 || is_openpangu) {
                         pos_next = std::min(pos_next, it->pos_max + 1);
                     } else {
@@ -3775,7 +3842,29 @@ void server_context::apply_checkpoint(server_slot & slot) {
                 pos_next = 0;
                 common_sampler_reset(slot.ctx_sampling);
             }
+
+            if (stateos_div_log()) {
+                // gap = common tokens that must be re-prefilled: D - (restored pos_max + 1), or all of D on a reset
+                const bool restored = !do_reset;
+                const int32_t gap = restored ? stateos_d - (stateos_chosen_pos_max + 1) : stateos_d;
+                fprintf(stderr, "%s chosen_origin=%s chosen_pos_max=%d gap=%d restore_ms=%.2f reason=%s outcome=%s%s\n",
+                    stateos_head.c_str(),
+                    stateos_chosen_origin < 0 ? "none" : stateos_origin_name(stateos_chosen_origin),
+                    stateos_chosen_pos_max, gap, stateos_restore_ms,
+                    restored ? stateos_origin_name(stateos_chosen_origin) : "none",
+                    stateos_outcome, stateos_wins.c_str());
+            }
         }
+    }
+
+    if (stateos_div_log()) {
+        // the previous generation is described to the next prompt's decision only
+        slot.stateos_prev_stop       = STATEOS_STOP_UNKNOWN;
+        slot.stateos_prev_round_kind = STATEOS_ROUND_NONE;
+        slot.stateos_prev_round_n_draft = 0;
+        slot.stateos_prev_round_n_acc   = 0;
+        slot.stateos_prev_stop_cached_after = -1;
+        slot.stateos_prev_n_decoded  = 0;
     }
 
     {
@@ -3837,7 +3926,7 @@ static std::list<server_prompt_checkpoint>::iterator evict_checkpoint_by_varianc
     return it;
 }
 
-bool server_context::create_checkpoint(server_slot & slot) {
+bool server_context::create_checkpoint(server_slot & slot, uint8_t origin) {
     bool do_checkpoint = !slot.image_just_processed;
     int32_t pos_min = llama_kv_cache_seq_pos_min(slot.ctx, slot.id);
     const auto pos_max = llama_kv_cache_seq_pos_max(slot.ctx, slot.id);
@@ -3866,10 +3955,16 @@ bool server_context::create_checkpoint(server_slot & slot) {
 
         auto & cur = slot.server_cached_prompt.checkpoints.emplace_back();
         server_prompt_checkpoint_update(cur, ctx, slot.id, slot.cache_tokens.n_tokens(), checkpoint_pos_min, pos_max, slot.n_past_offset);
+        cur.origin = origin;
 
         SLT_WRN(slot, "created context checkpoint %d of %d (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB, took %.2f ms)\n",
             (int)slot.server_cached_prompt.checkpoints.size(), params_base.ctx_checkpoints_n, cur.pos_min, cur.pos_max, cur.n_tokens, (float)cur.data.size() / 1024 / 1024,
             (ggml_time_us() - t_start) / 1000.0);
+        if (stateos_div_log()) {
+            fprintf(stderr, "[stateos-div] event=create slot=%d task=%d origin=%s pos_min=%d pos_max=%d n_tokens=%" PRId64 " bytes=%zu ms=%.2f n_ckpt=%d\n",
+                slot.id, slot.id_task, stateos_origin_name(origin), cur.pos_min, cur.pos_max, cur.n_tokens, cur.data.size(),
+                (ggml_time_us() - t_start) / 1000.0, (int)slot.server_cached_prompt.checkpoints.size());
+        }
     }
     return do_checkpoint;
 }
@@ -4339,6 +4434,13 @@ void server_context::speculative_decoding_accept() {
         slot.drafted.clear();
         slot.draft_proposal_dists.clear();
 
+        if (stateos_div_log()) {
+            slot.stateos_round_kind     = n_draft > 0 ? STATEOS_ROUND_DRAFTED : STATEOS_ROUND_ROOT_ONLY;
+            slot.stateos_round_n_draft  = (int32_t) n_draft;
+            slot.stateos_round_n_acc    = (int32_t) ids.size() - 1;
+            slot.stateos_round_stop_idx = -1;
+        }
+
         slot.n_past += ids.size();
         const int64_t t_current = ggml_time_us();
         slot.t_token_generation = std::max<int64_t>(1, t_current - slot.t_start_generation) / 1e3;
@@ -4403,6 +4505,9 @@ void server_context::speculative_decoding_accept() {
 
             if (slot.n_buffer == 0 || !params_base.can_ban_phrases) {
                 if (!process_token(result, slot)) {
+                    if (stateos_div_log()) {
+                        slot.stateos_round_stop_idx = (int32_t) i;
+                    }
                     // release slot because of stop condition
                     send_final_response(slot);
                     release_slot_after_final_response(slot);
@@ -4436,8 +4541,24 @@ bool server_context::accept_special_token(const server_slot& slot, const  llama_
 
 void server_context::release_slot_after_final_response(server_slot & slot) {
     slot.print_timings();
+    if (stateos_div_log()) {
+        slot.stateos_prev_round_kind    = slot.stateos_round_kind;
+        slot.stateos_prev_round_n_draft = slot.stateos_round_n_draft;
+        slot.stateos_prev_round_n_acc   = slot.stateos_round_n_acc;
+        slot.stateos_prev_stop          = (uint8_t) stateos_stop_cause_of(slot.stopped_eos, slot.stopped_word, slot.stopped_limit);
+        slot.stateos_prev_n_decoded     = slot.n_decoded;
+        // a drafted round caches ids[0..n_acc-1]; the bonus ids[n_acc] is never cached. A stop at
+        // index i < n_acc therefore leaves n_acc - 1 - i cached tokens after the stopping token.
+        const int32_t stop_idx = slot.stateos_round_stop_idx;
+        slot.stateos_prev_stop_cached_after =
+            slot.stateos_round_kind == STATEOS_ROUND_DRAFTED && stop_idx >= 0 && stop_idx < slot.stateos_round_n_acc
+                ? slot.stateos_round_n_acc - 1 - stop_idx
+                : -1;
+        slot.stateos_round_kind    = STATEOS_ROUND_NONE;
+        slot.stateos_round_stop_idx = -1;
+    }
     if (params_base.do_checkpoint) {
-        create_checkpoint(slot);
+        create_checkpoint(slot, STATEOS_ORIGIN_RELEASE);
     }
     slot.release();
     slot.released = true;
@@ -4794,9 +4915,9 @@ void server_context::process_batch_tokens(int32_t & n_batch) {
                 // save checkpoint during prompt processing
                 if (slot.command == SLOT_COMMAND_LOAD_PROMPT) {
                     if (slot.do_checkpoint) {
-                        create_checkpoint(slot);
+                        create_checkpoint(slot, STATEOS_ORIGIN_TOLERANCE);
                     } else {
-                        create_checkpoint_at_interval(slot);
+                        create_checkpoint_at_interval(slot, STATEOS_ORIGIN_PROMPT_INTERVAL);
                     }
                 }
                 continue; // continue loop of slots
@@ -4867,13 +4988,13 @@ void server_context::process_batch_tokens(int32_t & n_batch) {
                 metrics.on_prompt_eval(slot);
                 // create checkpoint after prompt processing ends
                 if (params_base.ctx_checkpoints_tolerance<=0 && params_base.do_checkpoint) {
-                    create_checkpoint(slot);
+                    create_checkpoint(slot, STATEOS_ORIGIN_TOLERANCE);
                 }
             }
 
             // create checkpoint during generation
             if (slot.n_decoded > 1) {
-                create_checkpoint_at_interval(slot);
+                create_checkpoint_at_interval(slot, STATEOS_ORIGIN_GEN_INTERVAL);
             }
 
             slot.t_token_generation = std::max<int64_t>(1, t_current - slot.t_start_generation) / 1e3;
@@ -5017,6 +5138,11 @@ void server_context::update_slots() {
             slot.i_batch_dft.clear();
             slot.n_past = slot.cache_tokens.n_tokens();
             slot.spec_target_only = false;
+            if (stateos_div_log()) {
+                slot.stateos_round_kind    = STATEOS_ROUND_ROOT_ONLY;
+                slot.stateos_round_n_draft = 0;
+                slot.stateos_round_n_acc   = 0;
+            }
             SLT_WRN(slot, "%s", "spec checkpoint unavailable; removed draft rows and continuing root-only\n");
         };
 
