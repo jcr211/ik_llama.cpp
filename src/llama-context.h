@@ -204,6 +204,11 @@ struct llama_kv_cache {
         int fixed_spec_mode = LLAMA_SPEC_CKPT_NONE;
         int32_t fixed_max_tokens = 0;
 
+        // LONGSPEAR_SPEC_HOST_TIMING: split of the last checkpoint_save (host microseconds)
+        int64_t t_save_cells_us  = 0;
+        int64_t t_save_shadow_us = 0;
+        int64_t t_save_sync_us   = 0;
+
         // Serialised sequence state for CPU mode
         std::vector<uint8_t> cpu_state_data;
 

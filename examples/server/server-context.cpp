@@ -3565,6 +3565,8 @@ void server_context::add_sampled_tokens() {
 
             auto & params_spec = slot.params.speculative;
             const llama_pos draft_base_pos = slot.uses_mtp() ? slot.cache_tokens.pos_next() : -1;
+            const bool host_timing = common_speculative_host_timing_enabled();
+            const int64_t t_draft0 = host_timing ? ggml_time_us() : 0;
             common_speculative_draft_result draft_result = common_speculative_draft_ex(
                 slot.spec,
                 ctx,
@@ -3574,6 +3576,11 @@ void server_context::add_sampled_tokens() {
                 draft_base_pos,
                 slot.id,
                 &slot.sparams);
+            if (host_timing) {
+                if (auto * timing = common_speculative_host_timing_get(slot.spec); timing != nullptr) {
+                    timing->draft_host_us = ggml_time_us() - t_draft0;
+                }
+            }
             llama_tokens & draft = draft_result.tokens;
             auto & proposal_dists = draft_result.proposal_dists;
             slot.spec_target_only = draft_result.target_only;
@@ -4309,10 +4316,17 @@ void server_context::speculative_decoding_accept() {
 
         // the accepted tokens from the speculation
         std::vector<llama_token> ids;
+        const bool host_timing = common_speculative_host_timing_enabled();
+        const int64_t t_sample0 = host_timing ? ggml_time_us() : 0;
         try {
             ids = slot.draft_proposal_dists.empty()
                 ? common_sampler_sample_and_accept_n(slot.ctx_sampling, ctx, slot.i_batch_dft, slot.drafted)
                 : common_sampler_sample_and_accept_n(slot.ctx_sampling, ctx, slot.i_batch_dft, slot.drafted, slot.draft_proposal_dists);
+            if (host_timing) {
+                if (auto * timing = common_speculative_host_timing_get(slot.spec); timing != nullptr) {
+                    timing->sample_us = ggml_time_us() - t_sample0;
+                }
+            }
         } catch (const std::exception & e) {
             LOG_ERROR("speculative sampling failed, releasing slot", {
                 {"id_slot", slot.id},
@@ -4364,7 +4378,7 @@ void server_context::speculative_decoding_accept() {
         slot.sampled = ids.back(); // last accepted token
         slot.n_past = slot.cache_tokens.n_tokens();
 
-        if (!common_speculative_commit(
+        const bool committed = common_speculative_commit(
             slot.spec,
             ctx,
             slot.ctx_sampling,
@@ -4373,7 +4387,11 @@ void server_context::speculative_decoding_accept() {
             ids,
             n_draft,
             spec_pos_base,
-            accepted_output_indices)) {
+            accepted_output_indices);
+        if (host_timing) {
+            common_speculative_host_timing_emit(slot.spec, slot.id, (int) n_draft + 1, (int) ids.size() - 1);
+        }
+        if (!committed) {
             LOG_ERROR("speculative checkpoint restore/commit failed, releasing slot", {
                 {"id_slot", slot.id},
                 {"id_task", slot.id_task},

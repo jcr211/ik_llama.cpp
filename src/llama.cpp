@@ -2140,6 +2140,17 @@ bool llama_kv_cache::checkpoint_alloc_shadows(bool conv_only_shadow) {
     return true;
 }
 
+// LONGSPEAR speculative-checkpoint flags: read once, "1" enables, unset keeps today's behaviour
+static bool llama_ls_flag(const char * name) {
+    const char * value = getenv(name);
+    return value != nullptr && strcmp(value, "1") == 0;
+}
+
+static bool llama_spec_host_timing_enabled() {
+    static const bool enabled = llama_ls_flag("LONGSPEAR_SPEC_HOST_TIMING");
+    return enabled;
+}
+
 bool llama_kv_cache::checkpoint_save(ggml_backend_sched_t sched) {
     if (!checkpoint_alloc_shadows(false)) {
         return false;
@@ -2149,9 +2160,14 @@ bool llama_kv_cache::checkpoint_save(ggml_backend_sched_t sched) {
 
     const uint32_t n_layer = (uint32_t)s_l.size();
 
+    const bool timing = llama_spec_host_timing_enabled();
+    const int64_t t_cells0 = timing ? ggml_time_us() : 0;
+
     ckpt.cells_snapshot = cells;
     ckpt.head_snapshot  = head;
     ckpt.used_snapshot  = used;
+
+    const int64_t t_shadow0 = timing ? ggml_time_us() : 0;
 
     std::unordered_set<ggml_backend_t> backends_to_sync;
 
@@ -2180,8 +2196,16 @@ bool llama_kv_cache::checkpoint_save(ggml_backend_sched_t sched) {
         }
     }
 
+    const int64_t t_sync0 = timing ? ggml_time_us() : 0;
+
     for (auto backend : backends_to_sync) {
         ggml_backend_synchronize(backend);
+    }
+
+    if (timing) {
+        ckpt.t_save_cells_us  = t_shadow0 - t_cells0;
+        ckpt.t_save_shadow_us = t_sync0 - t_shadow0;
+        ckpt.t_save_sync_us   = ggml_time_us() - t_sync0;
     }
 
     ckpt.saved = true;
@@ -9973,6 +9997,10 @@ int llama_spec_ckpt_init(struct llama_context * ctx, int mode, int max_tokens) {
 bool llama_spec_ckpt_save(struct llama_context * ctx, llama_seq_id seq_id) {
     auto & kv = ctx->kv_self;
 
+    if (llama_spec_host_timing_enabled()) {
+        kv.ckpt.t_save_cells_us = kv.ckpt.t_save_shadow_us = kv.ckpt.t_save_sync_us = 0;
+    }
+
     switch (kv.ckpt.selected_spec_mode) {
         case LLAMA_SPEC_CKPT_PER_STEP:
             if (ctx->model.arch == LLM_ARCH_DEEPSEEK4) {
@@ -10086,6 +10114,14 @@ void llama_spec_ckpt_discard(struct llama_context * ctx) {
     kv.ckpt.selected_spec_mode = LLAMA_SPEC_CKPT_NONE;
     kv.ckpt.cpu_state_data.clear();
     llama_dsv4_spec_ckpt_discard(ctx);
+}
+
+void llama_spec_ckpt_last_save_timing(const struct llama_context * ctx,
+        int64_t * cells_us, int64_t * shadow_us, int64_t * sync_us) {
+    const auto & ckpt = ctx->kv_self.ckpt;
+    if (cells_us)  *cells_us  = ckpt.t_save_cells_us;
+    if (shadow_us) *shadow_us = ckpt.t_save_shadow_us;
+    if (sync_us)   *sync_us   = ckpt.t_save_sync_us;
 }
 
 bool llama_kv_cache_seq_rm(struct llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1) {

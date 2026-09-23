@@ -39,6 +39,36 @@ struct common_speculative_checkpoint {
     void clear();
 };
 
+// LONGSPEAR_SPEC_HOST_TIMING=1 (off by default): host microseconds of one verify round, printed as a
+// single [spec-host] line on stderr. restore_result is -1 when the round restored nothing (every
+// draft accepted); mtp_skip counts MTP draft skips since the previous verify round.
+struct common_speculative_host_timing {
+    int     mode             = LLAMA_SPEC_CKPT_NONE;
+    int     restore_result   = -1;
+    int     redecode_n       = 0;
+    int     mtp_skip         = 0;
+    int     clamp            = 0;
+    int64_t ckpt_init_us     = 0;
+    int64_t ckpt_save_us     = 0;
+    int64_t save_cells_us    = 0;
+    int64_t save_shadow_us   = 0;
+    int64_t save_sync_us     = 0;
+    int64_t sampler_init_us  = 0;
+    int64_t sampler_clone_us = 0;
+    int64_t restore_us       = 0;
+    int64_t redecode_us      = 0;
+    int64_t draft_host_us    = 0;
+    int64_t sample_us        = 0;
+};
+
+bool common_speculative_host_timing_enabled();
+
+// this slot's record for the round in progress (nullptr without a speculative state)
+common_speculative_host_timing * common_speculative_host_timing_get(common_speculative * spec);
+
+// print the [spec-host] line for a finished verify round of n_verify tokens and clear the record
+void common_speculative_host_timing_emit(common_speculative * spec, int id_slot, int n_verify, int n_accepted);
+
 struct common_speculative_draft_result {
     llama_tokens tokens;
     std::vector<common_speculative_token_dist> proposal_dists; // Sparse proposal distributions populated by stochastic DFlash2

@@ -879,6 +879,12 @@ extern "C" {
     // Discard the saved checkpoint and reset internal mode state.
     LLAMA_API void llama_spec_ckpt_discard(struct llama_context * ctx);
 
+    // LONGSPEAR_SPEC_HOST_TIMING=1 (off by default): host microseconds of the last checkpoint save,
+    // split into the cells-vector copy, the async shadow copies and the blocking sync. All three
+    // are zero when the flag is unset or the last save did not take the gpu-fallback path.
+    LLAMA_API void llama_spec_ckpt_last_save_timing(const struct llama_context * ctx,
+            int64_t * cells_us, int64_t * shadow_us, int64_t * sync_us);
+
     // Removes all tokens that belong to the specified sequence and have positions in [p0, p1)
     // Returns false if a partial sequence cannot be removed. Removing a whole sequence never fails
     // seq_id < 0 : match any sequence

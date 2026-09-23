@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
@@ -229,6 +230,7 @@ static int32_t common_speculative_feature_width(const common_speculative * spec)
 static void mtp_invalidate_cached_drafts(common_speculative_state_mtp & state);
 static bool common_speculative_checkpoint_save(
     common_speculative_checkpoint & ckpt,
+    common_speculative_host_timing * timing,
     llama_model * model,
     llama_context * ctx,
     common_sampler * sampler_src,
@@ -280,6 +282,9 @@ struct common_speculative_state_mtp : public common_speculative_state {
     int n_embd = 0;
     std::unordered_map<llama_seq_id, std::vector<float>> target_hidden_by_seq;
     std::unordered_map<llama_seq_id, mtp_last_embd> draft_cache_by_seq;
+    // the last draft() call returned no draft because the target hidden state was missing
+    // (read by the LONGSPEAR_SPEC_HOST_TIMING mtp_skip counter)
+    bool last_draft_skipped = false;
 
     common_speculative_state_mtp(
             enum common_speculative_type type,
@@ -358,14 +363,17 @@ struct common_speculative_state_mtp : public common_speculative_state {
         llama_context * ctx = ctx_mtp;
         mtp_heads_active = std::max<int32_t>(0, params.mtp_heads);
 
+        last_draft_skipped = false;
         const auto hidden_it = target_hidden_by_seq.find(seq_id);
         if (hidden_it == target_hidden_by_seq.end() || (int) hidden_it->second.size() != n_embd) {
             LOG_WRN("%s: missing target hidden state for seq_id %d\n", __func__, (int) seq_id);
+            last_draft_skipped = true;
             result.clear();
             return;
         }
 
         if (!llama_set_draft_input_hidden_state_copy(ctx, hidden_it->second.data(), hidden_it->second.size())) {
+            last_draft_skipped = true;
             result.clear();
             return;
         }
@@ -1101,7 +1109,59 @@ struct common_speculative {
     bool last_step_target_only = false;
     float draft_temperature = 0.0f;
     uint32_t draft_seed = LLAMA_DEFAULT_SEED;
+    common_speculative_host_timing host_timing; // LONGSPEAR_SPEC_HOST_TIMING only
 };
+
+bool common_speculative_host_timing_enabled() {
+    static const bool enabled = [] {
+        const char * value = getenv("LONGSPEAR_SPEC_HOST_TIMING");
+        return value != nullptr && strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+common_speculative_host_timing * common_speculative_host_timing_get(common_speculative * spec) {
+    return spec != nullptr ? &spec->host_timing : nullptr;
+}
+
+static const char * common_speculative_restore_result_name(int result) {
+    switch (result) {
+        case -1:                                           return "none";
+        case LLAMA_SPEC_CKPT_RESTORE_DIRECT:               return "direct";
+        case LLAMA_SPEC_CKPT_RESTORE_BASE_REPLAY_REQUIRED: return "replay";
+        case LLAMA_SPEC_CKPT_RESTORE_FAILED:               return "failed";
+        default:                                           return "unknown";
+    }
+}
+
+static const char * common_speculative_ckpt_mode_name(int mode) {
+    switch (mode) {
+        case LLAMA_SPEC_CKPT_PER_STEP:     return "per-step";
+        case LLAMA_SPEC_CKPT_GPU_FALLBACK: return "gpu-fallback";
+        case LLAMA_SPEC_CKPT_CPU:          return "cpu";
+        default:                           return "none";
+    }
+}
+
+void common_speculative_host_timing_emit(common_speculative * spec, int id_slot, int n_verify, int n_accepted) {
+    if (spec == nullptr) {
+        return;
+    }
+    const common_speculative_host_timing & t = spec->host_timing;
+    fprintf(stderr,
+            "[spec-host] slot=%d mode=%s K=%d accepted=%d restore_result=%s redecode_n=%d"
+            " ckpt_init_us=%lld ckpt_save_us=%lld cells_copy_us=%lld shadow_copy_us=%lld sync_us=%lld"
+            " sampler_init_us=%lld sampler_clone_us=%lld restore_us=%lld redecode_us=%lld"
+            " draft_host_us=%lld sample_us=%lld mtp_skip=%d clamp=%d\n",
+            id_slot, common_speculative_ckpt_mode_name(t.mode), n_verify, n_accepted,
+            common_speculative_restore_result_name(t.restore_result), t.redecode_n,
+            (long long) t.ckpt_init_us, (long long) t.ckpt_save_us, (long long) t.save_cells_us,
+            (long long) t.save_shadow_us, (long long) t.save_sync_us,
+            (long long) t.sampler_init_us, (long long) t.sampler_clone_us,
+            (long long) t.restore_us, (long long) t.redecode_us,
+            (long long) t.draft_host_us, (long long) t.sample_us, t.mtp_skip, t.clamp);
+    spec->host_timing = {};
+}
 
 static bool common_speculative_stage_chain_matches(
         const std::vector<common_speculative_stage_params> & stages,
@@ -1933,10 +1993,26 @@ common_speculative_draft_result common_speculative_draft_ex(
         spec->draft_seed = sampling != nullptr ? sampling->seed : LLAMA_DEFAULT_SEED;
     }
 
+    // a new round starts here; MTP skips accumulate until the next verify round prints them
+    const bool host_timing = spec != nullptr && common_speculative_host_timing_enabled();
+    common_speculative_state_mtp * mtp_timing_state = nullptr;
+    if (host_timing) {
+        const int mtp_skip = spec->host_timing.mtp_skip;
+        spec->host_timing = {};
+        spec->host_timing.mtp_skip = mtp_skip;
+        mtp_timing_state = common_speculative_get_mtp_state(spec);
+        if (mtp_timing_state != nullptr) {
+            mtp_timing_state->last_draft_skipped = false;
+        }
+    }
+
     if (common_speculative_has_type(spec, COMMON_SPECULATIVE_TYPE_MTP)) {
         if (!common_speculative_ensure_sequence_hidden(spec, ctx, draft_seq_id, draft_base_pos - 1)) {
             LOG_ERR("%s: seq_id=%d MTP hidden state is empty during speculation\n",
                     __func__, (int) draft_seq_id);
+            if (host_timing) {
+                spec->host_timing.mtp_skip++;
+            }
             return result;
         }
     }
@@ -1948,6 +2024,9 @@ common_speculative_draft_result common_speculative_draft_ex(
         id_last,
         draft_base_pos,
         draft_seq_id);
+    if (mtp_timing_state != nullptr && mtp_timing_state->last_draft_skipped) {
+        spec->host_timing.mtp_skip++;
+    }
     result.type = spec != nullptr && spec->curr_impl != nullptr
         ? spec->curr_impl->type
         : COMMON_SPECULATIVE_TYPE_NONE;
@@ -2278,6 +2357,7 @@ bool common_speculative_before_draft(
 
     return common_speculative_checkpoint_save(
         spec->checkpoint,
+        common_speculative_host_timing_enabled() ? &spec->host_timing : nullptr,
         model,
         ctx,
         sampler_src,
@@ -2477,6 +2557,7 @@ bool common_speculative_commit_accepted_output(
 
 static bool common_speculative_checkpoint_save(
         common_speculative_checkpoint & ckpt,
+        common_speculative_host_timing * timing,
         llama_model * model,
         llama_context * ctx,
         common_sampler * sampler_src,
@@ -2490,19 +2571,37 @@ static bool common_speculative_checkpoint_save(
     ckpt.n_past = n_past;
     ckpt.sampled = sampled;
 
+    int64_t t0 = timing ? ggml_time_us() : 0;
     const int actual_mode = llama_spec_ckpt_init(ctx, ckpt_mode, max_tokens);
+    if (timing) {
+        const int64_t t1 = ggml_time_us();
+        timing->ckpt_init_us += t1 - t0;
+        timing->mode = actual_mode;
+        t0 = t1;
+    }
     if (actual_mode == LLAMA_SPEC_CKPT_NONE) {
         return false;
     }
     ckpt.mode = actual_mode;
 
     ckpt.valid = llama_spec_ckpt_save(ctx, seq_id);
+    if (timing) {
+        const int64_t t1 = ggml_time_us();
+        timing->ckpt_save_us += t1 - t0;
+        llama_spec_ckpt_last_save_timing(ctx, &timing->save_cells_us, &timing->save_shadow_us, &timing->save_sync_us);
+        t0 = t1;
+    }
     if (!ckpt.valid) {
         llama_spec_ckpt_discard(ctx);
         return false;
     }
 
     ckpt.sampler = common_sampler_init(model, sparams);
+    if (timing) {
+        const int64_t t1 = ggml_time_us();
+        timing->sampler_init_us += t1 - t0;
+        t0 = t1;
+    }
     if (ckpt.sampler == nullptr) {
         common_speculative_checkpoint_discard(ckpt, ctx);
         return false;
@@ -2510,6 +2609,9 @@ static bool common_speculative_checkpoint_save(
 
     if (sampler_src != nullptr) {
         common_sampler_clone(sampler_src, ckpt.sampler);
+        if (timing) {
+            timing->sampler_clone_us += ggml_time_us() - t0;
+        }
     }
 
     return true;
@@ -2542,9 +2644,17 @@ bool common_speculative_checkpoint_restore(
         return true;
     }
 
+    common_speculative_host_timing * timing = spec != nullptr && common_speculative_host_timing_enabled()
+        ? &spec->host_timing : nullptr;
+
     const int step = (int) ids.size() - 1;
+    const int64_t t_restore0 = timing ? ggml_time_us() : 0;
     const enum llama_spec_ckpt_restore_result restore_result = llama_spec_ckpt_restore_ex(
             ctx, seq_id, ckpt.n_past, ckpt.mode == LLAMA_SPEC_CKPT_PER_STEP ? step : 0);
+    if (timing) {
+        timing->restore_us += ggml_time_us() - t_restore0;
+        timing->restore_result = (int) restore_result;
+    }
     if (restore_result == LLAMA_SPEC_CKPT_RESTORE_FAILED) {
         LOG_ERR("%s: seq_id=%d speculative checkpoint restore failed\n", __func__, (int) seq_id);
         common_speculative_checkpoint_discard(ckpt, ctx);
@@ -2559,7 +2669,11 @@ bool common_speculative_checkpoint_restore(
 
     if (restore_result == LLAMA_SPEC_CKPT_RESTORE_DIRECT) {
         if (ckpt.sampler != nullptr && sampler_dst != nullptr) {
+            const int64_t t_clone0 = timing ? ggml_time_us() : 0;
             common_sampler_clone(ckpt.sampler, sampler_dst);
+            if (timing) {
+                timing->sampler_clone_us += ggml_time_us() - t_clone0;
+            }
         }
         if (sampler_dst != nullptr) {
             for (llama_token id : ids) {
@@ -2587,7 +2701,11 @@ bool common_speculative_checkpoint_restore(
                 __func__, (int) seq_id, step, (int) (n_draft - (ids.size() - 1)));
     } else {
         if (ckpt.sampler != nullptr && sampler_dst != nullptr) {
+            const int64_t t_clone0 = timing ? ggml_time_us() : 0;
             common_sampler_clone(ckpt.sampler, sampler_dst);
+            if (timing) {
+                timing->sampler_clone_us += ggml_time_us() - t_clone0;
+            }
         }
 
         if (!ids.empty()) {
@@ -2606,7 +2724,12 @@ bool common_speculative_checkpoint_restore(
                 llama_set_embeddings(ctx, true);
             }
 
+            const int64_t t_redecode0 = timing ? ggml_time_us() : 0;
             const int ret = llama_decode(ctx, re_batch);
+            if (timing) {
+                timing->redecode_us += ggml_time_us() - t_redecode0;
+                timing->redecode_n  += n_re;
+            }
             if (ret != 0) {
                 LOG_ERR("%s: seq_id=%d failed to re-decode accepted tokens after checkpoint restore: %d\n",
                         __func__, (int) seq_id, ret);
