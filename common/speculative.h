@@ -69,6 +69,15 @@ common_speculative_host_timing * common_speculative_host_timing_get(common_specu
 // print the [spec-host] line for a finished verify round of n_verify tokens and clear the record
 void common_speculative_host_timing_emit(common_speculative * spec, int id_slot, int n_verify, int n_accepted);
 
+// LONGSPEAR_SPEC_CKPT_MAX_TOKENS=M (off when unset or < 2): the per-step checkpoint capacity fixed at
+// startup, instead of the longest verify batch the stage chain can build
+int common_speculative_ckpt_max_tokens_override();
+
+// LONGSPEAR_SPEC_CLAMP_TO_CKPT=1 with a capacity override M: a draft longer than M-1 tokens keeps its
+// first M-1 instead of falling back to a root-only batch that drops every draft. Returns how many
+// draft tokens to drop (0 when off or when the draft fits) and counts the clamp.
+int common_speculative_ckpt_clamp(common_speculative * spec, const llama_model * model, size_t n_draft);
+
 struct common_speculative_draft_result {
     llama_tokens tokens;
     std::vector<common_speculative_token_dist> proposal_dists; // Sparse proposal distributions populated by stochastic DFlash2

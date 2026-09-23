@@ -1110,6 +1110,8 @@ struct common_speculative {
     float draft_temperature = 0.0f;
     uint32_t draft_seed = LLAMA_DEFAULT_SEED;
     common_speculative_host_timing host_timing; // LONGSPEAR_SPEC_HOST_TIMING only
+    size_t n_ckpt_clamps = 0;                   // LONGSPEAR_SPEC_CLAMP_TO_CKPT: clamped rounds
+    size_t n_ckpt_clamped_tokens = 0;           //   and the draft tokens they dropped
 };
 
 bool common_speculative_host_timing_enabled() {
@@ -1161,6 +1163,36 @@ void common_speculative_host_timing_emit(common_speculative * spec, int id_slot,
             (long long) t.restore_us, (long long) t.redecode_us,
             (long long) t.draft_host_us, (long long) t.sample_us, t.mtp_skip, t.clamp);
     spec->host_timing = {};
+}
+
+int common_speculative_ckpt_max_tokens_override() {
+    static const int value = [] {
+        const char * v = getenv("LONGSPEAR_SPEC_CKPT_MAX_TOKENS");
+        const int n = v != nullptr ? atoi(v) : 0;
+        return n >= 2 ? n : 0;
+    }();
+    return value;
+}
+
+int common_speculative_ckpt_clamp(common_speculative * spec, const llama_model * model, size_t n_draft) {
+    static const bool enabled = [] {
+        const char * value = getenv("LONGSPEAR_SPEC_CLAMP_TO_CKPT");
+        return value != nullptr && strcmp(value, "1") == 0;
+    }();
+    if (!enabled || spec == nullptr || !common_speculative_needs_checkpoint(model)) {
+        return 0;
+    }
+
+    const int capacity = common_speculative_ckpt_max_tokens_override();
+    if (capacity <= 0 || n_draft <= (size_t) (capacity - 1)) {
+        return 0;
+    }
+
+    const int n_drop = (int) n_draft - (capacity - 1);
+    spec->n_ckpt_clamps++;
+    spec->n_ckpt_clamped_tokens += (size_t) n_drop;
+    spec->host_timing.clamp += n_drop;
+    return n_drop;
 }
 
 static bool common_speculative_stage_chain_matches(
@@ -1453,8 +1485,16 @@ common_speculative * common_speculative_init(
     }
 
     if (!configs.empty() && common_speculative_needs_checkpoint(target_model)) {
-        // A verify batch contains the sampled root plus the longest draft from any stage.
-        const int ckpt_tokens = params.get_max_verify_batch_tokens();
+        // A verify batch contains the sampled root plus the longest draft from any stage, unless
+        // LONGSPEAR_SPEC_CKPT_MAX_TOKENS fixes a smaller per-step capacity (longer drafts are then
+        // clamped or run root-only)
+        const int ckpt_tokens_chain = params.get_max_verify_batch_tokens();
+        const int ckpt_override     = common_speculative_ckpt_max_tokens_override();
+        const int ckpt_tokens       = ckpt_override > 0 ? ckpt_override : ckpt_tokens_chain;
+        if (ckpt_override > 0) {
+            LOG_INF("%s: speculative checkpoint capacity = %d tokens (LONGSPEAR_SPEC_CKPT_MAX_TOKENS; stage chain needs %d)\n",
+                    __func__, ckpt_override, ckpt_tokens_chain);
+        }
         const int actual_mode = llama_spec_ckpt_init(ctx_tgt, params.spec_ckpt_mode, ckpt_tokens);
         if (actual_mode == LLAMA_SPEC_CKPT_NONE) {
             LOG_ERR("%s: failed to prepare speculative checkpoint mode '%s' during speculative init (max_tokens=%d)\n",
@@ -2870,6 +2910,11 @@ void common_speculative_print_stats(const common_speculative * spec, double slot
                 impl->n_acc_tokens,
                 str_perf.c_str());
 
+    }
+
+    if (spec->n_ckpt_clamps > 0) {
+        LOG_INF("statistics ckpt-clamp: #clamped drafts = %zu, #dropped draft tokens = %zu\n",
+                spec->n_ckpt_clamps, spec->n_ckpt_clamped_tokens);
     }
 
     if (spec->tuner && spec->tuner->enabled && slot_tps > 0.0 && n_decoded > 0) {

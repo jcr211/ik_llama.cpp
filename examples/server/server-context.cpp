@@ -3600,6 +3600,14 @@ void server_context::add_sampled_tokens() {
                 }
             }
 
+            // LONGSPEAR_SPEC_CLAMP_TO_CKPT: fit the draft to the per-step checkpoint capacity
+            if (const int n_drop = common_speculative_ckpt_clamp(slot.spec, model, draft.size()); n_drop > 0) {
+                draft.resize(draft.size() - n_drop);
+                if (!proposal_dists.empty()) {
+                    proposal_dists.resize(draft.size());
+                }
+            }
+
             if (!proposal_dists.empty() && proposal_dists.size() != draft.size()) {
                 SLT_WRN(slot, "discarding mismatched DFlash2 proposal distributions (%d != %d)\n",
                         (int) proposal_dists.size(), (int) draft.size());
