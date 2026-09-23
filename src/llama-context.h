@@ -226,12 +226,22 @@ struct llama_kv_cache {
         bool shadow_conv_only = false;
         bool saved     = false;
 
+        // LONGSPEAR State-OS v2 (SV2-E1): the position whose recurrent state the full gpu-fallback
+        // shadow holds (root position - 1 of the last successful save), -1 = none. Recorded only by
+        // llama_spec_ckpt_save_at (LONGSPEAR_STATEOS_TAIL_SNAPSHOT=1); every save, load, clear,
+        // defrag and every seq_rm/seq_add/seq_div at or below it resets it.
+        llama_pos    shadow_pos = -1;
+        llama_seq_id shadow_seq = -1;
+
         void release_dsv4_per_step();
         void release_dsv4_snapshot();
 
         void release() {
             release_dsv4_per_step();
             release_dsv4_snapshot();
+
+            shadow_pos = -1;
+            shadow_seq = -1;
 
             for (struct ggml_context * ctx : shadow_ctxs) {
                 ggml_free(ctx);

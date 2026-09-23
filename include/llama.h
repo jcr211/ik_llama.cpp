@@ -879,6 +879,20 @@ extern "C" {
     // Discard the saved checkpoint and reset internal mode state.
     LLAMA_API void llama_spec_ckpt_discard(struct llama_context * ctx);
 
+    // LONGSPEAR State-OS v2 (SV2-E1, fork-only). The gpu-fallback shadow holds the recurrent state
+    // from before the last verify batch, i.e. the state after position root_pos - 1.
+    // llama_spec_ckpt_save_at = llama_spec_ckpt_save, plus: records that position (only for a full
+    // gpu-fallback shadow, only after the copy succeeded; -1 before it starts). llama_spec_ckpt_save
+    // itself leaves no position recorded. Loads, clears, defrag and seq_rm/seq_add/seq_div at or
+    // below the position forget it.
+    LLAMA_API bool      llama_spec_ckpt_save_at(struct llama_context * ctx, llama_seq_id seq_id, llama_pos root_pos);
+    // Position whose state the shadow holds for seq_id, or -1.
+    LLAMA_API llama_pos llama_spec_ckpt_shadow_pos(const struct llama_context * ctx, llama_seq_id seq_id);
+    // Forget the recorded shadow position (e.g. after a failed speculative commit).
+    LLAMA_API void      llama_spec_ckpt_shadow_invalidate(struct llama_context * ctx);
+    // The fixed checkpoint mode chosen at speculative init (enum llama_spec_ckpt_mode), NONE before.
+    LLAMA_API int       llama_spec_ckpt_fixed_mode(const struct llama_context * ctx);
+
     // Removes all tokens that belong to the specified sequence and have positions in [p0, p1)
     // Returns false if a partial sequence cannot be removed. Removing a whole sequence never fails
     // seq_id < 0 : match any sequence
@@ -1028,6 +1042,35 @@ extern "C" {
                           size_t   size,
                     llama_seq_id   seq_id,
            llama_state_seq_flags   flags);
+
+    // LONGSPEAR State-OS v2 (SV2-E1, fork-only): the same writer with two options.
+    //  - pos_max_cap >= 0: the cell metadata keeps only cells with pos <= pos_max_cap, so a restore
+    //    re-tags exactly those cells (cap < 0: all cells, the legacy bytes);
+    //  - source SPEC_SHADOW: the recurrent rows come from the gpu-fallback shadow; requires
+    //    pos_max_cap == llama_spec_ckpt_shadow_pos(ctx, seq_id).
+    // With (cap < 0, LIVE) the result equals llama_state_seq_get_size / _get_data. Anything else
+    // needs PARTIAL_ONLY, one sequence, defrag off (defrag_thold < 0), no position-indexed side state,
+    // and (LIVE) cap >= the live pos_max; otherwise it is refused with a log line and returns 0.
+    enum llama_state_seq_source {
+        LLAMA_STATE_SEQ_SOURCE_LIVE        = 0,
+        LLAMA_STATE_SEQ_SOURCE_SPEC_SHADOW = 1,
+    };
+
+    LLAMA_API size_t llama_state_seq_get_size_ext(
+            struct llama_context * ctx,
+                    llama_seq_id   seq_id,
+           llama_state_seq_flags   flags,
+                       llama_pos   pos_max_cap,
+     enum llama_state_seq_source   source);
+
+    LLAMA_API size_t llama_state_seq_get_data_ext(
+            struct llama_context * ctx,
+                         uint8_t * dst,
+                          size_t   size,
+                    llama_seq_id   seq_id,
+           llama_state_seq_flags   flags,
+                       llama_pos   pos_max_cap,
+     enum llama_state_seq_source   source);
 
     // Copy the sequence data (originally copied with `llama_state_seq_get_data`) into the specified sequence
     // Returns:

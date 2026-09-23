@@ -2446,7 +2446,22 @@ bool llama_kv_cache::per_step_restore(const llama_model & model, ggml_backend_sc
     return true;
 }
 
+// LONGSPEAR State-OS v2 (SV2-E1): forget the position the speculative shadow holds. Called by every
+// operation that rewrites, removes or re-positions sequence history at or below it, so a stale
+// shadow is never serialized as a tail snapshot. No-op unless llama_spec_ckpt_save_at recorded one.
+static inline void llama_kv_shadow_invalidate(struct llama_kv_cache & cache) {
+    cache.ckpt.shadow_pos = -1;
+    cache.ckpt.shadow_seq = -1;
+}
+
+static inline void llama_kv_shadow_invalidate_from(struct llama_kv_cache & cache, llama_seq_id seq_id, llama_pos p0) {
+    if (cache.ckpt.shadow_pos >= 0 && (seq_id < 0 || seq_id == cache.ckpt.shadow_seq) && p0 <= cache.ckpt.shadow_pos) {
+        llama_kv_shadow_invalidate(cache);
+    }
+}
+
 static void llama_kv_cache_clear(struct llama_kv_cache & cache) {
+    llama_kv_shadow_invalidate(cache);
     for (int32_t i = 0; i < (int32_t) cache.size; ++i) {
         cache.cells[i].pos = -1;
         cache.cells[i].src = i;
@@ -2471,6 +2486,10 @@ static bool llama_kv_cache_seq_rm(
 
     if (p0 < 0) p0 = 0;
     if (p1 < 0) p1 = std::numeric_limits<llama_pos>::max();
+
+    if (p1 > p0) {
+        llama_kv_shadow_invalidate_from(cache, seq_id, p0);
+    }
 
     // models like Mamba can't have a state partially erased
     if (cache.recurrent) {
@@ -2568,6 +2587,10 @@ static void llama_kv_cache_seq_cp(
     if (p0 < 0) p0 = 0;
     if (p1 < 0) p1 = std::numeric_limits<llama_pos>::max();
 
+    if (cache.ckpt.shadow_pos >= 0 && seq_id_dst == cache.ckpt.shadow_seq) {
+        llama_kv_shadow_invalidate(cache);
+    }
+
     if (cache.recurrent) {
         if ((uint32_t) seq_id_dst < cache.size && (uint32_t) seq_id_src < cache.size) {
             seq_id_src = cache.cells[seq_id_src].src;
@@ -2616,6 +2639,9 @@ static void llama_kv_cache_seq_cp(
 }
 
 static void llama_kv_cache_seq_keep(struct llama_kv_cache & cache, llama_seq_id seq_id) {
+    if (cache.ckpt.shadow_pos >= 0 && seq_id != cache.ckpt.shadow_seq) {
+        llama_kv_shadow_invalidate(cache);
+    }
     uint32_t new_head = cache.size;
     const bool has_qnext_state = llama_kv_has_qnext_state_storage(cache);
 
@@ -2658,6 +2684,8 @@ static void llama_kv_cache_seq_add(
     if (p1 < 0) p1 = std::numeric_limits<llama_pos>::max();
     // If there is no range then return early to avoid looping over the cache.
     if (p0 == p1) return;
+
+    llama_kv_shadow_invalidate_from(cache, seq_id, p0);
 
     if (cache.recurrent) {
         // for Mamba-like models, only the pos needs to be shifted
@@ -2708,6 +2736,8 @@ static void llama_kv_cache_seq_div(
     if (p1 < 0) p1 = std::numeric_limits<llama_pos>::max();
     // If there is no range then return early to avoid looping over the cache.
     if (p0 == p1) return;
+
+    llama_kv_shadow_invalidate_from(cache, seq_id, p0);
 
     if (cache.recurrent) {
         // for Mamba-like models, only the pos needs to be changed
@@ -7442,6 +7472,9 @@ static int llama_encode_internal(
 static void llama_kv_cache_defrag_internal(struct llama_context & lctx) {
     auto & kv_self = lctx.kv_self;
 
+    // cells move: cell index no longer equals position for the shadow's sequence
+    llama_kv_shadow_invalidate(kv_self);
+
     const auto & hparams = lctx.model.hparams;
 
     const uint32_t n_layer = hparams.n_layer;
@@ -9974,6 +10007,9 @@ int llama_spec_ckpt_init(struct llama_context * ctx, int mode, int max_tokens) {
 bool llama_spec_ckpt_save(struct llama_context * ctx, llama_seq_id seq_id) {
     auto & kv = ctx->kv_self;
 
+    // any save may overwrite the shadow; only llama_spec_ckpt_save_at records a position again
+    llama_kv_shadow_invalidate(kv);
+
     switch (kv.ckpt.selected_spec_mode) {
         case LLAMA_SPEC_CKPT_PER_STEP:
             if (ctx->model.arch == LLM_ARCH_DEEPSEEK4) {
@@ -10089,6 +10125,45 @@ void llama_spec_ckpt_discard(struct llama_context * ctx) {
     llama_dsv4_spec_ckpt_discard(ctx);
 }
 
+// LONGSPEAR State-OS v2 (SV2-E1)
+
+bool llama_spec_ckpt_save_at(struct llama_context * ctx, llama_seq_id seq_id, llama_pos root_pos) {
+    auto & kv = ctx->kv_self;
+
+    // invalid until the copy below has completed
+    llama_kv_shadow_invalidate(kv);
+
+    const bool ok = llama_spec_ckpt_save(ctx, seq_id);
+
+    // only a full gpu-fallback shadow holds the whole recurrent state before the verify batch
+    // (PER_STEP keeps a conv-only shadow, CPU mode none, DSV4 its own snapshot)
+    if (ok &&
+        kv.ckpt.selected_spec_mode == LLAMA_SPEC_CKPT_GPU_FALLBACK &&
+        ctx->model.arch != LLM_ARCH_DEEPSEEK4 &&
+        kv.ckpt.allocated && !kv.ckpt.shadow_conv_only &&
+        seq_id >= 0 && root_pos >= 1) {
+        kv.ckpt.shadow_pos = root_pos - 1;
+        kv.ckpt.shadow_seq = seq_id;
+    }
+    return ok;
+}
+
+llama_pos llama_spec_ckpt_shadow_pos(const struct llama_context * ctx, llama_seq_id seq_id) {
+    const auto & kv = ctx->kv_self;
+    if (kv.ckpt.shadow_pos < 0 || kv.ckpt.shadow_seq != seq_id || !kv.ckpt.allocated || kv.ckpt.shadow_conv_only) {
+        return -1;
+    }
+    return kv.ckpt.shadow_pos;
+}
+
+void llama_spec_ckpt_shadow_invalidate(struct llama_context * ctx) {
+    llama_kv_shadow_invalidate(ctx->kv_self);
+}
+
+int llama_spec_ckpt_fixed_mode(const struct llama_context * ctx) {
+    return ctx->kv_self.ckpt.fixed_spec_mode;
+}
+
 bool llama_kv_cache_seq_rm(struct llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
     const bool result = llama_kv_cache_seq_rm(ctx->kv_self, seq_id, p0, p1);
     if (result && ctx->model.arch == LLM_ARCH_DEEPSEEK4 && p0 <= 0 && p1 < 0) {
@@ -10193,6 +10268,14 @@ static bool dsv4_stream_offset_size(const struct ggml_tensor * tensor, uint32_t 
 }
 
 // TODO: replace all non-fatal assertions with returned errors or exceptions
+// LONGSPEAR State-OS v2 (SV2-E1): options of the capped / shadow-sourced sequence writer. The
+// defaults are the legacy writer. Only llama_state_seq_get_{size,data}_ext set anything else, after
+// llama_state_seq_ext_refusal accepted the request.
+struct llama_state_write_opts {
+    llama_pos pos_max_cap = -1;    // >= 0: metadata only for cells with pos <= pos_max_cap
+    bool      spec_shadow = false; // recurrent rows from the gpu-fallback shadow instead of s_l
+};
+
 struct llama_data_write {
     virtual void write(const void * src, size_t size) = 0;
     virtual void write_tensor_data(const struct ggml_tensor * tensor, size_t offset, size_t size, int il) = 0;
@@ -10320,7 +10403,7 @@ struct llama_data_write {
     }
 
     void write_kv_cache_data(const struct llama_context * ctx, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges, llama_seq_id seq_id = -1,
-        llama_state_seq_flags flags = 0) {
+        llama_state_seq_flags flags = 0, const llama_state_write_opts & opts = {}) {
         const struct llama_kv_cache & kv_self = ctx->kv_self;
         const struct llama_hparams & hparams = ctx->model.hparams;
         bool need_kv = (flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) == 0;
@@ -10491,8 +10574,9 @@ struct llama_data_write {
                 }
             }
 
+            // the shadow is a ggml_dup_tensor of s_l, so rows sit at the same offsets
             llama_partial_state::emit_rows(*this, blocks, [&](uint32_t il, size_t offset, size_t size) {
-                write_tensor_data(kv_self.s_l[il], offset, size, (int) il);
+                write_tensor_data(opts.spec_shadow ? kv_self.ckpt.s_l_shadow[il] : kv_self.s_l[il], offset, size, (int) il);
             });
         }
 
@@ -10578,7 +10662,8 @@ struct llama_data_write {
         }
     }
 
-    void write_kv_cache(const struct llama_context * ctx, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) {
+    void write_kv_cache(const struct llama_context * ctx, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0,
+        const llama_state_write_opts & opts = {}) {
         const struct llama_kv_cache & kv_self = ctx->kv_self;
 
         if (llama_kv_has_openpangu_partial_state(kv_self, ctx->model.arch, flags)) {
@@ -10591,7 +10676,7 @@ struct llama_data_write {
         // Count the number of cells with the specified seq_id
         // Find all the ranges of cells with this seq id (or all, when -1) -- llama-partial-state.h
         std::vector<std::pair<uint32_t, uint32_t>> cell_ranges; // ranges, from inclusive, to exclusive
-        const uint32_t cell_count = llama_partial_state::select_cells(kv_self.cells.data(), kv_self.size, seq_id, -1, cell_ranges);
+        const uint32_t cell_count = llama_partial_state::select_cells(kv_self.cells.data(), kv_self.size, seq_id, opts.pos_max_cap, cell_ranges);
 
         // DEBUG CHECK: Sum of cell counts in ranges should equal the total cell count
         uint32_t cell_count_check = 0;
@@ -10612,7 +10697,7 @@ struct llama_data_write {
         write(&cell_count, sizeof(cell_count));
 
         write_kv_cache_meta(kv_self, cell_ranges, seq_id);
-        write_kv_cache_data(ctx, cell_ranges, seq_id, flags);
+        write_kv_cache_data(ctx, cell_ranges, seq_id, flags, opts);
     }
 };
 
@@ -11765,6 +11850,9 @@ static size_t llama_state_set_data_internal(struct llama_context * ctx, llama_da
     }
     llama_synchronize(ctx);
 
+    // a load replaces the history the shadow position referred to
+    llama_kv_shadow_invalidate(ctx->kv_self);
+
     data_ctx.read_model_info(ctx);
 
     // set rng
@@ -11876,7 +11964,8 @@ bool llama_state_save_file(struct llama_context * ctx, const char * path_session
     }
 }
 
-static size_t llama_state_seq_get_data_internal(struct llama_context * ctx, llama_data_write & data_ctx, llama_seq_id seq_id, llama_state_seq_flags flags) {
+static size_t llama_state_seq_get_data_internal(struct llama_context * ctx, llama_data_write & data_ctx, llama_seq_id seq_id, llama_state_seq_flags flags,
+        const llama_state_write_opts & opts = {}) {
     if (!llama_state_io_supported(ctx, __func__, flags, seq_id)) {
         return 0;
     }
@@ -11887,9 +11976,102 @@ static size_t llama_state_seq_get_data_internal(struct llama_context * ctx, llam
     }
     llama_synchronize(ctx);
 
-    data_ctx.write_kv_cache(ctx, seq_id, flags);
+    data_ctx.write_kv_cache(ctx, seq_id, flags, opts);
 
     return data_ctx.get_size_written();
+}
+
+// LONGSPEAR State-OS v2 (SV2-E1): why a capped / shadow-sourced write would not describe one real
+// state of the sequence, or nullptr when it would. The legacy options (no cap, live rows) are
+// always accepted and produce the legacy bytes.
+static const char * llama_state_seq_ext_refusal(const struct llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags,
+        const llama_state_write_opts & opts) {
+    if (opts.pos_max_cap < 0 && !opts.spec_shadow) {
+        return nullptr;
+    }
+    const auto & kv = ctx->kv_self;
+    if (ctx->cparams.defrag_thold >= 0.0f) {
+        return "defrag is on: cell index is not position";
+    }
+    if (seq_id < 0) {
+        return "a whole-cache write cannot be capped";
+    }
+    if ((flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) == 0) {
+        return "only a PARTIAL_ONLY state can be capped";
+    }
+    if (ctx->model.arch == LLM_ARCH_OPENPANGU || ctx->model.arch == LLM_ARCH_DEEPSEEK4) {
+        return "architecture keeps position-indexed side state";
+    }
+    if (kv.any_compacted()) {
+        return "compacted SWA layers";
+    }
+    if (!llama_kv_has_qnext_state_storage(kv)) {
+        return "no recurrent state";
+    }
+    if (!opts.spec_shadow) {
+        // live rows hold the state at the live pos_max: a lower cap would not match them
+        llama_pos live_pos_max = -1;
+        for (uint32_t i = 0; i < kv.size; ++i) {
+            if (kv.cells[i].has_seq_id(seq_id)) {
+                live_pos_max = std::max(live_pos_max, kv.cells[i].pos);
+            }
+        }
+        if (opts.pos_max_cap < live_pos_max) {
+            return "cap below the live state";
+        }
+        return nullptr;
+    }
+    if (!kv.ckpt.allocated || kv.ckpt.shadow_conv_only) {
+        return "no full gpu-fallback shadow";
+    }
+    if (kv.ckpt.shadow_pos < 0 || kv.ckpt.shadow_seq != seq_id) {
+        return "no recorded shadow position";
+    }
+    if (opts.pos_max_cap != kv.ckpt.shadow_pos) {
+        return "cap differs from the shadow position";
+    }
+    if ((uint32_t) seq_id >= kv.size || (uint32_t) seq_id >= kv.ckpt.cells_snapshot.size() ||
+        kv.ckpt.cells_snapshot[seq_id].src != kv.cells[seq_id].src) {
+        return "recurrent row mapping changed since the save";
+    }
+    for (size_t il = 0; il < kv.s_l.size(); ++il) {
+        if (kv.s_l[il] == nullptr) {
+            continue;
+        }
+        if (kv.s_l[il]->extra != nullptr || il >= kv.ckpt.s_l_shadow.size() || kv.ckpt.s_l_shadow[il] == nullptr ||
+            kv.ckpt.s_l_shadow[il]->extra != nullptr ||
+            ggml_nbytes(kv.ckpt.s_l_shadow[il]) != ggml_nbytes(kv.s_l[il])) {
+            return "split or mismatched shadow tensors";
+        }
+    }
+    return nullptr;
+}
+
+size_t llama_state_seq_get_size_ext(struct llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags,
+        llama_pos pos_max_cap, enum llama_state_seq_source source) {
+    const llama_state_write_opts opts = { pos_max_cap, source == LLAMA_STATE_SEQ_SOURCE_SPEC_SHADOW };
+    if (const char * why = llama_state_seq_ext_refusal(ctx, seq_id, flags, opts)) {
+        LLAMA_LOG_WARN("%s: refused (seq %d, cap %d, source %d): %s\n", __func__, seq_id, pos_max_cap, (int) source, why);
+        return 0;
+    }
+    llama_data_write_dummy data_ctx;
+    return llama_state_seq_get_data_internal(ctx, data_ctx, seq_id, flags, opts);
+}
+
+size_t llama_state_seq_get_data_ext(struct llama_context * ctx, uint8_t * dst, size_t size, llama_seq_id seq_id, llama_state_seq_flags flags,
+        llama_pos pos_max_cap, enum llama_state_seq_source source) {
+    const llama_state_write_opts opts = { pos_max_cap, source == LLAMA_STATE_SEQ_SOURCE_SPEC_SHADOW };
+    if (const char * why = llama_state_seq_ext_refusal(ctx, seq_id, flags, opts)) {
+        LLAMA_LOG_WARN("%s: refused (seq %d, cap %d, source %d): %s\n", __func__, seq_id, pos_max_cap, (int) source, why);
+        return 0;
+    }
+    llama_data_write_buffer data_ctx(dst, size, ctx->model);
+    try {
+        return llama_state_seq_get_data_internal(ctx, data_ctx, seq_id, flags, opts);
+    } catch (const std::exception & err) {
+        LLAMA_LOG_ERROR("%s: error saving sequence state: %s\n", __func__, err.what());
+        return 0;
+    }
 }
 
 size_t llama_state_seq_get_size(struct llama_context * ctx, llama_seq_id seq_id, llama_state_seq_flags flags) {
@@ -11912,6 +12094,9 @@ static size_t llama_state_seq_set_data_internal(struct llama_context * ctx, llam
         return SIZE_MAX;
     }
     llama_synchronize(ctx);
+
+    // a load replaces the sequence history the shadow position referred to
+    llama_kv_shadow_invalidate(ctx->kv_self);
 
     data_ctx.read_kv_cache(ctx, dest_seq_id, flags);
 

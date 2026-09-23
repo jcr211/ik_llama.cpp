@@ -3,6 +3,7 @@
 
 #include "llama-partial-state.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -154,11 +155,98 @@ static void test_size_equals_emitted() {
     }
 }
 
+// ---- capped / shadow-sourced writer (commit 3) -------------------------------------------------
+
+// one sequence, cells 0..9 at pos 0..9 (cell index == position, as with defrag off)
+static std::vector<test_cell> make_seq(int n) {
+    std::vector<test_cell> c((size_t) n);
+    for (int i = 0; i < n; ++i) {
+        c[(size_t) i].pos = i;
+        c[(size_t) i].seq_id = {0};
+    }
+    return c;
+}
+
+static void test_cap_filter() {
+    const auto cells = make_seq(10);
+    std::vector<lps::cell_range> r;
+    CHECK(lps::select_cells(cells.data(), 10, 0, 6, r) == 7);
+    CHECK(r.size() == 1 && r[0] == lps::cell_range(0, 7));
+    CHECK(lps::select_cells(cells.data(), 10, 0, 0, r) == 1);
+    CHECK(lps::select_cells(cells.data(), 10, 0, 9, r) == 10);
+
+    // the cap is on position, not index: a gap in the cells keeps the ranges exact
+    auto holes = make_seq(10);
+    holes[3].seq_id.clear();
+    holes[3].pos = -1;
+    CHECK(lps::select_cells(holes.data(), 10, 0, 5, r) == 5);
+    CHECK(r.size() == 2 && r[0] == lps::cell_range(0, 3) && r[1] == lps::cell_range(4, 6));
+
+    // metadata of the capped write lists exactly positions 0..cap
+    vec_sink sink;
+    lps::select_cells(cells.data(), 10, 0, 6, r);
+    lps::emit_cells_meta(sink, cells.data(), r, 0);
+    CHECK(sink.bytes.size() == 7 * 8);
+    int32_t last_pos = -1;
+    std::memcpy(&last_pos, sink.bytes.data() + 6 * 8, 4);
+    CHECK(last_pos == 6);
+}
+
+static void test_cap_above_last_cell_is_legacy() {
+    const auto cells = make_seq(10);
+    const synth_state rows(0x30);
+    vec_sink legacy, capped, capped_far;
+    emit_partial(legacy, cells, 0, -1, rows);
+    emit_partial(capped, cells, 0, 9, rows);
+    emit_partial(capped_far, cells, 0, 1 << 30, rows);
+    CHECK(capped.bytes == legacy.bytes);
+    CHECK(capped_far.bytes == legacy.bytes);
+}
+
+static void test_source_swap() {
+    const auto cells = make_seq(10);
+    const synth_state live(0x40);
+    const synth_state shadow(0x90);
+    vec_sink from_live, from_shadow;
+    emit_partial(from_live, cells, 0, 6, live);
+    emit_partial(from_shadow, cells, 0, 6, shadow);
+
+    CHECK(from_live.bytes.size() == from_shadow.bytes.size());
+    // cell_count + metadata + layer-0 header are identical; the row bytes are the shadow's
+    const size_t head = 4 + 7 * 8 + 16;
+    CHECK(std::memcmp(from_live.bytes.data(), from_shadow.bytes.data(), head) == 0);
+    CHECK(std::memcmp(from_shadow.bytes.data() + head, shadow.tensors[0].data() + 8, 8) == 0);
+    CHECK(std::memcmp(from_live.bytes.data() + head, live.tensors[0].data() + 8, 8) == 0);
+    CHECK(from_live.bytes != from_shadow.bytes);
+}
+
+static void test_capped_size_equals_emitted() {
+    const auto cells = make_seq(10);
+    const synth_state rows(0x50);
+    for (int32_t cap : { -1, 0, 3, 6, 9, 100 }) {
+        vec_sink v;
+        emit_partial(v, cells, 0, cap, rows);
+        count_sink c;
+        std::vector<lps::cell_range> ranges;
+        const uint32_t n = lps::select_cells(cells.data(), (uint32_t) cells.size(), 0, cap, ranges);
+        c.write(&n, sizeof(n));
+        lps::emit_cells_meta(c, cells.data(), ranges, 0);
+        lps::emit_rows(c, rows.blocks, [&](uint32_t, size_t, size_t size) { c.n += size; });
+        CHECK(c.n == v.bytes.size());
+        const uint32_t kept = cap < 0 ? 10u : (uint32_t) std::min(cap + 1, 10);
+        CHECK(v.bytes.size() == 4 + 8 * (size_t) kept + (16 + 8) + 16 + (16 + 4));
+    }
+}
+
 int main() {
     test_select_ranges();
     test_golden_single_seq();
     test_golden_all_seqs_meta();
     test_size_equals_emitted();
+    test_cap_filter();
+    test_cap_above_last_cell_is_legacy();
+    test_source_swap();
+    test_capped_size_equals_emitted();
 
     std::printf("test-partial-state: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

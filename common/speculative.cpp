@@ -2475,6 +2475,16 @@ bool common_speculative_commit_accepted_output(
         hidden_rows);
 }
 
+// LONGSPEAR State-OS v2 (SV2-E1): with LONGSPEAR_STATEOS_TAIL_SNAPSHOT=1 the save also records the
+// position the gpu-fallback shadow holds (root - 1), which the server's tail snapshot serializes.
+static bool common_speculative_tail_snapshot_enabled() {
+    static const bool enabled = [] {
+        const char * v = std::getenv("LONGSPEAR_STATEOS_TAIL_SNAPSHOT");
+        return v != nullptr && std::strcmp(v, "1") == 0;
+    }();
+    return enabled;
+}
+
 static bool common_speculative_checkpoint_save(
         common_speculative_checkpoint & ckpt,
         llama_model * model,
@@ -2496,7 +2506,9 @@ static bool common_speculative_checkpoint_save(
     }
     ckpt.mode = actual_mode;
 
-    ckpt.valid = llama_spec_ckpt_save(ctx, seq_id);
+    ckpt.valid = common_speculative_tail_snapshot_enabled()
+        ? llama_spec_ckpt_save_at(ctx, seq_id, n_past)
+        : llama_spec_ckpt_save(ctx, seq_id);
     if (!ckpt.valid) {
         llama_spec_ckpt_discard(ctx);
         return false;
@@ -2696,6 +2708,10 @@ bool common_speculative_commit(
             n_draft,
             mtp_hidden_state_pre,
             pos_base);
+        if (!restored) {
+            // the live state is undefined after a failed restore/replay: no tail snapshot from it
+            llama_spec_ckpt_shadow_invalidate(ctx);
+        }
         return restored;
     }
 
