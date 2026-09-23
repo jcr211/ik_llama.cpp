@@ -4,14 +4,14 @@ Worktree `D:/AI/worktrees/sl1-spec-ckpt`, branch `lane/sl1-spec-ckpt` from `fix/
 Order: `D:/Projects/longspear/docs/drafts/decode-throughput-merged-plan-20260924.md` §5 (SL-1).
 
 ## Checklist
-- [ ] commit 0 — `fix(iqk)`: empty row-group guard at the 7 MoE/dense partition sites
-- [ ] commit 1 — `[spec-host]` per-round host timing (`LONGSPEAR_SPEC_HOST_TIMING=1`)
-- [ ] commit 2 — hybrid `cells[seq].pos` guard (code-reading note below first)
-- [ ] commit 3 — PLE-tail per-step save/restore (`LONGSPEAR_PER_STEP_PLE_TAIL=1`)
-- [ ] commit 4 — explicit capacity (`LONGSPEAR_SPEC_CKPT_MAX_TOKENS`) + clamp (`LONGSPEAR_SPEC_CLAMP_TO_CKPT`)
-- [ ] commit 5 — persistent checkpoint sampler (`LONGSPEAR_SPEC_CKPT_LEAN=1`)
-- [ ] commit 6 — per-step vs replay crosscheck (`LONGSPEAR_SPEC_CKPT_CROSSCHECK=1`)
-- [ ] commit 7 — tests (a)-(d), build script, launchers
+- [x] commit 0 — `fix(iqk)`: empty row-group guard at the 7 MoE/dense partition sites (03450ffc)
+- [x] commit 1 — `[spec-host]` per-round host timing (`LONGSPEAR_SPEC_HOST_TIMING=1`) (43fa044f)
+- [x] commit 2 — hybrid `cells[seq].pos` guard (code-reading note below first) (20b1d4f1)
+- [x] commit 3 — PLE-tail per-step save/restore (`LONGSPEAR_PER_STEP_PLE_TAIL=1`) (6dc748e1)
+- [x] commit 4 — explicit capacity (`LONGSPEAR_SPEC_CKPT_MAX_TOKENS`) + clamp (`LONGSPEAR_SPEC_CLAMP_TO_CKPT`) (87af5d06)
+- [x] commit 5 — persistent checkpoint sampler (`LONGSPEAR_SPEC_CKPT_LEAN=1`) (a7a9818e)
+- [x] commit 6 — per-step vs replay crosscheck (`LONGSPEAR_SPEC_CKPT_CROSSCHECK=1`) (824c9c38)
+- [x] commit 7 — tests (a)-(d), build script, launchers (6325f127, 81fa77ce)
 - [ ] build `build-sl1` (only when no other compile is running), tests run with exit codes
 - [ ] `.lane/GPU-WINDOW.md` (coordinator recipe), report
 
@@ -61,3 +61,30 @@ What the write means depends on the cache kind:
   init/save/restore, server clamp site, sampler clone). `D:/AI/ik_llama-qwen4exp/BOX-LOCK.json` exists but is stale
   (since 09-17, eta 09-18). A GPU campaign (singles attempt 3, `bench/gpu-justify/20260923-singles-tc-lar.md`) is
   pending/active and was voided once by another session's CPU load: check it before compiling.
+- 18:48 commits 0-7 written. Box check: no nvcc/cl/cmake/ninja/MSBuild/cargo/rustc, no llama-server, :8099
+  not listening, singles attempt 3 not launched (the other project's Rust CI still pending). Building with
+  `.lane/run-build.sh`, which kills this lane's build the moment any llama-server process appears.
+
+- 18:55 build-sl1 OK after three fixes (forward declaration of common_speculative_checkpoint_save missing the new
+  parameters; ggml_quantize_chunk takes a user_data argument; the sampler test must not call
+  common_reasoning_budget_get_state because common.lib defines it twice). The first configure failed because the
+  build script used `RC` for the exit code, which CMake reads as the resource compiler: renamed. The -1 exit of a
+  link failure was caught by the string check (`build rc=-1`).
+- 18:57 CPU tests: test-ple-perstep exit 0 (a, b), test-iqk-moe-chunks exit 0 (c, 16 cases), test-spec-ckpt-sampler
+  exit 0 (d, 3 rounds). Mutation check: with the PLE window at j instead of j+1 the test fails 127 checks (a and b).
+- 19:02 fixups autosquashed into commits 1, 5, 7 so each commit compiles on its own; tree identical to before.
+- GPU-WINDOW.md written; sl1-gate.sh self-test 7/7 on synthetic telemetry.
+
+## VRAM arithmetic at M=5 (for the preflight; real sizes print at startup)
+- Per GDN row: SSM state 3,145,728 B, conv state 122,880 B (row 3,268,608 B; 36 GDN rows). PLE tail
+  hist x hc_dim = 9 x 10,240 f32 = 368,640 B in layer 1's row. Full shadow 36 x 3,268,608 + 368,640 = 112.57 MiB.
+- per_step_alloc(M=5), one buffer on CUDA0: per_step_ssm (M-1) x 3,145,728 x 36 = 453.0 MB; per_step_qkv (conv)
+  M x 122,880 x 36 = 22.1 MB; per_step_ple (M-1) x 368,640 x 1 = 1.47 MB. Sum 476.6 MB (454.5 MiB).
+- The conv-only shadow stays allocated in per-step mode (4.4 MB, unused by restore); the full 112.57 MiB shadow is
+  NOT allocated, so vs production gpu-fallback: +476.6 + 4.4 - 118.0 = **+363 MB net**.
+- Crosscheck (probe only) allocates the full shadow instead of the conv-only one: +476.6 + 118.0 = +594.6 MB vs
+  flag-off gpu-fallback's 118.0, i.e. **+476.6 MB net** over production. The preflight should run the probe config
+  (the larger) or both.
+- Startup lines to read: `per_step_alloc: CUDA0 per-step buffer = ... MiB (max_tokens=5)`,
+  `per_step_alloc: CUDA0 per-step PLE history = 1.406 MiB of it (4 slots)`, `checkpoint_alloc_shadows: CUDA0 shadow
+  buffer = ... MiB (conv-state only)`.
