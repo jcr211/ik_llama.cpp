@@ -542,8 +542,10 @@ extern "C" IQK_API bool iqk_mul_mat(long Nx, long Ny, long ne00,
 
         auto num_rows = MulMat::num_rows(ggml_type(dequant_type));
         GGML_ASSERT(Nx%num_rows == 0);
+        // a chunk past the last row group owns nothing: return before forming its pointers
         auto nrc_x = (Nx/num_rows + nth - 1)/nth;
         auto first_x = ith*nrc_x;
+        if (first_x >= Nx/num_rows) return true;
         if (first_x + nrc_x > Nx/num_rows) nrc_x = Nx/num_rows - first_x;
         first_x *= num_rows;
         nrc_x   *= num_rows;
@@ -587,12 +589,14 @@ extern "C" IQK_API bool iqk_mul_mat(long Nx, long Ny, long ne00,
         auto nrc_x = num_rows*((Nx/num_rows + nth_new - 1)/nth_new);
         if (ith < nth_new) {
             auto first_x = ith*nrc_x;
+            if (first_x >= Nx) return true;
             nrc_x = std::min(nrc_x, Nx - first_x);
             DataInfo info{C + first_x, (const char *)B, (size_t)stride_C, row_size_qy, 0, 1, nullptr, 0};
             mm.mul_mat_NxM(ne00, (const char *)A + row_size_qx*first_x, row_size_qx, info, nrc_x, Ny/2);
         } else {
             ith -= nth_new;
             auto first_x = ith*nrc_x;
+            if (first_x >= Nx) return true;
             nrc_x = std::min(nrc_x, Nx - first_x);
             DataInfo info{C + first_x + (Ny/2)*stride_C, (const char *)B + (Ny/2)*row_size_qy, (size_t)stride_C, row_size_qy, 0, 1, nullptr, 0};
             mm.mul_mat_NxM(ne00, (const char *)A + row_size_qx*first_x, row_size_qx, info, nrc_x, Ny/2);
@@ -602,6 +606,7 @@ extern "C" IQK_API bool iqk_mul_mat(long Nx, long Ny, long ne00,
 
     auto nrc_x = (Nx/num_rows + nth - 1)/nth;
     auto first_x = ith*nrc_x;
+    if (first_x >= Nx/num_rows) return true;
     if (first_x + nrc_x > Nx/num_rows) nrc_x = Nx/num_rows - first_x;
 
     DataInfo info{C + first_x*num_rows, (const char *)B, (size_t)stride_C, row_size_qy, 0, 1, nullptr, 0};
@@ -736,6 +741,7 @@ extern "C" IQK_API bool iqk_mul_mat_moe(long Nx, long Ny, long ne00, int ne11,
         GGML_ASSERT(Nx%num_rows == 0);
         auto nrc_x = (Nx/num_rows + nth - 1)/nth;
         auto first_x = ith*nrc_x;
+        if (first_x >= Nx/num_rows) return true;
         if (first_x + nrc_x > Nx/num_rows) nrc_x = Nx/num_rows - first_x;
         first_x *= num_rows;
         nrc_x   *= num_rows;
@@ -771,6 +777,7 @@ extern "C" IQK_API bool iqk_mul_mat_moe(long Nx, long Ny, long ne00, int ne11,
     GGML_ASSERT(Nx%num_rows == 0);
     auto nrc_x = (Nx/num_rows + nth - 1)/nth;
     auto first_x = ith*nrc_x;
+    if (first_x >= Nx/num_rows) return true;
     if (first_x + nrc_x > Nx/num_rows) nrc_x = Nx/num_rows - first_x;
     first_x *= num_rows;
     nrc_x *= num_rows;
@@ -803,6 +810,7 @@ extern "C" IQK_API bool iqk_moe_fused_up_gate(long Nx, long Ny, long ne00, int n
             GGML_ASSERT(Nx%num_rows == 0);
             auto nrc_x = (Nx/num_rows + nth - 1)/nth;
             auto first_x = ith*nrc_x;
+            if (first_x >= Nx/num_rows) return true;
             if (first_x + nrc_x > Nx/num_rows) nrc_x = Nx/num_rows - first_x;
             first_x *= num_rows;
             nrc_x   *= num_rows;
@@ -844,6 +852,7 @@ extern "C" IQK_API bool iqk_moe_fused_up_gate(long Nx, long Ny, long ne00, int n
     GGML_ASSERT(Nx%num_rows == 0);
     auto nrc_x = (Nx/num_rows + nth - 1)/nth;
     auto first_x = ith*nrc_x;
+    if (first_x >= Nx/num_rows) return true;
     if (first_x + nrc_x > Nx/num_rows) nrc_x = Nx/num_rows - first_x;
     first_x *= num_rows;
     nrc_x *= num_rows;
