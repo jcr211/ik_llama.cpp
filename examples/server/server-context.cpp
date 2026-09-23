@@ -273,6 +273,8 @@ bool server_context::load_model(const gpt_params& params_) {
         return false;
     }
 
+    stateos_init_identity();
+
     return true;
 }
 
@@ -2747,14 +2749,25 @@ static std::string stateos_layout_line(llama_context * ctx, const char * prefix)
     return std::string();
 }
 
+void server_context::stateos_init_identity() {
+    if (params_base.slot_save_path.empty()) {
+        return; // no /slots routes: State-OS is off, and startup pays nothing
+    }
+    // computed once, right after the load, so a GGUF replaced on disk later cannot stamp saves with its identity
+    const int64_t t0 = ggml_time_us();
+    std::string err;
+    stateos_model_fp = stateos_model_fingerprint(params_base.model, &err);
+    if (stateos_model_fp.empty()) {
+        SRV_WRN("State-OS disabled: model identity unavailable (%s); slot save/restore will answer 500\n", err.c_str());
+        return;
+    }
+    SRV_INF("State-OS model_fingerprint_v2 %s (%.1f ms)\n", stateos_model_fp.c_str(), (ggml_time_us() - t0) / 1000.0);
+}
+
 stateos_fields server_context::stateos_identity_fields(std::string * err) {
     if (stateos_model_fp.empty()) {
-        const int64_t t0 = ggml_time_us();
-        stateos_model_fp = stateos_model_fingerprint(params_base.model, err);
-        if (stateos_model_fp.empty()) {
-            return {};
-        }
-        SRV_INF("State-OS model fingerprint %s (%.1f ms)\n", stateos_model_fp.c_str(), (ggml_time_us() - t0) / 1000.0);
+        *err = "the model identity was not computed at startup (see the startup log)";
+        return {};
     }
     const std::string kv = stateos_layout_line(ctx, "kv");
     const std::string sys_sha = stateos_token_sha256(system_tokens.data(), system_tokens.size());
@@ -2762,7 +2775,7 @@ stateos_fields server_context::stateos_identity_fields(std::string * err) {
     // order matters: the first refused field is the one a refusal names, so the specific fields precede
     // the catch-all geometry digest
     stateos_fields fields = {
-        { STATEOS_HARD, "model_fingerprint", stateos_model_fp },
+        { STATEOS_HARD, "model_fingerprint_v2", stateos_model_fp },
         { STATEOS_HARD, "n_ctx",             std::to_string(llama_n_ctx(ctx)) },
         { STATEOS_HARD, "cache_type_k",      params_base.cache_type_k },
         { STATEOS_HARD, "cache_type_v",      params_base.cache_type_v },
@@ -2830,11 +2843,67 @@ bool server_context::stateos_companion_supported() const {
     return false;
 }
 
+void server_context::stateos_clear_slot(server_slot & slot) {
+    llama_kv_cache_seq_rm(ctx, slot.id, -1, -1);
+    if (slot.spec) {
+        LOG_VERBOSE(string_format("MTP invalidate: SLOT_RESTORE slot=%d pos=0", slot.id).c_str(), {});
+        common_speculative_mtp_invalidate(slot.spec, slot.id, 0);
+        common_speculative_mtp_set_warmed_heads(slot.spec, 0);
+    }
+    slot.cache_tokens.clear();
+    slot.server_cached_prompt.tokens.clear();
+    slot.server_cached_prompt.checkpoints.clear();
+    slot.server_cached_prompt.data.clear();
+    slot.server_cached_prompt.data.shrink_to_fit();
+    slot.server_cached_prompt.n_kept_prompt = 0;
+    slot.server_cached_prompt.n_discarded_prompt = 0;
+    slot.n_kept_prompt = 0;
+    slot.n_discarded_prompt = 0;
+    slot.checkpoint_pos = -1;
+}
+
 void server_context::stateos_slot_save(const server_task & task, server_slot & slot) {
+    std::string what;
+    try {
+        stateos_slot_save_impl(task, slot);
+        return;
+    } catch (const std::exception & e) {
+        what = e.what();
+    } catch (...) {
+        what = "unknown exception";
+    }
+    try {
+        std::error_code ec;
+        std::filesystem::remove(stateos_path(task.data.at("filepath").get<std::string>() + ".stateos.tmp"), ec);
+    } catch (...) {}
+    send_slot_error(task, 500, "server_error", "State-OS save failed: " + what, { {"slot_untouched", true} });
+}
+
+void server_context::stateos_slot_restore(const server_task & task, server_slot & slot) {
+    bool destroyed = false;
+    std::string what;
+    try {
+        stateos_slot_restore_impl(task, slot, destroyed);
+        return;
+    } catch (const std::exception & e) {
+        what = e.what();
+    } catch (...) {
+        what = "unknown exception";
+    }
+    if (destroyed) {
+        // the target state may be partial: leave nothing that pretends to describe it
+        try { stateos_clear_slot(slot); } catch (...) {}
+    }
+    send_slot_error(task, 500, "server_error",
+            "State-OS restore failed: " + what + (destroyed ? "; the slot was cleared" : "; slot untouched"),
+            { {"slot_untouched", !destroyed} });
+}
+
+void server_context::stateos_slot_save_impl(const server_task & task, server_slot & slot) {
     const int64_t t_start = ggml_time_us();
     const std::string filename = task.data.at("filename");
     const std::string filepath = task.data.at("filepath");
-    const std::string tmppath  = filepath + ".tmp";
+    const std::string tmppath  = filepath + ".stateos.tmp";
 
     if (slot.cache_tokens.has_mtmd_data()) {
         send_slot_error(task, 501, "not_supported_error", "State-OS v1 does not persist a slot that holds media (image/audio) chunks");
@@ -2985,20 +3054,12 @@ void server_context::stateos_slot_save(const server_task & task, server_slot & s
         return;
     }
 
-    std::error_code ec;
-    const std::filesystem::path final_path = stateos_path(filepath);
-    std::filesystem::rename(stateos_path(tmppath), final_path, ec);
-    if (ec) {
-        std::error_code ec_rm;
-        std::filesystem::remove(final_path, ec_rm);
-        ec.clear();
-        std::filesystem::rename(stateos_path(tmppath), final_path, ec);
-    }
-    if (ec) {
-        fail("cannot rename the finished file into place: " + ec.message());
+    if (!stateos_replace_file(tmppath, filepath, &err)) {
+        fail("cannot move the finished file into place: " + err);
         return;
     }
-    const uint64_t n_written = (uint64_t) std::filesystem::file_size(final_path, ec);
+    std::error_code ec;
+    const uint64_t n_written = (uint64_t) std::filesystem::file_size(stateos_path(filepath), ec);
 
     const double t_save_ms = (ggml_time_us() - t_start) / 1000.0;
     SRV_INF("State-OS save slot=%d tokens=%zu bytes=%llu (main=%zu companion=%zu checkpoints=%zu) %.1f ms\n",
@@ -3031,13 +3092,14 @@ void server_context::stateos_slot_save(const server_task & task, server_slot & s
             } },
             { "checkpoints_saved", recs.size() },
             { "companion",         comp_status },
+            { "kv_pos_max",        llama_kv_cache_seq_pos_max(ctx, slot.id) }, // report-only: KV <-> TOKS invariant
             { "header",            header_json },
         } },
     };
     queue_results.send(result);
 }
 
-void server_context::stateos_slot_restore(const server_task & task, server_slot & slot) {
+void server_context::stateos_slot_restore_impl(const server_task & task, server_slot & slot, bool & destroyed) {
     const int64_t t_start = ggml_time_us();
     const std::string filename = task.data.at("filename");
     const std::string filepath = task.data.at("filepath");
@@ -3077,19 +3139,17 @@ void server_context::stateos_slot_restore(const server_task & task, server_slot 
         corrupt("header", "unreadable header (" + err + ")");
         return;
     }
+    // required sections present, TOKS bounded by the slot context before it is read, MAIN not empty
+    const stateos_section_check sc = stateos_check_sections(scan, (size_t) std::max(slot.n_ctx, 0));
+    if (!sc.ok) {
+        corrupt(sc.field, sc.error);
+        return;
+    }
     const stateos_section * s_toks = scan.find(STATEOS_TAG_TOKS);
     const stateos_section * s_main = scan.find(STATEOS_TAG_MAIN);
     const stateos_section * s_ckpt = scan.find(STATEOS_TAG_CKPT);
     const stateos_section * s_comp = scan.find(STATEOS_TAG_COMP);
-    if (s_toks == nullptr || s_main == nullptr) {
-        corrupt(s_toks == nullptr ? "section:TOKS" : "section:MAIN", "a required section is missing");
-        return;
-    }
-    if (s_toks->size % 4 != 0) {
-        corrupt("section:TOKS", "token section size is not a multiple of 4");
-        return;
-    }
-    const size_t n_tokens = (size_t) (s_toks->size / 4);
+    const size_t n_tokens = sc.n_tokens;
     std::vector<uint8_t> toks;
     if (!stateos_read_range(filepath, s_toks->offset, s_toks->size, toks, &err)) {
         corrupt("section:TOKS", err);
@@ -3119,10 +3179,6 @@ void server_context::stateos_slot_restore(const server_task & task, server_slot 
                   {"warnings", stateos_mismatches_json(verdict.warnings)}, {"slot_untouched", true} });
         return;
     }
-    if ((int64_t) n_tokens > slot.n_ctx) {
-        corrupt("n_tokens", string_format("%zu tokens exceed the slot context of %d", n_tokens, slot.n_ctx));
-        return;
-    }
     const int32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
     for (size_t i = 0; i < n_tokens; ++i) {
         if (ids[i] < 0 || ids[i] >= n_vocab) {
@@ -3135,7 +3191,8 @@ void server_context::stateos_slot_restore(const server_task & task, server_slot 
     if (s_ckpt != nullptr) {
         std::vector<uint8_t> ckpt_bytes;
         if (!stateos_read_range(filepath, s_ckpt->offset, s_ckpt->size, ckpt_bytes, &err) ||
-            !stateos_decode_checkpoints(ckpt_bytes.data(), ckpt_bytes.size(), recs, &err)) {
+            !stateos_decode_checkpoints(ckpt_bytes.data(), ckpt_bytes.size(), recs, &err) ||
+            !stateos_checkpoints_sane(recs, &err)) {
             corrupt("section:CKPT", err);
             return;
         }
@@ -3158,6 +3215,8 @@ void server_context::stateos_slot_restore(const server_task & task, server_slot 
         if (!stateos_read_companion(filepath, *s_comp, sub_text, comp_offset, comp_size, &err) ||
             !stateos_decode_header(sub_text, sub, &err)) {
             comp_status = "skipped: unreadable companion section (" + err + ")";
+        } else if (comp_size == 0) {
+            comp_status = "skipped: empty companion state (re-warms on demand)";
         } else {
             const stateos_verdict cv = stateos_verify(sub, stateos_companion_fields(ctx_mtp, token_sha));
             if (!cv.ok) {
@@ -3175,28 +3234,46 @@ void server_context::stateos_slot_restore(const server_task & task, server_slot 
     }
 
     // ---- destructive: one server-side operation from here ----
+    // nothing the previous conversation left may survive: target KV, MTP companion + hidden/draft caches,
+    // checkpoint list, the slot's RAM prompt-cache record
     const size_t n_dropped_ckpt = slot.server_cached_prompt.checkpoints.size();
-    const size_t nread = llama_state_seq_load_file_range(ctx, filepath.c_str(), (size_t) s_main->offset, (size_t) s_main->size, slot.id, 0);
+    destroyed = true;
+    stateos_clear_slot(slot);
 
-    // whatever happens next, nothing the previous conversation left may survive
-    if (slot.spec) {
-        LOG_VERBOSE(string_format("MTP invalidate: SLOT_RESTORE slot=%d pos=0", slot.id).c_str(), {});
-        common_speculative_mtp_invalidate(slot.spec, slot.id, 0);
-        common_speculative_mtp_set_warmed_heads(slot.spec, 0);
+    if (sc.empty) {
+        // a state saved from an empty slot: the restore IS the erase above (the loader is not called)
+        const double t_ms = (ggml_time_us() - t_start) / 1000.0;
+        SRV_INF("State-OS restore slot=%d: empty state, slot erased (%.1f ms)\n", slot.id, t_ms);
+        server_task_result result;
+        result.id    = task.id;
+        result.error = false;
+        result.data  = json{
+            { "id_slot",    slot.id },
+            { "filename",   filename },
+            { "n_restored", 0 },
+            { "n_read",     0 },
+            { "timings",    { { "restore_ms", t_ms } } },
+            { "stateos", {
+                { "container_version",             scan.version },
+                { "token_sha256",                  token_sha },
+                { "empty",                         true },
+                { "warnings",                      stateos_mismatches_json(verdict.warnings) },
+                { "companion",                     "cleared (empty state)" },
+                { "checkpoints_restored",          0 },
+                { "checkpoints_dropped_in_memory", n_dropped_ckpt },
+                { "prompt_cache_record_replaced",  true },
+                { "kv_pos_max",                    llama_kv_cache_seq_pos_max(ctx, slot.id) },
+                { "file_bytes",                    scan.file_size },
+            } },
+        };
+        queue_results.send(result);
+        return;
     }
-    slot.server_cached_prompt.checkpoints.clear();
-    slot.server_cached_prompt.data.clear();
-    slot.server_cached_prompt.data.shrink_to_fit();
-    slot.server_cached_prompt.n_kept_prompt = 0;
-    slot.server_cached_prompt.n_discarded_prompt = 0;
-    slot.n_kept_prompt = 0;
-    slot.n_discarded_prompt = 0;
-    slot.checkpoint_pos = -1;
 
-    if (nread != (size_t) s_main->size) {
+    // 0 is the loader's failure value and a verified MAIN is never empty
+    const size_t nread = llama_state_seq_load_file_range(ctx, filepath.c_str(), (size_t) s_main->offset, (size_t) s_main->size, slot.id, 0);
+    if (nread == 0 || nread != (size_t) s_main->size) {
         llama_kv_cache_seq_rm(ctx, slot.id, -1, -1);
-        slot.cache_tokens.clear();
-        slot.server_cached_prompt.tokens.clear();
         send_slot_error(task, 500, "server_error",
                 "State-OS restore failed while loading the verified target state; the slot was cleared and re-prefills on the next request",
                 { {"slot_untouched", false} });
@@ -3208,10 +3285,12 @@ void server_context::stateos_slot_restore(const server_task & task, server_slot 
 
     if (comp_load) {
         const size_t comp_read = llama_state_seq_load_file_range(ctx_mtp, filepath.c_str(), (size_t) comp_offset, (size_t) comp_size, slot.id, 0);
-        if (comp_read == (size_t) comp_size) {
+        if (comp_read != 0 && comp_read == (size_t) comp_size) {
             common_speculative_mtp_set_warmed_heads(slot.spec, comp_warmed_heads);
             comp_status = "loaded";
         } else {
+            // a reader that threw after placing cells leaves them behind: drop them so re-warming starts clean
+            llama_kv_cache_seq_rm(ctx_mtp, slot.id, -1, -1);
             comp_status = "skipped: the companion payload failed to load (re-warms on demand)";
         }
     }
@@ -3257,6 +3336,7 @@ void server_context::stateos_slot_restore(const server_task & task, server_slot 
             { "checkpoints_restored",         n_ckpt_restored },
             { "checkpoints_dropped_in_memory", n_dropped_ckpt },
             { "prompt_cache_record_replaced", true },
+            { "kv_pos_max",                   llama_kv_cache_seq_pos_max(ctx, slot.id) }, // report-only: KV <-> TOKS invariant
             { "file_bytes",                   scan.file_size },
         } },
     };

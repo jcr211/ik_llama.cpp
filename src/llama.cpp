@@ -10766,6 +10766,12 @@ struct llama_data_read {
 
             llama_kv_cache_seq_rm(kv_self, dest_seq_id, -1, -1);
 
+            // an empty sequence (e.g. saved right after an erase) has no cells to place: the checks below would
+            // index batch.pos[-1] and cells[head - 1]
+            if (cell_count == 0) {
+                return true;
+            }
+
             llama_batch batch = llama_batch_init(cell_count, 0, 1);
             batch.n_tokens = cell_count;
             for (uint32_t i = 0; i < cell_count; ++i) {

@@ -27,101 +27,121 @@ CMake Warning at common/CMakeLists.txt:26 (message):
 TARGET_SRCS contains: D:/AI/worktrees/stateos-lane1/examples/server/public/index.html.gz
 TARGET_SRCS contains: D:/AI/worktrees/stateos-lane1/examples/server/public_llamacpp/index_llamacpp.html.gz
 TARGET_SRCS contains: D:/AI/worktrees/stateos-lane1/examples/server/public_llamacpp/loading.html
--- Configuring done (2.3s)
+-- Configuring done (2.5s)
 -- Generating done (0.3s)
 -- Build files have been written to: D:/AI/worktrees/stateos-lane1/build-stateos-l1
 configure exit=0
 ==== build
-[1/9] Building CXX object tests\CMakeFiles\test-stateos-header.dir\__\examples\server\stateos-model.cpp.obj
-[2/9] Building CXX object examples\server\CMakeFiles\llama-server.dir\stateos-model.cpp.obj
-[3/9] Building CXX object tests\CMakeFiles\test-stateos-header.dir\__\examples\server\stateos-header.cpp.obj
-[4/9] Building CXX object examples\server\CMakeFiles\llama-server.dir\stateos-header.cpp.obj
-[5/9] Building CXX object tests\CMakeFiles\test-stateos-header.dir\test-stateos-header.cpp.obj
-[6/9] Linking CXX executable bin\test-stateos-header.exe
-[7/9] Building CXX object examples\server\CMakeFiles\llama-server.dir\server-context.cpp.obj
+[1/13] Building CXX object tests\CMakeFiles\test-stateos-header.dir\__\examples\server\stateos-model.cpp.obj
+[2/13] Building CXX object tests\CMakeFiles\test-stateos-header.dir\__\examples\server\stateos-header.cpp.obj
+[3/13] Building CXX object tests\CMakeFiles\test-stateos-header.dir\test-stateos-header.cpp.obj
+[4/13] Building CXX object src\CMakeFiles\llama.dir\llama.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(641): warning C4805: '!=': unsafe mix of type 'const int' and type 'const bool' in operation
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(672): warning C4805: '!=': unsafe mix of type 'int' and type 'bool' in operation
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(3978): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(3987): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(4005): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(4200): warning C4018: '>=': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(4204): warning C4018: '>=': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(4540): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(4652): warning C4996: 'strdup': The POSIX name for this item is deprecated. Instead, use the ISO C and C++ conformant name: _strdup. See online help for details.
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(4727): warning C4996: 'strdup': The POSIX name for this item is deprecated. Instead, use the ISO C and C++ conformant name: _strdup. See online help for details.
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(7102): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(8536): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(8551): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(8705): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(8638): warning C4297: 'llama_init_from_model': function assumed not to throw an exception but does
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(8638): note: __declspec(nothrow), throw(), noexcept(true), or noexcept was specified on the function
+[5/13] Linking CXX shared library bin\llama.dll
+[6/11] Linking CXX executable bin\test-stateos-header.exe
+[7/11] Building CXX object examples\server\CMakeFiles\llama-server.dir\stateos-model.cpp.obj
+[8/11] Building CXX object examples\server\CMakeFiles\llama-server.dir\stateos-header.cpp.obj
+[9/11] Building CXX object examples\server\CMakeFiles\llama-server.dir\server-context.cpp.obj
 D:\AI\worktrees\stateos-lane1\examples\server\server-common.h(396): warning C4267: 'return': conversion from 'size_t' to 'int', possible loss of data
 D:\AI\worktrees\stateos-lane1\examples\server\server-task.h(106): warning C4267: 'return': conversion from 'size_t' to 'int32_t', possible loss of data
 D:\AI\worktrees\stateos-lane1\examples\server\server-task.h(401): warning C4267: 'return': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(837): warning C4101: 'buffer': unreferenced local variable
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(871): warning C4244: '+=': conversion from 'const double' to 'uint64_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(872): warning C4244: '+=': conversion from 'const double' to 'uint64_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(878): warning C4244: '+=': conversion from 'const double' to 'uint64_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(879): warning C4244: '+=': conversion from 'const double' to 'uint64_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(1015): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(1994): warning C4267: 'initializing': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(1685): warning C4101: 'e': unreferenced local variable
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(1708): warning C4101: 'e': unreferenced local variable
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(2095): warning C4267: 'initializing': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(2095): warning C4267: 'initializing': conversion from 'size_t' to 'const int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(2188): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(2324): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(2588): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(2686): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(2686): warning C4267: 'initializing': conversion from 'size_t' to 'const int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(3510): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(3553): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(3787): warning C4267: 'initializing': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(3788): warning C4267: 'initializing': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(3789): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(3790): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(3833): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(3891): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4005): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4121): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4127): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4200): warning C4244: 'initializing': conversion from '_Ty' to 'double', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(839): warning C4101: 'buffer': unreferenced local variable
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(873): warning C4244: '+=': conversion from 'const double' to 'uint64_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(874): warning C4244: '+=': conversion from 'const double' to 'uint64_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(880): warning C4244: '+=': conversion from 'const double' to 'uint64_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(881): warning C4244: '+=': conversion from 'const double' to 'uint64_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(1017): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(1996): warning C4267: 'initializing': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(1687): warning C4101: 'e': unreferenced local variable
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(1710): warning C4101: 'e': unreferenced local variable
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(2097): warning C4267: 'initializing': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(2097): warning C4267: 'initializing': conversion from 'size_t' to 'const int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(2190): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(2326): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(2590): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(2688): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(2688): warning C4267: 'initializing': conversion from 'size_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(3590): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(3633): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(3867): warning C4267: 'initializing': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(3868): warning C4267: 'initializing': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(3869): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(3870): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(3913): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(3971): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4085): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4201): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4207): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4280): warning C4244: 'initializing': conversion from '_Ty' to 'double', possible loss of data
         with
         [
             _Ty=int64_t
         ]
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4209): warning C4244: 'initializing': conversion from '_Ty' to 'double', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4289): warning C4244: 'initializing': conversion from '_Ty' to 'double', possible loss of data
         with
         [
             _Ty=int64_t
         ]
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4210): warning C4244: 'initializing': conversion from '_Ty' to 'double', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4290): warning C4244: 'initializing': conversion from '_Ty' to 'double', possible loss of data
         with
         [
             _Ty=int64_t
         ]
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4213): warning C4244: '=': conversion from '_Ty' to 'double', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4293): warning C4244: '=': conversion from '_Ty' to 'double', possible loss of data
         with
         [
             _Ty=int64_t
         ]
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4214): warning C4244: '=': conversion from '_Ty' to 'double', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4294): warning C4244: '=': conversion from '_Ty' to 'double', possible loss of data
         with
         [
             _Ty=int64_t
         ]
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4320): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4406): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4407): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4477): warning C4805: '!=': unsafe mix of type 'int32_t' and type 'bool' in operation
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4489): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4551): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4552): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4553): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4582): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4727): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4733): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4759): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4786): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4903): warning C4018: '<': signed/unsigned mismatch
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4917): warning C4018: '<': signed/unsigned mismatch
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(5126): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
-[8/9] Building CXX object examples\server\CMakeFiles\llama-server.dir\server.cpp.obj
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4400): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4486): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4487): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4557): warning C4805: '!=': unsafe mix of type 'int32_t' and type 'bool' in operation
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4569): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4631): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4632): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4633): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4662): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4807): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4813): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4839): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4866): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4983): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4997): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(5206): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
+[10/11] Building CXX object examples\server\CMakeFiles\llama-server.dir\server.cpp.obj
 D:\AI\worktrees\stateos-lane1\examples\server\server-common.h(396): warning C4267: 'return': conversion from 'size_t' to 'int', possible loss of data
 D:\AI\worktrees\stateos-lane1\examples\server\server-task.h(106): warning C4267: 'return': conversion from 'size_t' to 'int32_t', possible loss of data
 D:\AI\worktrees\stateos-lane1\examples\server\server-task.h(401): warning C4267: 'return': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1171): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1578): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1646): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1730): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1900): warning C4101: 'e': unreferenced local variable
-D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1903): warning C4101: 'e': unreferenced local variable
-D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1961): warning C4101: 'e': unreferenced local variable
-D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1964): warning C4101: 'e': unreferenced local variable
-[9/9] Linking CXX executable bin\llama-server.exe
+D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1185): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1592): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1660): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1744): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1914): warning C4101: 'e': unreferenced local variable
+D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1917): warning C4101: 'e': unreferenced local variable
+D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1975): warning C4101: 'e': unreferenced local variable
+D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1978): warning C4101: 'e': unreferenced local variable
+[11/11] Linking CXX executable bin\llama-server.exe
 build exit=0
 build-l1 exit=0

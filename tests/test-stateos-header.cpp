@@ -5,6 +5,8 @@
 #include "stateos-model.h"
 #include "stateos-props.h"
 
+#include "ggml.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -29,7 +31,7 @@ static int g_checks   = 0;
 // the hard fields the server writes (server_context::stateos_identity_fields + the two integrity fields)
 static stateos_fields server_like_fields() {
     return {
-        { STATEOS_HARD, "model_fingerprint",    "3f1c0d5e9a" },
+        { STATEOS_HARD, "model_fingerprint_v2", "3f1c0d5e9a" },
         { STATEOS_HARD, "n_ctx",                "196608" },
         { STATEOS_HARD, "cache_type_k",         "q8_0" },
         { STATEOS_HARD, "cache_type_v",         "q8_0" },
@@ -429,8 +431,11 @@ static void test_companion() {
 // GET /props "stateos": the appliance enables model-state rewind only when this object is present with version >= 1
 static void test_props_capability() {
     for (const bool companion : { true, false }) {
-        const nlohmann::ordered_json caps = stateos_props_capability(companion);
-        const nlohmann::ordered_json props = { { "n_ctx", 196608 }, { "stateos", caps } }; // as handle_props embeds it
+        const nlohmann::ordered_json caps = stateos_props_entry(true, true, companion);
+        nlohmann::ordered_json props = { { "n_ctx", 196608 } };
+        if (!caps.is_null()) {
+            props["stateos"] = caps; // as handle_props embeds it
+        }
         const nlohmann::ordered_json back = nlohmann::ordered_json::parse(props.dump());
         CHECK(back.contains("stateos") && back["stateos"].is_object());
         CHECK(back["stateos"]["version"].is_number_integer() && back["stateos"]["version"].get<int>() >= 1);
@@ -439,6 +444,182 @@ static void test_props_capability() {
         CHECK(back["stateos"]["companion"].is_boolean() && back["stateos"]["companion"].get<bool>() == companion);
         CHECK(back["stateos"].size() == 3);
     }
+    // not advertised without the /slots routes (no --slot-save-path) or without a model identity
+    CHECK(stateos_props_entry(false, true, true).is_null());
+    CHECK(stateos_props_entry(true, false, true).is_null());
+    CHECK(stateos_props_entry(false, false, false).is_null());
+}
+
+// section-level restore checks: MAIN must not be empty (0 is the loader's failure value), TOKS is bounded first
+static void test_section_checks() {
+    stateos_scan_result r;
+    r.status   = STATEOS_SCAN_OK;
+    r.sections = { { STATEOS_TAG_TOKS, 100, 8 }, { STATEOS_TAG_MAIN, 200, 50 } };
+    stateos_section_check c = stateos_check_sections(r, 196608);
+    CHECK(c.ok && c.n_tokens == 2 && !c.empty);
+
+    r.sections[1].size = 0;
+    c = stateos_check_sections(r, 196608);
+    CHECK(!c.ok && c.field == "section:MAIN");
+
+    r.sections[1].size = 50;
+    r.sections[0].size = 0; // a state saved from an empty slot
+    c = stateos_check_sections(r, 196608);
+    CHECK(c.ok && c.empty && c.n_tokens == 0);
+
+    r.sections[0].size = 6;
+    c = stateos_check_sections(r, 196608);
+    CHECK(!c.ok && c.field == "section:TOKS");
+
+    r.sections[0].size = 8;
+    c = stateos_check_sections(r, 1);
+    CHECK(!c.ok && c.field == "n_tokens");
+
+    r.sections = { { STATEOS_TAG_TOKS, 100, 8 } };
+    c = stateos_check_sections(r, 196608);
+    CHECK(!c.ok && c.field == "section:MAIN");
+    r.sections = { { STATEOS_TAG_MAIN, 100, 8 } };
+    c = stateos_check_sections(r, 196608);
+    CHECK(!c.ok && c.field == "section:TOKS");
+
+    // checkpoint positions must be ordered and non-negative
+    std::vector<stateos_checkpoint_rec> recs(2);
+    recs[0].pos_min = 0;  recs[0].pos_max = 99;  recs[0].pos_min_prompt = 0;  recs[0].pos_max_prompt = 99;
+    recs[1].pos_min = 100; recs[1].pos_max = 199; recs[1].pos_min_prompt = 100; recs[1].pos_max_prompt = 199;
+    std::string err;
+    CHECK(stateos_checkpoints_sane(recs, &err));
+    recs[1].pos_min = 300;
+    CHECK(!stateos_checkpoints_sane(recs, &err));
+    recs[1].pos_min = -1;
+    CHECK(!stateos_checkpoints_sane(recs, &err));
+    recs[1].pos_min = 100;
+    recs[1].pos_max_prompt = INT32_MAX; // pos_max_prompt + 1 would overflow
+    CHECK(!stateos_checkpoints_sane(recs, &err));
+}
+
+// the save's commit point: replace the previous state without deleting it first
+static void test_replace_file() {
+    const std::string a = tmp_file("replace-a.state");
+    const std::string b = tmp_file("replace-b.state");
+    write_raw(a, { 'o', 'l', 'd' });
+    write_raw(b, { 'n', 'e', 'w', '!' });
+    std::string err;
+    CHECK(stateos_replace_file(b, a, &err));
+    CHECK(read_all(a) == std::vector<uint8_t>({ 'n', 'e', 'w', '!' }));
+    CHECK(!std::filesystem::exists(stateos_path(b)));
+    CHECK(!stateos_replace_file(tmp_file("replace-missing.state"), a, &err));
+    CHECK(read_all(a) == std::vector<uint8_t>({ 'n', 'e', 'w', '!' })); // a failed replace keeps the old file
+}
+
+// a GGUF with real tensor data (the vocab fixtures have none, so their sampling path is empty)
+static bool write_tensor_gguf(const std::string & path, size_t n_floats, int split_count, float seed) {
+    ggml_init_params ip = { n_floats * sizeof(float) + (1u << 20), nullptr, false };
+    ggml_context * gctx = ggml_init(ip);
+    if (gctx == nullptr) {
+        return false;
+    }
+    ggml_tensor * t = ggml_new_tensor_1d(gctx, GGML_TYPE_F32, (int64_t) n_floats);
+    ggml_set_name(t, "w");
+    float * d = (float *) t->data;
+    for (size_t i = 0; i < n_floats; ++i) {
+        d[i] = seed + (float) (i % 1000) * 0.5f;
+    }
+    gguf_context * g = gguf_init_empty();
+    gguf_set_val_str(g, "general.name", "stateos-fp-test");
+    if (split_count > 1) {
+        gguf_set_val_u16(g, "split.count", (uint16_t) split_count);
+    }
+    gguf_add_tensor(g, t);
+    gguf_write_to_file(g, path.c_str(), false);
+    gguf_free(g);
+    ggml_free(gctx);
+    return std::filesystem::exists(stateos_path(path));
+}
+
+static uint64_t gguf_data_offset_of(const std::string & path) {
+    gguf_init_params gp = { true, nullptr };
+    gguf_context * g = gguf_init_from_file(path.c_str(), gp);
+    if (g == nullptr) {
+        return 0;
+    }
+    const uint64_t off = gguf_get_data_offset(g);
+    gguf_free(g);
+    return off;
+}
+
+static void flip_byte(const std::string & path, uint64_t off) {
+    std::fstream f(stateos_path(path), std::ios::in | std::ios::out | std::ios::binary);
+    f.seekg((std::streamoff) off);
+    char c = 0;
+    f.read(&c, 1);
+    c = (char) (c ^ 0x5A);
+    f.seekp((std::streamoff) off);
+    f.write(&c, 1);
+}
+
+static bool in_windows(const std::vector<std::pair<uint64_t, uint64_t>> & w, uint64_t off) {
+    for (const auto & x : w) {
+        if (off >= x.first && off < x.first + x.second) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void test_fingerprint_v2() {
+    // window placement
+    auto w = stateos_fingerprint_windows(1000, 1000 + 10 * STATEOS_FP_WINDOW);
+    CHECK(w.size() == 1 && w[0].first == 1000 && w[0].second == 10 * STATEOS_FP_WINDOW); // small: all of it
+    CHECK(stateos_fingerprint_windows(5000, 5000).empty());
+    w = stateos_fingerprint_windows(4096, 4096 + (64u << 20));
+    CHECK(w.size() == (size_t) STATEOS_FP_SAMPLES);
+    CHECK(w.front().first == 4096);
+    CHECK(w.back().first + w.back().second == 4096 + (64u << 20));
+    bool ordered = true;
+    for (size_t i = 1; i < w.size(); ++i) {
+        ordered = ordered && w[i].first >= w[i - 1].first + w[i - 1].second;
+    }
+    CHECK(ordered);
+
+    // one file with 4 MiB of tensor data: sampled bytes are covered, unsampled ones are the documented residual
+    std::string err;
+    const std::string one = tmp_file("fp-one.gguf");
+    CHECK(write_tensor_gguf(one, 1u << 20, 1, 0.0f));
+    const std::string fp0 = stateos_model_fingerprint(one, &err);
+    CHECK(fp0.size() == 64);
+    const uint64_t d0 = gguf_data_offset_of(one);
+    const auto wins = stateos_fingerprint_windows(d0, (uint64_t) std::filesystem::file_size(stateos_path(one)));
+    CHECK(wins.size() == (size_t) STATEOS_FP_SAMPLES);
+    flip_byte(one, d0 + 100);
+    CHECK(stateos_model_fingerprint(one, &err) != fp0);
+    flip_byte(one, d0 + 100);
+    CHECK(stateos_model_fingerprint(one, &err) == fp0);
+    const uint64_t gap = d0 + STATEOS_FP_WINDOW + 4096;
+    CHECK(!in_windows(wins, gap));
+    flip_byte(one, gap);
+    CHECK(stateos_model_fingerprint(one, &err) == fp0); // residual: same header, same size, unsampled offset
+    flip_byte(one, gap);
+
+    // split model: every shard is covered, and the shard set must be complete
+    const std::string s1 = tmp_file("fp-split-00001-of-00002.gguf");
+    const std::string s2 = tmp_file("fp-split-00002-of-00002.gguf");
+    CHECK(write_tensor_gguf(s1, 1u << 18, 2, 1.0f));
+    CHECK(write_tensor_gguf(s2, 1u << 18, 2, 2.0f));
+    const std::string fps = stateos_model_fingerprint(s1, &err);
+    CHECK(fps.size() == 64);
+    if (fps.size() != 64) {
+        std::fprintf(stderr, "  split fingerprint error: %s\n", err.c_str());
+    }
+    flip_byte(s2, gguf_data_offset_of(s2) + 100);
+    CHECK(stateos_model_fingerprint(s1, &err) != fps); // a change in shard 2 changes the identity
+    std::filesystem::remove(stateos_path(s2));
+    err.clear();
+    CHECK(stateos_model_fingerprint(s1, &err).empty() && !err.empty()); // a missing shard: no identity
+
+    const std::string misnamed = tmp_file("fp-misnamed.gguf");
+    CHECK(write_tensor_gguf(misnamed, 1024, 2, 3.0f));
+    err.clear();
+    CHECK(stateos_model_fingerprint(misnamed, &err).empty() && !err.empty());
 }
 
 // the current server's model identity (argv[1] = a small GGUF, e.g. models/ggml-vocab-qwen2.gguf)
@@ -487,6 +668,9 @@ int main(int argc, char ** argv) {
     test_checkpoints();
     test_companion();
     test_props_capability();
+    test_section_checks();
+    test_replace_file();
+    test_fingerprint_v2();
     if (argc > 1) {
         test_model_fingerprint(argv[1], argc > 2 ? argv[2] : "");
     } else {

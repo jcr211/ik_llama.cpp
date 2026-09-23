@@ -974,8 +974,11 @@ int main(int argc, char ** argv) {
             { "filepath", filepath }
         };
 
-        const int id_task = ctx_server.queue_tasks.post(std::move(task));
+        // register before posting: a fast answer from the main loop must not find nobody waiting
+        task.id = ctx_server.queue_tasks.get_new_id();
+        const int id_task = task.id;
         ctx_server.queue_results.add_waiting_task_id(id_task);
+        ctx_server.queue_tasks.post(std::move(task));
 
         server_task_result result = ctx_server.queue_results.recv(id_task);
         ctx_server.queue_results.remove_waiting_task_id(id_task);
@@ -983,7 +986,7 @@ int main(int argc, char ** argv) {
         if (result.error) {
             res_err(res, result.data);
         } else {
-            res.set_content(result.data.dump(), "application/json");
+            res.set_content(safe_json_to_str(result.data), "application/json");
         }
     };
 
@@ -1004,8 +1007,11 @@ int main(int argc, char ** argv) {
             { "filepath", filepath }
         };
 
-        const int id_task = ctx_server.queue_tasks.post(std::move(task));
+        // register before posting: a fast 409 from the main loop must not find nobody waiting
+        task.id = ctx_server.queue_tasks.get_new_id();
+        const int id_task = task.id;
         ctx_server.queue_results.add_waiting_task_id(id_task);
+        ctx_server.queue_tasks.post(std::move(task));
 
         server_task_result result = ctx_server.queue_results.recv(id_task);
         ctx_server.queue_results.remove_waiting_task_id(id_task);
@@ -1013,7 +1019,8 @@ int main(int argc, char ** argv) {
         if (result.error) {
             res_err(res, result.data);
         } else {
-            res.set_content(result.data.dump(), "application/json");
+            // replace-mode dump: soft-field values echoed from a file need not be valid UTF-8
+            res.set_content(safe_json_to_str(result.data), "application/json");
         }
     };
 
@@ -1024,8 +1031,10 @@ int main(int argc, char ** argv) {
             { "id_slot", id_slot },
         };
 
-        const int id_task = ctx_server.queue_tasks.post(std::move(task));
+        task.id = ctx_server.queue_tasks.get_new_id();
+        const int id_task = task.id;
         ctx_server.queue_results.add_waiting_task_id(id_task);
+        ctx_server.queue_tasks.post(std::move(task));
 
         server_task_result result = ctx_server.queue_results.recv(id_task);
         ctx_server.queue_results.remove_waiting_task_id(id_task);
@@ -1091,9 +1100,14 @@ int main(int argc, char ** argv) {
             } },
             { "n_ctx",                       ctx_server.n_ctx },
             { "cors_proxy_enabled",          ctx_server.params_base.webui_mcp_proxy},
-            { "stateos",                     stateos_props_capability(ctx_server.stateos_companion_supported()) },
 
         };
+
+        const json stateos = stateos_props_entry(!ctx_server.params_base.slot_save_path.empty(),
+                !ctx_server.stateos_model_fp.empty(), ctx_server.stateos_companion_supported());
+        if (!stateos.is_null()) {
+            data["stateos"] = stateos;
+        }
 
         if (ctx_server.params_base.use_jinja) {
             if (!tmpl_tools.empty()) {

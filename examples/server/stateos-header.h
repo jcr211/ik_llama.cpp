@@ -30,6 +30,7 @@ constexpr uint32_t STATEOS_MAGIC             = 0x534F534Cu; // bytes "LSOS"
 constexpr uint32_t STATEOS_CONTAINER_VERSION = 1;
 constexpr uint32_t STATEOS_LEGACY_SEQ_MAGIC  = 0x67677371u; // 'ggsq' = LLAMA_STATE_SEQ_MAGIC (headerless llama file)
 constexpr uint32_t STATEOS_MAX_HEADER_BYTES  = 1u << 20;
+constexpr size_t   STATEOS_MAX_SECTIONS      = 16;          // v1 writes at most 4 (+ END)
 
 // Bump when the bytes this fork writes into a MAIN or COMP section change meaning without the llama
 // state-seq version changing (e.g. a new per-layer cache the reader expects). Part of the hard header.
@@ -143,6 +144,22 @@ stateos_scan_result stateos_scan_file(const std::string & path);
 
 bool stateos_read_range(const std::string & path, uint64_t offset, uint64_t size, std::vector<uint8_t> & out, std::string * err);
 
+// Section-level restore checks made before any file payload is read (the TOKS size is bounded by the slot
+// context first). ok=false names the refusing field ("section:TOKS", "section:MAIN", "n_tokens").
+struct stateos_section_check {
+    bool        ok       = false;
+    std::string field;
+    std::string error;
+    size_t      n_tokens = 0;
+    bool        empty    = false; // a state saved from an empty slot: restore is an erase, the loader is not called
+};
+
+stateos_section_check stateos_check_sections(const stateos_scan_result & scan, size_t n_ctx_slot);
+
+// Replace `dst` with `src` (same directory). Windows: MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH) with short
+// retries; the previous `dst` is never deleted first, so a transient lock cannot destroy the last good state.
+bool stateos_replace_file(const std::string & src, const std::string & dst, std::string * err);
+
 // Writers over a stdio FILE* opened in binary mode. All return false on a short write.
 bool stateos_write_preamble(std::FILE * f, const std::string & header_text);
 bool stateos_write_section_header(std::FILE * f, uint32_t tag, uint64_t size);
@@ -161,6 +178,9 @@ struct stateos_checkpoint_rec {
 
 void stateos_encode_checkpoints(const std::vector<stateos_checkpoint_rec> & in, std::vector<uint8_t> & out);
 bool stateos_decode_checkpoints(const uint8_t * data, size_t size, std::vector<stateos_checkpoint_rec> & out, std::string * err);
+
+// Positions must be ordered and non-negative (a crafted record could otherwise overflow pos_max_prompt + 1 later).
+bool stateos_checkpoints_sane(const std::vector<stateos_checkpoint_rec> & recs, std::string * err);
 
 // ---- companion (COMP payload prefix) ----------------------------------------------------------------
 

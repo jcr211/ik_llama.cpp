@@ -19,6 +19,10 @@ always relaunches the standing server with `D:\AI\ik_llama-qwen4exp\launch-stand
 4. At least 25 GB free on `D:` (the 190K-token state is ~4–5 GB; the script deletes it at the end).
 5. Diff the script's `$CommonArgs` + `$SpecArgs` against `launch-standing-8099.ps1` (single source of truth) and update
    the script if the standing flags changed. Never copy the launcher's `--api-key` into the script.
+6. The server computes `model_fingerprint_v2` once at startup when `--slot-save-path` is set (16 × 64 KiB samples per
+   shard plus every shard's header; the log line `State-OS model_fingerprint_v2 <hex> (<ms>)` gives its cost). If it
+   fails, the log says `State-OS disabled`, `/props` omits `stateos` and save/restore answer 500.
+7. `--verbose` echoes request data; the 190K round writes MB-sized log lines. Harmless, but budget the disk.
 
 ## Run
 
@@ -50,12 +54,27 @@ first 4096 or 32768 ids, `Z` = a short fixed question, `Q` = an unrelated 80-lin
 5. **cold** (report-only): `erase`; `/completion P+Z` (full prefill).
 
 Then, holding the restored 4K S0 in the slot: a soft-field tamper (`build`) must restore with a warning; each hard field
-tampered in a copy of `id4k.state` (`model_fingerprint, n_ctx, cache_type_k, cache_type_v, rope, kv_layout_version,
+tampered in a copy of `id4k.state` (`model_fingerprint_v2, n_ctx, cache_type_k, cache_type_v, rope, kv_layout_version,
 system_prompt_sha256, kv_geometry, n_tokens, token_sha256`) plus an unknown hard field, a fake and a real (lane-0 file
 head) legacy/unkeyed file, a truncated file, a junk file and a missing file must each answer **409** (missing =
 `state_missing`, legacy = `state_legacy_unkeyed`, truncated = `state_corrupt`, header = `state_refused` with
-`refused_field` = the tampered key) with `slot_untouched: true`. Finally `/completion P+Z` must reproduce the warm output
+`refused_field` = the tampered key) with `slot_untouched: true`. Then `/completion P+Z` must reproduce the warm output
 with the same `prompt_n` — the slot still held S0 through every refusal.
+
+Destructive paths (review MUST-3), oracle = the 4K cold output (a full prefill of `P+Z`):
+- **Empty-slot round trip:** `erase` → `save empty.state` (200, `n_saved` 0) → `/completion Q` → `restore empty.state` →
+  200 with `stateos.empty: true` (restore of an empty state is an erase; the loader is not called) → `/health` ok →
+  `/completion P+Z` re-prefills (`prompt_n` = |P+Z|) and equals the cold output. Before the fix this aborted the server
+  (`read_kv_cache_meta` indexed `cells[head - 1]` for 0 cells).
+- **MAIN tamper:** a copy of `id4k.state` whose MAIN `cell_count` is +1 (container still well-formed, so verification
+  passes) → `restore` → **500** with `slot_untouched: false` → `/health` ok → `/completion P+Z` re-prefills and equals
+  the cold output.
+- **Leg B, companion sub-header tamper:** a copy of `on32k.state` with one hex digit of `companion_kv_geometry` changed
+  (same length) → **200** with `stateos.companion` = `skipped: companion field 'companion_kv_geometry' differs …`.
+
+Save and restore responses also carry `stateos.kv_pos_max` (report-only): on legitimate flows it should equal
+`n_tokens - 1` (or -1 for an empty state). Read it from `results.json`; a systematic mismatch is worth knowing before the
+harness relies on token-exact reuse.
 
 **Leg B — speculation ON = production flags (report-only).** Same round at 32K with `n_predict=128`: the save must say
 `companion: saved`, restores `companion: loaded`; the spec-off `id32k.state` (no COMP section) is restored too to read
@@ -72,6 +91,7 @@ round (`P` = 190000 ids, `n_predict=16`, no cold control) measures the state byt
   text, for both restores, and `prompt_n` equal to warm's and ≤ |Z|+1 (no re-prefill). `PASS-IDENTITY /
   REUSE-INCONCLUSIVE` means identity held but the warm run itself re-prefilled (read `prompt_n` in results.json).
 - `refusals`: every entry `pass: true`; `soft_build.pass: true`; `slot_untouched_after_refusals.pass: true`.
+- `empty_roundtrip.pass` and `main_tamper.pass` (Leg A); `comp_tamper.pass` (Leg B, report-only leg but a hard expectation).
 - Report-only: `identity_cold_vs_warm_report_only` (a cold/warm difference is the known batch-shape arithmetic effect,
   not a state defect), everything in Leg B, `restored_runs_agree` (false = engine run-to-run nondeterminism: mark
   INCONCLUSIVE, not FAIL).

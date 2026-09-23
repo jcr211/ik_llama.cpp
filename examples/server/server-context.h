@@ -345,7 +345,9 @@ struct server_context {
     void process_single_task(server_task&& task);
 
     // State-OS v1 keyed slot state (/slots/{id}?action=save|restore)
-    std::string stateos_model_fp; // model fingerprint, computed on first use
+    std::string stateos_model_fp; // model_fingerprint_v2, computed once after the load (empty = State-OS unavailable)
+
+    void stateos_init_identity();
 
     stateos_fields stateos_identity_fields(std::string* err);
 
@@ -355,9 +357,18 @@ struct server_context {
     // slot tasks answer on the legacy result queue that the /slots handlers wait on
     void send_slot_error(const server_task& task, int code, const std::string& type, const std::string& message, json extra = json::object());
 
+    // the public entry points catch every exception and answer 500 with the slot state reported honestly
     void stateos_slot_save(const server_task& task, server_slot& slot);
 
     void stateos_slot_restore(const server_task& task, server_slot& slot);
+
+    void stateos_slot_save_impl(const server_task& task, server_slot& slot);
+
+    // sets `destroyed` at the first step that modifies the slot
+    void stateos_slot_restore_impl(const server_task& task, server_slot& slot, bool& destroyed);
+
+    // what every restore does to the slot before installing a state (and what a failed/empty restore leaves)
+    void stateos_clear_slot(server_slot& slot);
 
     void on_finish_multitask(const server_task_multi& multitask);
 

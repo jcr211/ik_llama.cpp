@@ -1,10 +1,22 @@
 #include "stateos-header.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <thread>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 // ---- small LE helpers -------------------------------------------------------------------------------
 
@@ -461,6 +473,11 @@ stateos_scan_result stateos_scan_file(const std::string & path) {
             r.error  = "duplicate section '" + stateos_tag_name(s.tag) + "'";
             return r;
         }
+        if (r.sections.size() >= STATEOS_MAX_SECTIONS) {
+            r.status = STATEOS_SCAN_CORRUPT;
+            r.error  = "more than " + std::to_string(STATEOS_MAX_SECTIONS) + " sections";
+            return r;
+        }
         r.sections.push_back(s);
         pos = s.offset + s.size;
     }
@@ -481,6 +498,63 @@ bool stateos_read_range(const std::string & path, uint64_t offset, uint64_t size
         return false;
     }
     return true;
+}
+
+stateos_section_check stateos_check_sections(const stateos_scan_result & scan, size_t n_ctx_slot) {
+    stateos_section_check c;
+    const stateos_section * toks = scan.find(STATEOS_TAG_TOKS);
+    const stateos_section * target = scan.find(STATEOS_TAG_MAIN);
+    if (toks == nullptr || target == nullptr) {
+        c.field = toks == nullptr ? "section:TOKS" : "section:MAIN";
+        c.error = "a required section is missing";
+        return c;
+    }
+    if (toks->size % 4 != 0) {
+        c.field = "section:TOKS";
+        c.error = "token section size is not a multiple of 4";
+        return c;
+    }
+    c.n_tokens = (size_t) (toks->size / 4);
+    if (c.n_tokens > n_ctx_slot) {
+        c.field = "n_tokens";
+        c.error = std::to_string(c.n_tokens) + " tokens exceed the slot context of " + std::to_string(n_ctx_slot);
+        return c;
+    }
+    if (target->size == 0) {
+        // the writer never produces this (a target state holds at least its cell count); 0 is also the loader's
+        // failure value, so it must never reach the load
+        c.field = "section:MAIN";
+        c.error = "empty target state";
+        return c;
+    }
+    c.empty = c.n_tokens == 0;
+    c.ok    = true;
+    return c;
+}
+
+bool stateos_replace_file(const std::string & src, const std::string & dst, std::string * err) {
+#if defined(_WIN32)
+    const std::wstring wsrc = stateos_path(src).wstring();
+    const std::wstring wdst = stateos_path(dst).wstring();
+    DWORD last = 0;
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (MoveFileExW(wsrc.c_str(), wdst.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            return true;
+        }
+        last = GetLastError();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+    }
+    set_err(err, "MoveFileExW failed (Win32 error " + std::to_string((unsigned long) last) + ")");
+    return false;
+#else
+    std::error_code ec;
+    std::filesystem::rename(stateos_path(src), stateos_path(dst), ec);
+    if (ec) {
+        set_err(err, ec.message());
+        return false;
+    }
+    return true;
+#endif
 }
 
 bool stateos_write_bytes(std::FILE * f, const void * data, size_t size) {
@@ -559,6 +633,20 @@ bool stateos_decode_checkpoints(const uint8_t * data, size_t size, std::vector<s
     if (pos != size) {
         set_err(err, "checkpoint section has trailing bytes");
         return false;
+    }
+    return true;
+}
+
+bool stateos_checkpoints_sane(const std::vector<stateos_checkpoint_rec> & recs, std::string * err) {
+    for (size_t i = 0; i < recs.size(); ++i) {
+        const auto & c = recs[i];
+        const bool ok = c.pos_min >= 0 && c.pos_min <= c.pos_max &&
+                        c.pos_min_prompt <= c.pos_max_prompt && c.pos_max_prompt < INT32_MAX &&
+                        c.n_tokens >= 0;
+        if (!ok) {
+            set_err(err, "checkpoint " + std::to_string(i) + " has inconsistent positions");
+            return false;
+        }
     }
     return true;
 }

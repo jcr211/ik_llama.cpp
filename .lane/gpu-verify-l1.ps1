@@ -6,10 +6,12 @@
 #
 # Leg A (spec OFF, the acceptance leg): greedy identity (temperature 0) across save -> pollute -> restore at 4K and 32K,
 #   one 409 refusal per hard header field + unknown-hard-field + legacy/unkeyed + corrupt + missing, a soft-field warning,
-#   and a final continuation proving the slot was untouched by every refusal. Auto-stops on the first identity FAIL or
-#   on a refusal that is not a 409 naming its field (mechanism kill criteria).
-# Leg B (spec ON = production flags, report-only): companion section saved/loaded at 32K, draft acceptance with the
-#   companion vs a companion-less file, and the state bytes + restore time at 190K tokens (production context 196608).
+#   a continuation proving the slot was untouched by every refusal, then the destructive paths: an empty-slot round trip
+#   and a MAIN-payload tamper (500, slot cleared, server alive, correct re-prefill). Auto-stops on the first identity
+#   FAIL or on a refusal that is not a 409 naming its field (mechanism kill criteria).
+# Leg B (spec ON = production flags, report-only): companion section saved/loaded at 32K, a companion sub-header tamper
+#   (200, companion skipped), draft acceptance with the companion vs a companion-less file, and the state bytes +
+#   restore time at 190K tokens (production context 196608).
 param(
     [switch] $SkipSpecOn,
     [switch] $Skip192K
@@ -163,6 +165,33 @@ function Set-HeaderValue([string] $Text, [string] $Key, [string] $Value) {
     if (-not $found) { throw "field '$Key' is not in the header" }
     return ($lines -join "`n")
 }
+# payload [offset, size) of a container section ('MAIN', 'COMP', ...), walking the section table
+function Find-Section([string] $Path, [string] $Tag) {
+    $in = [System.IO.File]::OpenRead($Path)
+    try {
+        $pre = New-Object byte[] 12; Read-Exact $in $pre 12
+        $pos = [long] 12 + [BitConverter]::ToUInt32($pre, 8)
+        $sh = New-Object byte[] 16
+        while ($pos + 16 -le $in.Length) {
+            [void] $in.Seek($pos, [System.IO.SeekOrigin]::Begin); Read-Exact $in $sh 16
+            $t = [System.Text.Encoding]::ASCII.GetString($sh, 0, 4).TrimEnd([char] 0)
+            $size = [long] [BitConverter]::ToUInt64($sh, 8)
+            if ($t -eq $Tag) { return [pscustomobject]@{ Offset = $pos + 16; Size = $size } }
+            if ($t -eq 'END') { break }
+            $pos += 16 + $size
+        }
+    } finally { $in.Dispose() }
+    throw "section '$Tag' not found in $Path"
+}
+function Write-BytesAt([string] $Path, [long] $Offset, [byte[]] $Bytes) {
+    $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite)
+    try { [void] $fs.Seek($Offset, [System.IO.SeekOrigin]::Begin); $fs.Write($Bytes, 0, $Bytes.Length) } finally { $fs.Dispose() }
+}
+function Read-BytesAt([string] $Path, [long] $Offset, [int] $N) {
+    $fs = [System.IO.File]::OpenRead($Path)
+    try { [void] $fs.Seek($Offset, [System.IO.SeekOrigin]::Begin); $b = New-Object byte[] $N; Read-Exact $fs $b $N; return ,$b } finally { $fs.Dispose() }
+}
+
 function Get-HeaderValue([string] $Path, [string] $Key) {
     $in = [System.IO.File]::OpenRead($Path)
     try {
@@ -259,7 +288,7 @@ try {
     Log "soft field 'build': status=$($soft.Status) pass=$softOk"
 
     $hard = [ordered]@{
-        model_fingerprint    = 'ffff' + (Get-HeaderValue $good 'model_fingerprint').Substring(4)
+        model_fingerprint_v2 = 'ffff' + (Get-HeaderValue $good 'model_fingerprint_v2').Substring(4)
         n_ctx                = '65536'
         cache_type_k         = 'f16'
         cache_type_v         = 'f16'
@@ -321,6 +350,39 @@ try {
     $nRef = @($ref.Values | Where-Object { $_.pass }).Count
     Log "refusals: $nRef/$($ref.Count) pass; slot untouched after refusals: $untouched"
     Save-Results
+
+    # --- destructive paths (review M3). Oracle for "correct re-prefill": the 4K cold output (full prefill of P+Z).
+    $PZ4 = Concat (Head $all 4096) $Z
+    $cold4 = $Results.legA.identity_4k.cold
+
+    # (a) empty-slot round trip: a state saved right after erase restores as an erase (no loader call), server stays up
+    [void] (Slot 'erase' $null)
+    $se = Slot 'save' 'empty.state'
+    [void] (Complete $Q 8)                                   # something to erase
+    $re = Slot 'restore' 'empty.state'
+    $alive = $false; try { $alive = ((Invoke-RestMethod -Uri "$Base/health" -TimeoutSec 5).status -eq 'ok') } catch {}
+    $ae = Complete $PZ4 64
+    $emptyOk = ($se.Status -eq 200) -and ($se.Body.n_saved -eq 0) -and ($re.Status -eq 200) -and ($re.Body.stateos.empty -eq $true) -and $alive -and
+               ($ae.prompt_n -eq $PZ4.Length) -and ($ae.content -ceq $cold4.content)
+    $Results.legA.empty_roundtrip = [ordered]@{ save_status = $se.Status; restore_status = $re.Status; restore = $re.Body.stateos; alive = $alive; next = $ae; pass = $emptyOk }
+    Log "empty-slot round trip: save=$($se.Status) restore=$($re.Status) empty=$($re.Body.stateos.empty) alive=$alive next prompt_n=$($ae.prompt_n)/$($PZ4.Length) same-as-cold=$($ae.content -ceq $cold4.content) pass=$emptyOk"
+
+    # (b) MAIN tamper: cell_count + 1 inside a well-formed container -> the loader fails after its seq_rm -> 500,
+    #     slot_untouched:false, server alive, the next request re-prefills and is correct
+    $bad = Join-Path $SlotDir 'main-tamper.state'
+    Copy-Item -LiteralPath $good -Destination $bad -Force
+    $m = Find-Section $bad 'MAIN'
+    $cc = [BitConverter]::ToUInt32((Read-BytesAt $bad $m.Offset 4), 0)
+    Write-BytesAt $bad $m.Offset ([BitConverter]::GetBytes([uint32] ($cc + 1)))
+    $rs = Slot 'restore' 'id4k.state'                         # the slot holds S0 before the tamper
+    $rt = Slot 'restore' 'main-tamper.state'
+    $alive = $false; try { $alive = ((Invoke-RestMethod -Uri "$Base/health" -TimeoutSec 5).status -eq 'ok') } catch {}
+    $at = Complete $PZ4 64
+    $tamperOk = ($rs.Status -eq 200) -and ($rt.Status -eq 500) -and ($rt.Body.error.slot_untouched -eq $false) -and $alive -and
+                ($at.prompt_n -eq $PZ4.Length) -and ($at.content -ceq $cold4.content)
+    $Results.legA.main_tamper = [ordered]@{ cell_count = $cc; status = $rt.Status; error = $rt.Body.error; alive = $alive; next = $at; pass = $tamperOk }
+    Log "MAIN tamper (cell_count $cc -> $($cc + 1)): status=$($rt.Status) slot_untouched=$($rt.Body.error.slot_untouched) alive=$alive next prompt_n=$($at.prompt_n)/$($PZ4.Length) same-as-cold=$($at.content -ceq $cold4.content) pass=$tamperOk"
+    Save-Results
     Stop-TestServer $proc; $proc = $null
 
     # ================= Leg B: speculation ON = production flags (report-only) =================
@@ -343,6 +405,27 @@ try {
         }
         $Results.legB.no_companion_32k = $nc
         Log "spec-on 32K: companion=$($Results.legB.companion_32k.restored[0].restore.stateos.companion) acc(warm)=$($Results.legB.companion_32k.warm_acceptance.rate) acc(restored)=$($Results.legB.companion_32k.restored[0].acceptance.rate) acc(no companion)=$($nc.acceptance.rate) status(no companion file)=$($rs.Status)"
+        Save-Results
+
+        # (c) companion sub-header tamper (review M3): a length-preserving edit of companion_kv_geometry -> 200 with
+        #     the companion skipped, never a refusal
+        $on32 = Join-Path $SlotDir 'on32k.state'
+        $ct = Join-Path $SlotDir 'comp-tamper.state'
+        Copy-Item -LiteralPath $on32 -Destination $ct -Force
+        $c = Find-Section $ct 'COMP'
+        $sublen = [BitConverter]::ToUInt32((Read-BytesAt $ct $c.Offset 4), 0)
+        $sub = [System.Text.Encoding]::ASCII.GetString((Read-BytesAt $ct ($c.Offset + 4) ([int] $sublen)))
+        $gpos = $sub.IndexOf('companion_kv_geometry=')
+        if ($gpos -lt 0) { throw 'companion_kv_geometry not found in the COMP sub-header' }
+        $vpos = $gpos + 'companion_kv_geometry='.Length
+        $newc = if ($sub[$vpos] -eq '0') { [byte][char] '1' } else { [byte][char] '0' }
+        Write-BytesAt $ct ($c.Offset + 4 + $vpos) ([byte[]] @($newc))
+        [void] (Slot 'erase' $null); [void] (Complete $Q 8)
+        $rc = Slot 'restore' 'comp-tamper.state'
+        $compOk = ($rc.Status -eq 200) -and ([string] $rc.Body.stateos.companion).StartsWith("skipped: companion field 'companion_kv_geometry'")
+        $Results.legB.comp_tamper = [ordered]@{ status = $rc.Status; companion = $rc.Body.stateos.companion; pass = $compOk }
+        Log "COMP sub-header tamper: status=$($rc.Status) companion='$($rc.Body.stateos.companion)' pass=$compOk"
+        Remove-Item -LiteralPath $ct -Force -ErrorAction SilentlyContinue
         Save-Results
 
         if (-not $Skip192K) {

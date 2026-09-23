@@ -22,3 +22,9 @@ Log (ET, approximate):
 - 18:09 build started (coordinator: box free for builds)
 - 18:18 build 1 failed in the test TU (tree is C++20: path::u8string type); fixed with stateos_path helpers
 - 18:28 build 2 green; /props capability added; vocab-only GGUF fingerprint clamp; build 3+4 green, tests green 18:31
+- 18:40 fix round (review FIX-FIRST @ c8a9261d): M1 empty-slot restore (llama early return + erase-equivalent restore),
+  M2 zero-size MAIN/COMP refused + nread==0 failure, M3 GPU script (empty round trip, MAIN tamper, COMP tamper),
+  SHOULDs (companion partial-cell clear, startup fingerprint, /props only with --slot-save-path, try/catch, register
+  before post), model_fingerprint_v2 (16 windows/shard, all shards, shard count); P3 extras: section cap 16,
+  TOKS bounded before read, checkpoint position sanity, MoveFileExW replace (no delete-first), replace-mode JSON dump
+- 18:57 build exit 0, test-l1 exit 0 (195 checks / 0 failures, ctest 2/2); no compiler of another lane was running
