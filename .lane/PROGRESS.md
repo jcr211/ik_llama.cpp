@@ -4,16 +4,18 @@ Worktree `D:/AI/worktrees/sl1-spec-ckpt`, branch `lane/sl1-spec-ckpt` from `fix/
 Order: `D:/Projects/longspear/docs/drafts/decode-throughput-merged-plan-20260924.md` §5 (SL-1).
 
 ## Checklist
+(hashes after the autosquash rebase; every code commit compiles on its own, see the log)
 - [x] commit 0 — `fix(iqk)`: empty row-group guard at the 7 MoE/dense partition sites (03450ffc)
-- [x] commit 1 — `[spec-host]` per-round host timing (`LONGSPEAR_SPEC_HOST_TIMING=1`) (43fa044f)
-- [x] commit 2 — hybrid `cells[seq].pos` guard (code-reading note below first) (20b1d4f1)
-- [x] commit 3 — PLE-tail per-step save/restore (`LONGSPEAR_PER_STEP_PLE_TAIL=1`) (6dc748e1)
-- [x] commit 4 — explicit capacity (`LONGSPEAR_SPEC_CKPT_MAX_TOKENS`) + clamp (`LONGSPEAR_SPEC_CLAMP_TO_CKPT`) (87af5d06)
-- [x] commit 5 — persistent checkpoint sampler (`LONGSPEAR_SPEC_CKPT_LEAN=1`) (a7a9818e)
-- [x] commit 6 — per-step vs replay crosscheck (`LONGSPEAR_SPEC_CKPT_CROSSCHECK=1`) (824c9c38)
-- [x] commit 7 — tests (a)-(d), build script, launchers (6325f127, 81fa77ce)
-- [ ] build `build-sl1` (only when no other compile is running), tests run with exit codes
-- [ ] `.lane/GPU-WINDOW.md` (coordinator recipe), report
+- [x] commit 1 — `[spec-host]` per-round host timing (`LONGSPEAR_SPEC_HOST_TIMING=1`) (9b72c3fa)
+- [x] commit 2 — hybrid `cells[seq].pos` guard (code-reading note below first) (1144be68)
+- [x] commit 3 — PLE-tail per-step save/restore (`LONGSPEAR_PER_STEP_PLE_TAIL=1`) (100d62cd)
+- [x] commit 4 — explicit capacity (`LONGSPEAR_SPEC_CKPT_MAX_TOKENS`) + clamp (`LONGSPEAR_SPEC_CLAMP_TO_CKPT`) (277cae8f)
+- [x] commit 5 — persistent checkpoint sampler (`LONGSPEAR_SPEC_CKPT_LEAN=1`) (c6cbebae)
+- [x] commit 6 — per-step vs replay crosscheck (`LONGSPEAR_SPEC_CKPT_CROSSCHECK=1`) (03b685f2)
+- [x] commit 7 — tests (a)-(d), build script, launchers (4e5a606f, 8cf423dc)
+- [x] build `build-sl1`, every commit compiled in order, tests (a)-(d) exit 0
+- [x] `.lane/GPU-WINDOW.md` (coordinator recipe); report delivered in the final message (the REPORT.md write was
+  refused by a hook)
 
 ## Commit 2 code-reading note — `kv.cells[seq_id].pos = accepted_pos` (src/llama.cpp PER_STEP restore)
 What the write means depends on the cache kind:
@@ -74,6 +76,12 @@ What the write means depends on the cache kind:
   exit 0 (d, 3 rounds). Mutation check: with the PLE window at j instead of j+1 the test fails 127 checks (a and b).
 - 19:02 fixups autosquashed into commits 1, 5, 7 so each commit compiles on its own; tree identical to before.
 - GPU-WINDOW.md written; sl1-gate.sh self-test 7/7 on synthetic telemetry.
+- 19:03 per-commit compile loop (`.lane/per-commit-build.sh`): llama-server rc=0 at every code commit, the three
+  tests rc=0 at commit 7. Warning scan (`.lane/own-warnings.sh`, blame after d583c220): one nodiscard in the sampler
+  test, fixed; none in the library/server code. Launchers parse clean; refusal paths exit 2 without launching.
+- Trial merge with lane/stateos-lane1 (ec0b962a) via `git merge-tree`: code auto-merges
+  (speculative.cpp/.h, server-context.cpp, llama.h, llama.cpp, tests/CMakeLists.txt); only .lane/PROGRESS.md
+  conflicts.
 
 ## VRAM arithmetic at M=5 (for the preflight; real sizes print at startup)
 - Per GDN row: SSM state 3,145,728 B, conv state 122,880 B (row 3,268,608 B; 36 GDN rows). PLE tail
