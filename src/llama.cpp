@@ -12053,6 +12053,132 @@ size_t llama_state_seq_load_file(struct llama_context * ctx, const char * filepa
     }
 }
 
+// State-OS (Longspear fork): container-owned sequence-state sections.
+
+// A file reader confined to one section: reading past it is corruption, not the next section's bytes.
+struct llama_data_read_file_bounded : llama_data_read_file {
+    size_t limit;
+
+    llama_data_read_file_bounded(llama_file * f, size_t lim) : llama_data_read_file(f), limit(lim) {}
+
+    void read_to(void * dst, size_t size) override {
+        if (size > limit - size_read) {
+            throw std::runtime_error("sequence state reads past the end of its section");
+        }
+        llama_data_read_file::read_to(dst, size);
+    }
+};
+
+static size_t llama_state_seq_append_to_file_internal(struct llama_context * ctx, const char * filepath, llama_seq_id seq_id, llama_state_seq_flags flags) {
+    if (!llama_state_io_supported(ctx, __func__, flags, seq_id)) {
+        return 0;
+    }
+    llama_file file(filepath, "r+b");
+    file.seek(0, SEEK_END);
+
+    llama_data_write_file data_ctx(&file, ctx->model);
+    return llama_state_seq_get_data_internal(ctx, data_ctx, seq_id, flags);
+}
+
+size_t llama_state_seq_append_to_file(struct llama_context * ctx, const char * filepath, llama_seq_id seq_id, llama_state_seq_flags flags) {
+    try {
+        return llama_state_seq_append_to_file_internal(ctx, filepath, seq_id, flags);
+    } catch (const std::exception & err) {
+        LLAMA_LOG_ERROR("%s: error appending sequence state: %s\n", __func__, err.what());
+        return 0;
+    }
+}
+
+static size_t llama_state_seq_load_file_range_internal(struct llama_context * ctx, const char * filepath, size_t offset, size_t size, llama_seq_id dest_seq_id, llama_state_seq_flags flags) {
+    if (!llama_state_io_supported(ctx, __func__, flags, dest_seq_id)) {
+        return 0;
+    }
+    llama_file file(filepath, "rb");
+    if (offset > file.size() || size > file.size() - offset) {
+        LLAMA_LOG_ERROR("%s: range [%zu, +%zu) lies outside the file (%zu bytes)\n", __func__, offset, size, file.size());
+        return 0;
+    }
+    file.seek(offset, SEEK_SET);
+
+    llama_data_read_file_bounded data_ctx(&file, size);
+    const size_t nread = llama_state_seq_set_data_internal(ctx, data_ctx, dest_seq_id, flags);
+    if (nread == SIZE_MAX) {
+        return 0;
+    }
+    if (nread != size) {
+        // the payload parsed but did not fill its section: the state is not the one that was written
+        LLAMA_LOG_ERROR("%s: sequence state consumed %zu of %zu section bytes\n", __func__, nread, size);
+        llama_kv_cache_seq_rm(ctx, dest_seq_id, -1, -1);
+        return 0;
+    }
+    return nread;
+}
+
+size_t llama_state_seq_load_file_range(struct llama_context * ctx, const char * filepath, size_t offset, size_t size, llama_seq_id dest_seq_id, llama_state_seq_flags flags) {
+    try {
+        return llama_state_seq_load_file_range_internal(ctx, filepath, offset, size, dest_seq_id, flags);
+    } catch (const std::exception & err) {
+        LLAMA_LOG_ERROR("%s: error loading sequence state range: %s\n", __func__, err.what());
+        return 0;
+    }
+}
+
+int32_t llama_state_seq_layout_desc(const struct llama_context * ctx, char * buf, size_t buf_size) {
+    const llama_kv_cache  & kv      = ctx->kv_self;
+    const llama_hparams   & hparams = ctx->model.hparams;
+    const llama_cparams   & cparams = ctx->cparams;
+
+    std::string rope = format("rope=type=%d base=%.9g scale=%.9g orig_yarn=%u ext=%.9g attn=%.9g beta_fast=%.9g beta_slow=%.9g\n",
+            (int) llama_rope_type(&ctx->model), cparams.rope_freq_base, cparams.rope_freq_scale, cparams.n_ctx_orig_yarn,
+            cparams.yarn_ext_factor, cparams.yarn_attn_factor, cparams.yarn_beta_fast, cparams.yarn_beta_slow);
+
+    // mirrors the per-layer meta that write_kv_cache_data emits and read_kv_cache_data checks (flags = 0),
+    // plus the value transforms the payload does not record (Hadamard rotations)
+    const uint32_t v_state = kv.v_l.empty() ? 2 : kv.v_trans ? 1 : 0;
+    const uint32_t n_layer = kv.k_l.size();
+    std::string desc = format("kv=arch=%s seqv=%d n_ctx=%u size=%u v_state=%u n_layer=%u fa=%d mla=%d khad=%d vhad=%d ihad=%d compact=%d",
+            llama_model_arch_name(ctx->model.arch), LLAMA_STATE_SEQ_VERSION, cparams.n_ctx, kv.size, v_state, n_layer,
+            (int) cparams.flash_attn, cparams.mla_attn, (int) cparams.k_cache_hadamard, (int) cparams.v_cache_hadamard,
+            (int) cparams.dsa_indexer_hadamard, (int) kv.any_compacted());
+    if (kv.any_compacted()) {
+        desc += format(" size_swa=%u sink_rows=%u", kv.size_swa, kv.sink_rows);
+    }
+    for (uint32_t il = 0; il < n_layer; ++il) {
+        if (kv.k_l[il] == nullptr) {
+            continue;
+        }
+        const uint64_t k_row = cparams.mla_attn == 0
+            ? ggml_row_size(kv.k_l[il]->type, llama_kv_k_row_embd(ctx->model, hparams, il))
+            : ggml_row_size(kv.k_l[il]->type, hparams.n_lora_kv + hparams.n_rot);
+        desc += format(" k%u=%d/%llu", il, (int) kv.k_l[il]->type, (unsigned long long) k_row);
+        if (v_state != 2 && il < kv.v_l.size() && kv.v_l[il] != nullptr) {
+            const uint32_t n_embd_v = llama_kv_v_row_embd(ctx->model, hparams, il);
+            desc += format(" v%u=%d/%u", il, (int) kv.v_l[il]->type, n_embd_v);
+        }
+    }
+    desc += format(" qnext=%d", (int) llama_kv_has_qnext_state_storage(kv));
+    for (uint32_t il = 0; il < kv.s_l.size(); ++il) {
+        if (kv.s_l[il] != nullptr) {
+            desc += format(" s%u=%d/%lld", il, (int) kv.s_l[il]->type, (long long) kv.s_l[il]->ne[0]);
+        }
+    }
+    desc += format(" idx=%d", (int) !kv.kr_l.empty());
+    for (uint32_t il = 0; il < kv.kr_l.size(); ++il) {
+        if (kv.kr_l[il] != nullptr) {
+            desc += format(" r%u=%d/%lld", il, (int) kv.kr_l[il]->type, (long long) kv.kr_l[il]->ne[0]);
+        }
+    }
+    desc += "\n";
+
+    const std::string out = rope + desc;
+    if (buf != nullptr && buf_size > 0) {
+        const size_t n = std::min(out.size(), buf_size - 1);
+        memcpy(buf, out.data(), n);
+        buf[n] = '\0';
+    }
+    return (int32_t) out.size();
+}
+
 void llama_set_n_threads(struct llama_context * ctx, uint32_t n_threads, uint32_t n_threads_batch) {
     ctx->cparams.n_threads       = n_threads;
     ctx->cparams.n_threads_batch = n_threads_batch;

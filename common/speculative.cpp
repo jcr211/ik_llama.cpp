@@ -3002,6 +3002,22 @@ llama_context * common_speculative_get_companion_ctx(common_speculative * spec) 
     return nullptr;
 }
 
+llama_context * common_speculative_get_mtp_companion_ctx(common_speculative * spec) {
+    auto * mtp_state = common_speculative_get_mtp_state(spec);
+    return mtp_state != nullptr ? mtp_state->ctx_mtp : nullptr;
+}
+
+int32_t common_speculative_mtp_get_warmed_heads(const common_speculative * spec) {
+    const auto * mtp_state = common_speculative_get_mtp_state(spec);
+    return mtp_state != nullptr ? mtp_state->mtp_warmed_heads : 0;
+}
+
+void common_speculative_mtp_set_warmed_heads(common_speculative * spec, int32_t warmed_heads) {
+    if (auto * mtp_state = common_speculative_get_mtp_state(spec); mtp_state != nullptr) {
+        mtp_state->mtp_warmed_heads = std::max<int32_t>(0, warmed_heads);
+    }
+}
+
 static int32_t mtp_accept_batch(
         common_speculative_state_mtp & state,
         const llama_batch & accepted_batch,

@@ -260,6 +260,13 @@ void common_speculative_clear_sequence_kv(
 
 llama_context * common_speculative_get_companion_ctx(common_speculative * spec);
 
+// State-OS (Longspear fork): the MTP companion context only (nullptr for draft-model/dflash companions,
+// whose KV belongs to another model), and the warmed-heads bookkeeping that must travel with a companion
+// KV save/restore (deeper-head cache rows are valid only for spans warmed with those heads).
+llama_context * common_speculative_get_mtp_companion_ctx(common_speculative * spec);
+int32_t common_speculative_mtp_get_warmed_heads(const common_speculative * spec);
+void    common_speculative_mtp_set_warmed_heads(common_speculative * spec, int32_t warmed_heads);
+
 int32_t common_speculative_on_target_seq_batch(
     common_speculative * spec,
     llama_context * ctx,

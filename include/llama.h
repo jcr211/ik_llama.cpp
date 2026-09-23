@@ -1055,6 +1055,35 @@ extern "C" {
                           size_t   n_token_capacity,
                           size_t * n_token_count_out);
 
+    // State-OS (Longspear fork): stream one sequence's state (the llama_state_seq_get_data payload, no
+    // magic/version/token prefix) to the END of an existing file; the caller owns the container format.
+    // Returns the number of bytes appended, 0 on failure.
+    LLAMA_API size_t llama_state_seq_append_to_file(
+            struct llama_context * ctx,
+                      const char * filepath,
+                    llama_seq_id   seq_id,
+           llama_state_seq_flags   flags);
+
+    // State-OS (Longspear fork): load a payload written by llama_state_seq_append_to_file from the byte
+    // range [offset, offset + size) of filepath into dest_seq_id. The reader may not consume bytes outside
+    // the range and must consume all of it. Returns `size` on success, 0 on failure; a failure after the
+    // reader started leaves dest_seq_id empty (as llama_state_seq_set_data does).
+    LLAMA_API size_t llama_state_seq_load_file_range(
+            struct llama_context * ctx,
+                      const char * filepath,
+                          size_t   offset,
+                          size_t   size,
+                    llama_seq_id   dest_seq_id,
+           llama_state_seq_flags   flags);
+
+    // State-OS (Longspear fork): describe what a sequence-state payload of this context depends on, as two
+    // NUL-terminated lines "rope=<...>\nkv=<...>\n" (snprintf semantics: returns the full length, writes at
+    // most buf_size bytes). Two contexts with identical descriptions read each other's payloads.
+    LLAMA_API int32_t llama_state_seq_layout_desc(
+      const struct llama_context * ctx,
+                            char * buf,
+                          size_t   buf_size);
+
     //
     // Decoding
     //
