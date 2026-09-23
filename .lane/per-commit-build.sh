@@ -2,7 +2,10 @@
 # Compile every SL-1 commit in order (llama-server; plus the SL-1 tests once they exist) in build-sl1,
 # then return to the branch head. Stops, and kills its build, if a llama-server process appears.
 # Output: .lane/per-commit-build.log (one "commit rc" line per commit) and .lane/per-commit.status.
+# Run a COPY of this script (and of kill-build.ps1, via KILL=...) from outside the worktree: the checkouts
+# remove the tracked .lane files of later commits while the loop runs.
 set -u
+KILL=${KILL:-/d/AI/worktrees/sl1-spec-ckpt/.lane/kill-build.ps1}
 ROOT=/d/AI/worktrees/sl1-spec-ckpt
 LOG=$ROOT/.lane/per-commit-build.log
 STATUS=$ROOT/.lane/per-commit.status
@@ -31,7 +34,7 @@ for c in $(git rev-list --reverse "$BASE..$BRANCH"); do
         while kill -0 "$bp" 2>/dev/null; do
             if tasklist //NH //FI "IMAGENAME eq llama-server.exe" 2>/dev/null | grep -qi "llama-server"; then
                 echo "PREEMPTED at $c: a llama-server started" >> "$LOG"
-                pwsh -NoProfile -File "$ROOT/.lane/kill-build.ps1" >> "$LOG" 2>&1
+                pwsh -NoProfile -File "$KILL" >> "$LOG" 2>&1
                 wait "$bp"
                 git checkout -q "$BRANCH"
                 echo "preempted" > "$STATUS"
