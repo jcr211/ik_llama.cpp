@@ -213,6 +213,9 @@ struct llama_kv_cache {
         int64_t t_save_shadow_us = 0;
         int64_t t_save_sync_us   = 0;
 
+        // LONGSPEAR_SPEC_CKPT_CROSSCHECK: host copy of each per-step state row after a per-step restore
+        std::vector<std::vector<uint8_t>> xcheck_rows;
+
         // Serialised sequence state for CPU mode
         std::vector<uint8_t> cpu_state_data;
 

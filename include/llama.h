@@ -885,6 +885,17 @@ extern "C" {
     LLAMA_API void llama_spec_ckpt_last_save_timing(const struct llama_context * ctx,
             int64_t * cells_us, int64_t * shadow_us, int64_t * sync_us);
 
+    // LONGSPEAR_SPEC_CKPT_CROSSCHECK=1 (diagnostic only, never in production): per-step mode also
+    // keeps the full gpu-fallback shadow. After a per-step restore the caller snapshots the state
+    // rows, redoes the round the gpu-fallback way (restore + replay of the accepted tokens), then
+    // compares: one [ckpt-xcheck] line per component (gdn_s, gdn_conv, ple_tail) with the
+    // bit-equal element count and relL2 against the replay-derived state, which is kept.
+    LLAMA_API bool llama_spec_ckpt_xcheck_enabled(void);
+    LLAMA_API bool llama_spec_ckpt_xcheck_snapshot(struct llama_context * ctx, llama_seq_id seq_id);
+    LLAMA_API enum llama_spec_ckpt_restore_result llama_spec_ckpt_xcheck_fallback_restore(
+            struct llama_context * ctx, llama_seq_id seq_id, llama_pos n_past);
+    LLAMA_API void llama_spec_ckpt_xcheck_compare(struct llama_context * ctx, llama_seq_id seq_id, int step);
+
     // Removes all tokens that belong to the specified sequence and have positions in [p0, p1)
     // Returns false if a partial sequence cannot be removed. Removing a whole sequence never fails
     // seq_id < 0 : match any sequence

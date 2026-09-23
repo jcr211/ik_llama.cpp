@@ -9903,7 +9903,8 @@ static bool spec_ckpt_try_per_step(llama_kv_cache & kv, const llama_model & mode
         return false;
     }
 
-    if (!kv.checkpoint_alloc_shadows(true)) {
+    // the crosscheck redoes each round the gpu-fallback way, so it needs the full-state shadow
+    if (!kv.checkpoint_alloc_shadows(!llama_spec_ckpt_xcheck_enabled())) {
         LLAMA_LOG_ERROR("%s: failed to allocate conv-state shadow buffers for per-step checkpoints\n", __func__);
         kv.save_per_step_ssm = false;
         return false;
@@ -10086,6 +10087,9 @@ bool llama_spec_ckpt_save(struct llama_context * ctx, llama_seq_id seq_id) {
                 return llama_dsv4_spec_ckpt_save(ctx, true);
             }
             kv.save_per_step_ssm = true;
+            if (llama_spec_ckpt_xcheck_enabled()) {
+                return kv.checkpoint_save(ctx->sched);
+            }
             return true;
 
         case LLAMA_SPEC_CKPT_GPU_FALLBACK:
@@ -10205,6 +10209,124 @@ void llama_spec_ckpt_last_save_timing(const struct llama_context * ctx,
     if (cells_us)  *cells_us  = ckpt.t_save_cells_us;
     if (shadow_us) *shadow_us = ckpt.t_save_shadow_us;
     if (sync_us)   *sync_us   = ckpt.t_save_sync_us;
+}
+
+bool llama_spec_ckpt_xcheck_enabled(void) {
+    static const bool enabled = llama_ls_flag("LONGSPEAR_SPEC_CKPT_CROSSCHECK");
+    return enabled;
+}
+
+// state row of seq_id for every layer the per-step path restores (non-split rows only)
+static void llama_spec_ckpt_xcheck_read_rows(llama_context * ctx, llama_seq_id seq_id,
+        std::vector<std::vector<uint8_t>> & rows) {
+    const auto & kv = ctx->kv_self;
+    rows.assign(kv.s_l.size(), {});
+    for (size_t il = 0; il < kv.s_l.size(); ++il) {
+        const ggml_tensor * s = kv.s_l[il];
+        if (s == nullptr || s->extra != nullptr || seq_id < 0 || seq_id >= s->ne[1]) {
+            continue;
+        }
+        const bool has_gdn = il < kv.ckpt.per_step_ssm.size() && !kv.ckpt.per_step_ssm[il].empty();
+        const bool has_ple = il < kv.ckpt.per_step_ple.size() && kv.ckpt.per_step_ple[il] != nullptr;
+        if (!has_gdn && !has_ple) {
+            continue;
+        }
+        const size_t row_bytes = ggml_row_size(s->type, s->ne[0]);
+        rows[il].resize(row_bytes);
+        ggml_backend_tensor_get(s, rows[il].data(), (size_t) seq_id*s->nb[1], row_bytes);
+    }
+}
+
+bool llama_spec_ckpt_xcheck_snapshot(struct llama_context * ctx, llama_seq_id seq_id) {
+    if (!llama_spec_ckpt_xcheck_enabled() || ctx->kv_self.ckpt.selected_spec_mode != LLAMA_SPEC_CKPT_PER_STEP ||
+            !ctx->kv_self.ckpt.saved) {
+        return false;
+    }
+    llama_synchronize(ctx);
+    llama_spec_ckpt_xcheck_read_rows(ctx, seq_id, ctx->kv_self.ckpt.xcheck_rows);
+    return true;
+}
+
+enum llama_spec_ckpt_restore_result llama_spec_ckpt_xcheck_fallback_restore(
+        struct llama_context * ctx, llama_seq_id seq_id, llama_pos n_past) {
+    auto & kv = ctx->kv_self;
+    if (!kv.checkpoint_restore(ctx->sched)) {
+        return LLAMA_SPEC_CKPT_RESTORE_FAILED;
+    }
+    llama_kv_cache_seq_rm(kv, seq_id, n_past, -1);
+    return LLAMA_SPEC_CKPT_RESTORE_BASE_REPLAY_REQUIRED;
+}
+
+void llama_spec_ckpt_xcheck_compare(struct llama_context * ctx, llama_seq_id seq_id, int step) {
+    auto & kv = ctx->kv_self;
+    const auto & probe = kv.ckpt.xcheck_rows;
+    if (probe.empty()) {
+        return;
+    }
+
+    llama_synchronize(ctx);
+    std::vector<std::vector<uint8_t>> oracle;
+    llama_spec_ckpt_xcheck_read_rows(ctx, seq_id, oracle);
+
+    struct comp_stats {
+        const char * name;
+        int64_t n = 0;
+        int64_t n_bitequal = 0;
+        double  d2 = 0.0;
+        double  ref2 = 0.0;
+        double  max_layer_rel = 0.0;
+    };
+    comp_stats comps[3] = { { "gdn_s" }, { "gdn_conv" }, { "ple_tail" } };
+
+    const auto & hp = ctx->model.hparams;
+    const size_t conv_elems = (size_t) kv.ckpt.per_step_conv_state_dim;
+    const size_t ssm_elems  = (size_t) kv.ckpt.per_step_ssm_state_size;
+    const int32_t hist   = (int32_t) hp.ple_conv_state();
+    const int32_t hc_dim = (int32_t) (hp.dsv4_hc_mult * hp.n_embd);
+
+    auto accumulate = [](comp_stats & c, const float * a, const float * b, size_t n) {
+        double d2 = 0.0, ref2 = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+            if (memcmp(&a[i], &b[i], sizeof(float)) == 0) {
+                c.n_bitequal++;
+            }
+            const double d = (double) a[i] - (double) b[i];
+            d2   += d*d;
+            ref2 += (double) b[i]*b[i];
+        }
+        c.n    += (int64_t) n;
+        c.d2   += d2;
+        c.ref2 += ref2;
+        const double rel = ref2 > 0.0 ? std::sqrt(d2/ref2) : (d2 > 0.0 ? INFINITY : 0.0);
+        c.max_layer_rel = std::max(c.max_layer_rel, rel);
+    };
+
+    for (size_t il = 0; il < probe.size() && il < oracle.size(); ++il) {
+        if (probe[il].empty() || probe[il].size() != oracle[il].size()) {
+            continue;
+        }
+        const float * a = (const float *) probe[il].data();
+        const float * b = (const float *) oracle[il].data();
+        const size_t n_row = probe[il].size() / sizeof(float);
+        if (il < kv.ckpt.per_step_ssm.size() && !kv.ckpt.per_step_ssm[il].empty() && conv_elems + ssm_elems <= n_row) {
+            accumulate(comps[1], a, b, conv_elems);
+            accumulate(comps[0], a + conv_elems, b + conv_elems, ssm_elems);
+        }
+        if (il < kv.ckpt.per_step_ple.size() && kv.ckpt.per_step_ple[il] != nullptr) {
+            const size_t off = llama_ple_conv_row_offset((int64_t) n_row, hist, hc_dim, sizeof(float)) / sizeof(float);
+            accumulate(comps[2], a + off, b + off, (size_t) hist*hc_dim);
+        }
+    }
+
+    for (const auto & c : comps) {
+        if (c.n == 0) {
+            continue;
+        }
+        const double rel = c.ref2 > 0.0 ? std::sqrt(c.d2/c.ref2) : (c.d2 > 0.0 ? INFINITY : 0.0);
+        fprintf(stderr, "[ckpt-xcheck] j=%d comp=%s n_bitequal=%lld n=%lld relL2=%.6e max_layer_relL2=%.6e\n",
+                step, c.name, (long long) c.n_bitequal, (long long) c.n, rel, c.max_layer_rel);
+    }
+    kv.ckpt.xcheck_rows.clear();
 }
 
 bool llama_kv_cache_seq_rm(struct llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1) {

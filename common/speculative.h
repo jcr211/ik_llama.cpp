@@ -49,6 +49,7 @@ struct common_speculative_host_timing {
     int     redecode_n       = 0;
     int     mtp_skip         = 0;
     int     clamp            = 0;
+    int     xcheck           = 0; // LONGSPEAR_SPEC_CKPT_CROSSCHECK redid this round the gpu-fallback way
     int64_t ckpt_init_us     = 0;
     int64_t ckpt_save_us     = 0;
     int64_t save_cells_us    = 0;

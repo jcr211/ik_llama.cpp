@@ -1165,14 +1165,14 @@ void common_speculative_host_timing_emit(common_speculative * spec, int id_slot,
             "[spec-host] slot=%d mode=%s K=%d accepted=%d restore_result=%s redecode_n=%d"
             " ckpt_init_us=%lld ckpt_save_us=%lld cells_copy_us=%lld shadow_copy_us=%lld sync_us=%lld"
             " sampler_init_us=%lld sampler_clone_us=%lld restore_us=%lld redecode_us=%lld"
-            " draft_host_us=%lld sample_us=%lld mtp_skip=%d clamp=%d\n",
+            " draft_host_us=%lld sample_us=%lld mtp_skip=%d clamp=%d xcheck=%d\n",
             id_slot, common_speculative_ckpt_mode_name(t.mode), n_verify, n_accepted,
             common_speculative_restore_result_name(t.restore_result), t.redecode_n,
             (long long) t.ckpt_init_us, (long long) t.ckpt_save_us, (long long) t.save_cells_us,
             (long long) t.save_shadow_us, (long long) t.save_sync_us,
             (long long) t.sampler_init_us, (long long) t.sampler_clone_us,
             (long long) t.restore_us, (long long) t.redecode_us,
-            (long long) t.draft_host_us, (long long) t.sample_us, t.mtp_skip, t.clamp);
+            (long long) t.draft_host_us, (long long) t.sample_us, t.mtp_skip, t.clamp, t.xcheck);
     spec->host_timing = {};
 }
 
@@ -2729,13 +2729,32 @@ bool common_speculative_checkpoint_restore(
         return false;
     }
 
+    // LONGSPEAR_SPEC_CKPT_CROSSCHECK (diagnostic): keep the per-step state as the probe, redo the
+    // round the gpu-fallback way, and carry on from the replay-derived state. The diagnostic
+    // replay is not counted in redecode_n, which stays the number of replays the restore required
+    enum llama_spec_ckpt_restore_result path_result = restore_result;
+    bool xcheck = false;
+    if (restore_result == LLAMA_SPEC_CKPT_RESTORE_DIRECT && llama_spec_ckpt_xcheck_enabled() &&
+            llama_spec_ckpt_xcheck_snapshot(ctx, seq_id)) {
+        path_result = llama_spec_ckpt_xcheck_fallback_restore(ctx, seq_id, ckpt.n_past);
+        if (path_result == LLAMA_SPEC_CKPT_RESTORE_FAILED) {
+            LOG_ERR("%s: seq_id=%d crosscheck gpu-fallback restore failed\n", __func__, (int) seq_id);
+            common_speculative_checkpoint_discard(ckpt, ctx);
+            return false;
+        }
+        xcheck = true;
+        if (timing) {
+            timing->xcheck = 1;
+        }
+    }
+
     // The restore rewound the TARGET context only. Whatever the MTP companion holds at or after
     // the checkpoint position (KV rows, cached draft token/embedding, cached target hidden state)
     // now describes a target state that no longer exists, so invalidate it here. The
     // accepted-prefix commit below re-populates it from the restored rows.
     common_speculative_mtp_invalidate(spec, seq_id, ckpt.n_past);
 
-    if (restore_result == LLAMA_SPEC_CKPT_RESTORE_DIRECT) {
+    if (path_result == LLAMA_SPEC_CKPT_RESTORE_DIRECT) {
         if (ckpt.sampler != nullptr && sampler_dst != nullptr) {
             const int64_t t_clone0 = timing ? ggml_time_us() : 0;
             common_sampler_clone(ckpt.sampler, sampler_dst);
@@ -2794,7 +2813,7 @@ bool common_speculative_checkpoint_restore(
 
             const int64_t t_redecode0 = timing ? ggml_time_us() : 0;
             const int ret = llama_decode(ctx, re_batch);
-            if (timing) {
+            if (timing && !xcheck) {
                 timing->redecode_us += ggml_time_us() - t_redecode0;
                 timing->redecode_n  += n_re;
             }
@@ -2804,6 +2823,9 @@ bool common_speculative_checkpoint_restore(
                 llama_batch_free(re_batch);
                 common_speculative_checkpoint_discard(ckpt, ctx);
                 return false;
+            }
+            if (xcheck) {
+                llama_spec_ckpt_xcheck_compare(ctx, seq_id, step);
             }
 
             if (common_speculative_has_target_features(spec)) {
