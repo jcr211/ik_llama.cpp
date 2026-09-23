@@ -206,6 +206,12 @@ llama_build_and_test(test-regex-partial.cpp)
 
 llama_build_and_test(test-speculative-params.cpp)
 
+# LONGSPEAR State-OS v2 (SV2-E1): header-only CPU tests. They link no llama/ggml library, so
+# running them never loads a GPU backend.
+add_executable(test-partial-state test-partial-state.cpp)
+target_include_directories(test-partial-state PRIVATE ${PROJECT_SOURCE_DIR}/src)
+add_test(NAME test-partial-state COMMAND $<TARGET_FILE:test-partial-state>)
+
 llama_build_and_test(test-iq4-ks-kt-decode.cpp)
 target_include_directories(test-iq4-ks-kt-decode PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src)
 

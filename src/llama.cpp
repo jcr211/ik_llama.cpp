@@ -22,6 +22,7 @@
 #include "llama-dsv4.h"
 #include "llama-quantize.h"
 #include "llama-route-trace.h"
+#include "llama-partial-state.h"
 
 #include "unicode.h"
 
@@ -10271,23 +10272,8 @@ struct llama_data_write {
     }
 
     void write_kv_cache_meta(const llama_kv_cache & kv_self, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges, llama_seq_id seq_id = -1) {
-
-        for (const auto & range : cell_ranges) {
-            for (uint32_t i = range.first; i < range.second; ++i) {
-                const auto & cell = kv_self.cells[i];
-                const llama_pos pos      = cell.pos;
-                const uint32_t  n_seq_id = seq_id == -1 ? cell.seq_id.size() : 0;
-
-                write(&pos,      sizeof(pos));
-                write(&n_seq_id, sizeof(n_seq_id));
-
-                if (n_seq_id) {
-                    for (auto seq_id : cell.seq_id) {
-                        write(&seq_id, sizeof(seq_id));
-                    }
-                }
-            }
-        }
+        // per cell: pos, n_seq_id (0 for one sequence) [, seq ids] -- llama-partial-state.h
+        llama_partial_state::emit_cells_meta(*this, kv_self.cells.data(), cell_ranges, seq_id);
     }
 
     void write_openpangu_state(
@@ -10482,36 +10468,32 @@ struct llama_data_write {
         }
 
         if (qnext_state != 0) {
+            // per layer: type, row size, row count, rows -- llama-partial-state.h
+            std::vector<llama_partial_state::row_block> blocks(n_layer);
             for (uint32_t il = 0; il < n_layer; ++il) {
                 const bool has_s_cache = il < kv_self.s_l.size() && kv_self.s_l[il] != nullptr;
+                auto & b = blocks[il];
 
-                const int32_t s_type_i = has_s_cache ? (int32_t) kv_self.s_l[il]->type : -1;
-                write(&s_type_i, sizeof(s_type_i));
+                b.type     = has_s_cache ? (int32_t) kv_self.s_l[il]->type : -1;
+                b.row_size = has_s_cache ? ggml_row_size(kv_self.s_l[il]->type, kv_self.s_l[il]->ne[0]) : 0;
 
-                const uint64_t s_size_row = has_s_cache ? ggml_row_size(kv_self.s_l[il]->type, kv_self.s_l[il]->ne[0]) : 0;
-                write(&s_size_row, sizeof(s_size_row));
-
-                uint32_t s_rows = 0;
-                size_t s_offset = 0;
                 if (has_s_cache) {
                     const uint32_t n_slots = (uint32_t) kv_self.s_l[il]->ne[1];
                     if (seq_id == -1) {
-                        s_rows = n_slots;
+                        b.n_rows = n_slots;
                     } else if (llama_kv_qnext_seq_id_in_range(kv_self, seq_id) && (uint32_t) seq_id < kv_self.size) {
                         llama_seq_id src_seq_id = kv_self.cells[seq_id].src;
                         if (llama_kv_qnext_seq_id_in_range(kv_self, src_seq_id)) {
-                            s_rows = 1;
-                            s_offset = (size_t) src_seq_id * s_size_row;
+                            b.n_rows = 1;
+                            b.offset = (size_t) src_seq_id * b.row_size;
                         }
                     }
                 }
-
-                write(&s_rows, sizeof(s_rows));
-
-                if (has_s_cache && s_rows > 0) {
-                    write_tensor_data(kv_self.s_l[il], s_offset, s_rows * s_size_row, il);
-                }
             }
+
+            llama_partial_state::emit_rows(*this, blocks, [&](uint32_t il, size_t offset, size_t size) {
+                write_tensor_data(kv_self.s_l[il], offset, size, (int) il);
+            });
         }
 
         // DSA lightning-indexer key cache (kv_self.kr_l): one row per cell, like K/V.
@@ -10606,29 +10588,10 @@ struct llama_data_write {
             return;
         }
 
-        std::vector<std::pair<uint32_t, uint32_t>> cell_ranges; // ranges, from inclusive, to exclusive
-        uint32_t cell_count = 0;
-
         // Count the number of cells with the specified seq_id
-        // Find all the ranges of cells with this seq id (or all, when -1)
-        uint32_t cell_range_begin = kv_self.size;
-        for (uint32_t i = 0; i < kv_self.size; ++i) {
-            const auto & cell = kv_self.cells[i];
-            if ((seq_id == -1 && !cell.is_empty()) || cell.has_seq_id(seq_id)) {
-                ++cell_count;
-                if (cell_range_begin == kv_self.size) {
-                    cell_range_begin = i;
-                }
-            } else {
-                if (cell_range_begin != kv_self.size) {
-                    cell_ranges.emplace_back(cell_range_begin, i);
-                    cell_range_begin = kv_self.size;
-                }
-            }
-        }
-        if (cell_range_begin != kv_self.size) {
-            cell_ranges.emplace_back(cell_range_begin, kv_self.size);
-        }
+        // Find all the ranges of cells with this seq id (or all, when -1) -- llama-partial-state.h
+        std::vector<std::pair<uint32_t, uint32_t>> cell_ranges; // ranges, from inclusive, to exclusive
+        const uint32_t cell_count = llama_partial_state::select_cells(kv_self.cells.data(), kv_self.size, seq_id, -1, cell_ranges);
 
         // DEBUG CHECK: Sum of cell counts in ranges should equal the total cell count
         uint32_t cell_count_check = 0;
