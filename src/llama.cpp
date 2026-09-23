@@ -22,6 +22,7 @@
 #include "llama-dsv4.h"
 #include "llama-quantize.h"
 #include "llama-route-trace.h"
+#include "llama-ple-conv.h"
 
 #include "unicode.h"
 
@@ -2280,12 +2281,23 @@ bool llama_kv_cache::per_step_alloc(const llama_model & model, int max_tokens) {
         ckpt.per_step_bufs.clear();
         ckpt.per_step_ssm.clear();
         ckpt.per_step_conv.clear();
+        ckpt.per_step_ple.clear();
         ckpt.per_step_max_allocated = 0;
     }
 
     const uint32_t n_layer = (uint32_t)s_l.size();
     ckpt.per_step_ssm.resize(n_layer);
     ckpt.per_step_conv.resize(n_layer);
+
+    // qwen4exp keeps the PLE convolution history in the tail of a layer's state row; the per-step
+    // path saves it too, and a PLE-only row (no delta-net state) gets only those slots
+    static const bool ple_tail = llama_ls_flag("LONGSPEAR_PER_STEP_PLE_TAIL");
+    const auto & hparams = model.hparams;
+    const int32_t ple_hist   = (int32_t) hparams.ple_conv_state();
+    const int32_t ple_hc_dim = (int32_t) (hparams.dsv4_hc_mult * hparams.n_embd);
+    if (ple_tail) {
+        ckpt.per_step_ple.assign(n_layer, nullptr);
+    }
 
     const int64_t ssm_state_dim  = ckpt.per_step_ssm_state_size;
     const int64_t conv_dim       = ckpt.per_step_conv_dim;
@@ -2320,9 +2332,9 @@ bool llama_kv_cache::per_step_alloc(const llama_model & model, int max_tokens) {
     }
 
     for (auto & [buft, layers] : buft_layers) {
-        // 2 tensors per layer: SSM states + qkv features
+        // 2 tensors per layer: SSM states + qkv features (+ PLE history slots)
         ggml_init_params params = {
-            /*.mem_size   =*/ layers.size() * 2 * ggml_tensor_overhead(),
+            /*.mem_size   =*/ layers.size() * (ple_tail ? 3 : 2) * ggml_tensor_overhead(),
             /*.mem_buffer =*/ NULL,
             /*.no_alloc   =*/ true,
         };
@@ -2332,11 +2344,13 @@ bool llama_kv_cache::per_step_alloc(const llama_model & model, int max_tokens) {
             return false;
         }
 
+        size_t ple_bytes = 0;
         for (auto & [p, bt] : layers) {
             auto [il, id] = p;
             // SSM state: max_tokens * ssm_state_dim
             if (id < 0) {
-                if (max_tokens > 1) {
+                const bool gdn_row = !ple_tail || hparams.is_recurrent(il);
+                if (gdn_row && max_tokens > 1) {
                     GGML_ASSERT(ckpt.per_step_ssm[il].empty());
                     GGML_ASSERT(ckpt.per_step_conv[il].empty());
                     ggml_tensor * t_ssm = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, (int64_t)(max_tokens - 1) * ssm_state_dim);
@@ -2345,10 +2359,29 @@ bool llama_kv_cache::per_step_alloc(const llama_model & model, int max_tokens) {
                 }
 
                 // Conv features (qkv_mixed): max_tokens * conv_dim
-                ggml_tensor * t_qkv = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, (int64_t)max_tokens * conv_state_dim);
-                ggml_format_name(t_qkv, "per_step_qkv_l%d", il);
-                ckpt.per_step_conv[il].push_back(t_qkv);
+                if (gdn_row) {
+                    ggml_tensor * t_qkv = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, (int64_t)max_tokens * conv_state_dim);
+                    ggml_format_name(t_qkv, "per_step_qkv_l%d", il);
+                    ckpt.per_step_conv[il].push_back(t_qkv);
+                }
+
+                // PLE history: (max_tokens - 1) slots of [hist, hc_dim]
+                if (ple_tail && hparams.is_ple(il) && max_tokens > 1) {
+                    GGML_ASSERT((uint32_t) ple_hist * (uint32_t) ple_hc_dim == hparams.n_embd_ple_conv(il));
+                    GGML_ASSERT(s_l[il]->ne[0] >= (int64_t) ple_hist * ple_hc_dim);
+                    ggml_tensor * t_ple = ggml_new_tensor_1d(ctx, GGML_TYPE_F32,
+                            (int64_t)(max_tokens - 1) * ple_hist * ple_hc_dim);
+                    ggml_format_name(t_ple, "per_step_ple_l%d", il);
+                    ckpt.per_step_ple[il] = t_ple;
+                    ple_bytes += ggml_nbytes(t_ple);
+                }
             } else {
+                if (ple_tail && hparams.is_ple(il)) {
+                    LLAMA_LOG_ERROR("%s: layer %u keeps its PLE history in a split state row, which per-step checkpoints do not support\n",
+                            __func__, il);
+                    ggml_free(ctx);
+                    return false;
+                }
                 auto split_sl = (ggml_split_tensor_t *)s_l[il]->extra;
                 auto split_ssm_out = (const ggml_split_tensor_t *)model.layers[il].ssm_out->extra;
                 GGML_ASSERT(split_ssm_out && split_ssm_out->splits[id]);
@@ -2387,6 +2420,10 @@ bool llama_kv_cache::per_step_alloc(const llama_model & model, int max_tokens) {
         ggml_backend_buffer_clear(buf, 0);
         LLAMA_LOG_INFO("%s: %10s per-step buffer = %8.2f MiB (max_tokens=%d)\n", __func__,
                        ggml_backend_buffer_name(buf), ggml_backend_buffer_get_size(buf) / 1024.0 / 1024.0, max_tokens);
+        if (ple_tail) {
+            LLAMA_LOG_INFO("%s: %10s per-step PLE history = %8.3f MiB of it (%d slots)\n", __func__,
+                           ggml_backend_buffer_name(buf), ple_bytes / 1024.0 / 1024.0, max_tokens - 1);
+        }
         ckpt.per_step_ctxs.push_back(ctx);
         ckpt.per_step_bufs.push_back(buf);
     }
@@ -2416,7 +2453,29 @@ static void restore_recurrent_cache_tensors(int step, ggml_backend_sched_t sched
     ggml_backend_tensor_copy_async(dst_backend, dst_backend, &src, &dst);
 }
 
-bool llama_kv_cache::per_step_restore(const llama_model & model, ggml_backend_sched_t sched, int step) {
+// copy PLE history slot `step` into the tail of state row `slot`
+static void restore_ple_history(int step, uint32_t slot, int32_t hist, int32_t hc_dim, ggml_backend_sched_t sched,
+        ggml_tensor * s_l, ggml_tensor * per_step_ple,
+        std::unordered_set<ggml_backend_t> & backends_to_sync) {
+    GGML_ASSERT(slot < (uint32_t) s_l->ne[1]);
+    GGML_ASSERT(s_l->type == GGML_TYPE_F32 && per_step_ple->type == GGML_TYPE_F32);
+    const size_t  esz = ggml_element_size(s_l);
+    const int64_t n   = (int64_t) hist*hc_dim;
+    GGML_ASSERT((size_t) (step + 1) * n * esz <= ggml_nbytes(per_step_ple));
+
+    auto backend = ggml_backend_sched_get_tensor_backend(sched, s_l);
+    auto dst = *s_l;
+    dst.ne[0] = n;
+    dst.ne[1] = dst.ne[2] = dst.ne[3] = 1;
+    dst.nb[1] = dst.nb[2] = dst.nb[3] = n*esz;
+    dst.data  = (char *) s_l->data + (size_t) slot*s_l->nb[1] + llama_ple_conv_row_offset(s_l->ne[0], hist, hc_dim, esz);
+    auto src = dst;
+    src.data  = (char *) per_step_ple->data + (size_t) step*n*esz;
+    ggml_backend_tensor_copy_async(backend, backend, &src, &dst);
+    backends_to_sync.insert(backend);
+}
+
+bool llama_kv_cache::per_step_restore(const llama_model & model, ggml_backend_sched_t sched, int step, llama_seq_id seq_id) {
     if (ckpt.per_step_ssm.empty() || step < 0) {
         return false;
     }
@@ -2437,6 +2496,13 @@ bool llama_kv_cache::per_step_restore(const llama_model & model, ggml_backend_sc
 
     const uint32_t n_layer = (uint32_t)s_l.size();
     for (uint32_t il = 0; il < n_layer; ++il) {
+        if (s_l[il] != nullptr && il < ckpt.per_step_ple.size() && ckpt.per_step_ple[il] != nullptr) {
+            GGML_ASSERT(seq_id >= 0);
+            restore_ple_history(step, (uint32_t) seq_id, (int32_t) model.hparams.ple_conv_state(),
+                    (int32_t) (model.hparams.dsv4_hc_mult * model.hparams.n_embd), sched,
+                    s_l[il], ckpt.per_step_ple[il], backends_to_sync);
+        }
+
         if (s_l[il] == nullptr || ckpt.per_step_ssm[il].empty()) continue;
 
         if (!s_l[il]->extra) {
@@ -9780,6 +9846,19 @@ static bool spec_ckpt_try_per_step(llama_kv_cache & kv, const llama_model & mode
         return false;
     }
 
+    // without the PLE-tail slots a partial rejection restores the delta-net state but leaves the
+    // PLE convolution history advanced by the rejected drafts
+    static const bool ple_tail = llama_ls_flag("LONGSPEAR_PER_STEP_PLE_TAIL");
+    if (model.arch == LLM_ARCH_QWEN4EXP && !ple_tail) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            LLAMA_LOG_WARN("%s: WARNING: per-step checkpoints on qwen4exp do not save the PLE convolution history; "
+                    "a partial draft rejection leaves it contaminated. Set LONGSPEAR_PER_STEP_PLE_TAIL=1 or use "
+                    "--spec-ckpt-mode gpu-fallback\n", __func__);
+        }
+    }
+
     // Split recurrent tensors are supported as long as each layer exposes
     // concrete backend buffers for the per-step tensors. CPU-only and mixed
     // CPU/GPU recurrent placement are also allowed.
@@ -10044,7 +10123,7 @@ enum llama_spec_ckpt_restore_result llama_spec_ckpt_restore_ex(
                 llama_kv_cache_seq_rm(kv, seq_id, accepted_pos + 1, -1);
                 return llama_dsv4_spec_ckpt_restore(ctx, true, accepted_step);
             }
-            if (!kv.per_step_restore(ctx->model, ctx->sched, accepted_step)) {
+            if (!kv.per_step_restore(ctx->model, ctx->sched, accepted_step, seq_id)) {
                 return LLAMA_SPEC_CKPT_RESTORE_FAILED;
             }
             const llama_pos accepted_pos = n_past + accepted_step;

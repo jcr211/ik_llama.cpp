@@ -175,6 +175,10 @@ struct llama_kv_cache {
         //std::vector<std::vector<ggml_tensor *>> per_step_qkv;
         std::vector<std::vector<ggml_tensor *>> per_step_conv;
 
+        // LONGSPEAR_PER_STEP_PLE_TAIL: per PLE layer, (max_tokens - 1) slots of the qwen4exp PLE
+        // convolution history ([hist, hc_dim] each); nullptr for every other layer
+        std::vector<ggml_tensor *> per_step_ple;
+
         int32_t per_step_n_tokens = 0;
         int32_t per_step_max_allocated = 0;
         int64_t per_step_ssm_state_size = 0;
@@ -261,6 +265,7 @@ struct llama_kv_cache {
             per_step_bufs.clear();
             per_step_ssm.clear();
             per_step_conv.clear();
+            per_step_ple.clear();
             per_step_max_allocated = 0;
         }
 
@@ -279,7 +284,7 @@ struct llama_kv_cache {
 
     // Per-step checkpoint: allocate, restore step k's full state (SSM + conv) to cache
     bool per_step_alloc(const llama_model & model, int max_tokens);
-    bool per_step_restore(const llama_model & model, ggml_backend_sched_t sched, int step);
+    bool per_step_restore(const llama_model & model, ggml_backend_sched_t sched, int step, llama_seq_id seq_id = 0);
 
     ~llama_kv_cache() {
         for (struct ggml_context * ctx : ctxs) {

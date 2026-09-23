@@ -2,6 +2,7 @@
 #include "../llama-model.h"
 #include "../llama-context.h"
 #include "../llama-delta-net.h"
+#include "../llama-ple-conv.h"
 
 #include <optional>
 
@@ -105,6 +106,7 @@ static ggml_tensor * qwen4exp_ple_conv(
         int32_t               n_tokens,
         uint32_t              slot,
         bool                  reset,
+        ggml_tensor         * per_step,    // per-step history slots of a verify batch, or nullptr
         int                   il,
         const llm_build_cb  & cb) {
     const int32_t kern = hparams.ple_conv_kernel;
@@ -113,7 +115,7 @@ static ggml_tensor * qwen4exp_ple_conv(
 
     // the delta-net state occupies the front of the row; this history follows it
     const size_t esz     = ggml_element_size(state_all);
-    const size_t row_off = esz * (state_all->ne[0] - hist*hc_dim);
+    const size_t row_off = llama_ple_conv_row_offset(state_all->ne[0], hist, hc_dim, esz);
 
     ggml_tensor * state = ggml_cont(ctx0,
             ggml_view_2d(ctx0, state_all, hist, hc_dim, hist*esz, slot*state_all->nb[1] + row_off));
@@ -146,11 +148,16 @@ static ggml_tensor * qwen4exp_ple_conv(
         conv_out = conv_out ? ggml_add(ctx0, conv_out, term) : term;
     }
 
+    // a speculative verify batch also keeps the history after each of its tokens, so a partial
+    // rejection restores it directly instead of replaying the accepted tokens
+    if (per_step) {
+        llama_ple_conv_save_per_step(ctx0, gf, conv_in, per_step, hist, hc_dim, n_tokens);
+    }
+
     // the last `hist` columns are what the next ubatch reaches back into. When the ubatch is
     // shorter than the window they still carry part of the incoming state, which is correct.
     ggml_tensor * tail = ggml_cont(ctx0,
-            ggml_view_2d(ctx0, conv_in, hist, hc_dim, conv_in->nb[1],
-                    (conv_in->ne[0] - hist) * conv_in->nb[0]));
+            llama_ple_conv_window(ctx0, conv_in, conv_in->ne[0] - hist, hist));
     ggml_tensor * dst = ggml_view_2d(ctx0, state_all, hist, hc_dim, hist*esz,
             slot*state_all->nb[1] + row_off);
     ggml_build_forward_expand(gf, ggml_cpy(ctx0, tail, dst));
@@ -219,8 +226,13 @@ static ggml_tensor * qwen4exp_ple(
 
     ggml_tensor * conv_out = nullptr;
     if (delta.batch_shares_one_seq()) {
+        // the history slots exist only under LONGSPEAR_PER_STEP_PLE_TAIL, and only a verify batch
+        // that keeps per-step delta-net states fills them
+        const auto & per_step_ple = lctx.kv_self.ckpt.per_step_ple;
+        ggml_tensor * per_step = delta.save_per_step_states && il < (int) per_step_ple.size()
+            ? per_step_ple[il] : nullptr;
         conv_out = qwen4exp_ple_conv(ctx0, gf, hparams, model, state_all, xt, hc_dim, n_tokens,
-                delta.state_slot(0), reset_state, il, cb);
+                delta.state_slot(0), reset_state, per_step, il, cb);
     } else {
         // A mixed-sequence ubatch reads a different history per token, exactly as the
         // delta-net path splits it.
@@ -228,7 +240,7 @@ static ggml_tensor * qwen4exp_ple(
             ggml_tensor * x_i = ggml_cont(ctx0,
                     ggml_view_2d(ctx0, xt, 1, hc_dim, xt->nb[1], i*xt->nb[0]));
             ggml_tensor * out_i = qwen4exp_ple_conv(ctx0, gf, hparams, model, state_all, x_i, hc_dim, 1,
-                    delta.state_slot(i), reset_pos[i], il, cb);
+                    delta.state_slot(i), reset_pos[i], nullptr, il, cb);
             conv_out = conv_out ? ggml_concat(ctx0, conv_out, out_i, 0) : out_i;
         }
     }
