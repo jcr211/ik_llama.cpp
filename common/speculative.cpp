@@ -71,10 +71,11 @@ void common_speculative_checkpoint::clear() {
     n_past = 0;
     sampled = LLAMA_TOKEN_NULL;
 
-    if (sampler != nullptr) {
+    if (sampler != nullptr && !sampler_borrowed) {
         common_sampler_free(sampler);
-        sampler = nullptr;
     }
+    sampler = nullptr;
+    sampler_borrowed = false;
 }
 
 struct common_speculative_config {
@@ -231,6 +232,7 @@ static void mtp_invalidate_cached_drafts(common_speculative_state_mtp & state);
 static bool common_speculative_checkpoint_save(
     common_speculative_checkpoint & ckpt,
     common_speculative_host_timing * timing,
+    common_sampler ** lean_sampler,
     llama_model * model,
     llama_context * ctx,
     common_sampler * sampler_src,
@@ -1112,7 +1114,16 @@ struct common_speculative {
     common_speculative_host_timing host_timing; // LONGSPEAR_SPEC_HOST_TIMING only
     size_t n_ckpt_clamps = 0;                   // LONGSPEAR_SPEC_CLAMP_TO_CKPT: clamped rounds
     size_t n_ckpt_clamped_tokens = 0;           //   and the draft tokens they dropped
+    common_sampler * ckpt_sampler_lean = nullptr; // LONGSPEAR_SPEC_CKPT_LEAN: reused every round
 };
+
+static bool common_speculative_ckpt_lean_enabled() {
+    static const bool enabled = [] {
+        const char * value = getenv("LONGSPEAR_SPEC_CKPT_LEAN");
+        return value != nullptr && strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
 
 bool common_speculative_host_timing_enabled() {
     static const bool enabled = [] {
@@ -1656,6 +1667,9 @@ void common_speculative_free(common_speculative * spec) {
     }
 
     spec->checkpoint.clear();
+    if (spec->ckpt_sampler_lean != nullptr) {
+        common_sampler_free(spec->ckpt_sampler_lean);
+    }
     delete spec;
 }
 
@@ -2398,6 +2412,7 @@ bool common_speculative_before_draft(
     return common_speculative_checkpoint_save(
         spec->checkpoint,
         common_speculative_host_timing_enabled() ? &spec->host_timing : nullptr,
+        common_speculative_ckpt_lean_enabled() ? &spec->ckpt_sampler_lean : nullptr,
         model,
         ctx,
         sampler_src,
@@ -2598,6 +2613,7 @@ bool common_speculative_commit_accepted_output(
 static bool common_speculative_checkpoint_save(
         common_speculative_checkpoint & ckpt,
         common_speculative_host_timing * timing,
+        common_sampler ** lean_sampler,
         llama_model * model,
         llama_context * ctx,
         common_sampler * sampler_src,
@@ -2636,7 +2652,19 @@ static bool common_speculative_checkpoint_save(
         return false;
     }
 
-    ckpt.sampler = common_sampler_init(model, sparams);
+    if (lean_sampler != nullptr && sampler_src != nullptr) {
+        // the clone below overwrites every field a restore later clones back out, so resetting the
+        // slot's persistent sampler is equivalent to building a fresh one each round
+        if (*lean_sampler == nullptr) {
+            *lean_sampler = common_sampler_init(model, sparams);
+        } else {
+            common_sampler_reset(*lean_sampler);
+        }
+        ckpt.sampler = *lean_sampler;
+        ckpt.sampler_borrowed = ckpt.sampler != nullptr;
+    } else {
+        ckpt.sampler = common_sampler_init(model, sparams);
+    }
     if (timing) {
         const int64_t t1 = ggml_time_us();
         timing->sampler_init_us += t1 - t0;

@@ -35,6 +35,7 @@ struct common_speculative_checkpoint {
     llama_pos n_past = 0;
     llama_token sampled = LLAMA_TOKEN_NULL;
     common_sampler * sampler = nullptr;
+    bool sampler_borrowed = false; // LONGSPEAR_SPEC_CKPT_LEAN: sampler is the slot's persistent one
 
     void clear();
 };
