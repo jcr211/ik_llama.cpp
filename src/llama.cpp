@@ -10048,7 +10048,11 @@ enum llama_spec_ckpt_restore_result llama_spec_ckpt_restore_ex(
                 return LLAMA_SPEC_CKPT_RESTORE_FAILED;
             }
             const llama_pos accepted_pos = n_past + accepted_step;
-            if (seq_id >= 0 && (uint32_t)seq_id < kv.size) {
+            // cells[] is indexed by sequence only in a pure-recurrent cache. In a hybrid cache it
+            // holds one attention cell per position, so this write would move attention cell
+            // seq_id to accepted_pos, and a later seq_rm below that position would free it
+            static const bool per_step_ple_tail = llama_ls_flag("LONGSPEAR_PER_STEP_PLE_TAIL");
+            if ((!per_step_ple_tail || kv.recurrent) && seq_id >= 0 && (uint32_t)seq_id < kv.size) {
                 kv.cells[seq_id].pos = accepted_pos;
             }
             llama_kv_cache_seq_rm(kv, seq_id, accepted_pos + 1, -1);
