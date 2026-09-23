@@ -24,6 +24,8 @@ set(TARGET_SRCS
     server-context.h
     stateos-header.cpp
     stateos-header.h
+    stateos-model.cpp
+    stateos-model.h
 )
 set(PUBLIC_ASSETS
     index.html.gz

@@ -2,6 +2,7 @@
 // (encode/decode round trip, one refusal per hard field, soft warnings, container scan, checkpoint codec).
 
 #include "stateos-header.h"
+#include "stateos-model.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -424,7 +425,39 @@ static void test_companion() {
     }
 }
 
-int main() {
+// the current server's model identity (argv[1] = a small GGUF, e.g. models/ggml-vocab-qwen2.gguf)
+static void test_model_fingerprint(const std::string & gguf, const std::string & other_gguf) {
+    std::string err;
+    const std::string a = stateos_model_fingerprint(gguf, &err);
+    CHECK(a.size() == 64);
+    CHECK(stateos_model_fingerprint(gguf, &err) == a); // stable
+
+    // same bytes plus a tail: the size is part of the identity
+    const std::string grown = tmp_file("grown.gguf");
+    std::filesystem::copy_file(std::filesystem::u8path(gguf), std::filesystem::u8path(grown));
+    {
+        std::ofstream f(std::filesystem::u8path(grown), std::ios::binary | std::ios::app);
+        const std::string tail(64, 'z');
+        f.write(tail.data(), (std::streamsize) tail.size());
+    }
+    const std::string b = stateos_model_fingerprint(grown, &err);
+    CHECK(b.size() == 64 && b != a);
+
+    if (!other_gguf.empty()) {
+        const std::string c = stateos_model_fingerprint(other_gguf, &err);
+        CHECK(c.size() == 64 && c != a);
+    }
+
+    // not a GGUF: refused with a reason, never an identity
+    const std::string junk = tmp_file("junk.gguf");
+    write_raw(junk, { 'J', 'U', 'N', 'K', 0, 0, 0, 0 });
+    err.clear();
+    CHECK(stateos_model_fingerprint(junk, &err).empty());
+    CHECK(!err.empty());
+    CHECK(stateos_model_fingerprint(tmp_file("missing.gguf"), &err).empty());
+}
+
+int main(int argc, char ** argv) {
     g_tmp = std::filesystem::temp_directory_path() / ("stateos-header-test-" + std::to_string((long long) std::time(nullptr)));
     std::filesystem::create_directories(g_tmp);
 
@@ -434,6 +467,11 @@ int main() {
     test_container();
     test_checkpoints();
     test_companion();
+    if (argc > 1) {
+        test_model_fingerprint(argv[1], argc > 2 ? argv[2] : "");
+    } else {
+        std::printf("test-stateos-header: SKIP model fingerprint (pass a GGUF path as argv[1])\n");
+    }
 
     std::error_code ec;
     std::filesystem::remove_all(g_tmp, ec);

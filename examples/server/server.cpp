@@ -1777,7 +1777,7 @@ int main(int argc, char ** argv) {
 
                 std::vector<llama_token> tokens;
                 uint32_t n_token_count = 0;
-                std::string format = "llama-seq";
+                std::string file_format = "llama-seq";
 
                 // State-OS keyed container: tokens come from its TOKS section
                 const stateos_scan_result scan = stateos_scan_file(entry.path().u8string());
@@ -1793,7 +1793,7 @@ int main(int argc, char ** argv) {
                         tokens[i] = (llama_token) ((uint32_t) bytes[4 * i] | ((uint32_t) bytes[4 * i + 1] << 8) |
                                                    ((uint32_t) bytes[4 * i + 2] << 16) | ((uint32_t) bytes[4 * i + 3] << 24));
                     }
-                    format = "stateos-v" + std::to_string(scan.version);
+                    file_format = "stateos-v" + std::to_string(scan.version);
                 } else {
                     std::ifstream file(entry.path(), std::ios::binary);
                     if (!file) continue;
@@ -1836,7 +1836,7 @@ int main(int argc, char ** argv) {
                     {"filesize", entry.file_size()},
                     {"mtime", str_time},
                     {"token_count", n_token_count},
-                    {"format", format},
+                    {"format", file_format},
                     {"prompt", tokens_to_str(ctx_server.ctx, tokens)}
                 });
             }
