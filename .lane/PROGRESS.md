@@ -9,8 +9,9 @@ Checklist:
 - [x] slot errors reach the HTTP handler (legacy result queue)
 - [x] unit tests (tests/test-stateos-header.cpp) registered in CTest
 - [x] .lane/GPU-VERIFY.md (+ gpu-verify-l1.ps1)
-- [ ] build in build-stateos-l1 + run non-GPU tests (coordinator freed the box at ~18:09 ET)
-- [ ] .lane/REPORT.md (subagent file guard refused the write; report text goes to the coordinator by message)
+- [x] build in build-stateos-l1 + run non-GPU tests (build-l1.cmd exit 0; test-l1.cmd exit 0: 156 checks / 0 failures, ctest 2/2)
+- [x] GET /props "stateos" capability (coordinator contract addition) + unit test + GPU-VERIFY check
+- [ ] .lane/REPORT.md (the subagent file guard refused the write; the report text went to the coordinator by message)
 
 Log (ET, approximate):
 - 17:50 pure module stateos-header.{h,cpp} (sha256, H/S/I header, verify, container scan, checkpoint codec)
@@ -19,3 +20,5 @@ Log (ET, approximate):
 - 18:00 GPU-VERIFY.md + gpu-verify-l1.ps1; missing file = 409 state_missing (harness lane contract)
 - 18:05 fingerprint moved to stateos-model.cpp + unit-tested on vocab GGUFs; build/test scripts
 - 18:09 build started (coordinator: box free for builds)
+- 18:18 build 1 failed in the test TU (tree is C++20: path::u8string type); fixed with stateos_path helpers
+- 18:28 build 2 green; /props capability added; vocab-only GGUF fingerprint clamp; build 3+4 green, tests green 18:31
