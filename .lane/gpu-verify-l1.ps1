@@ -352,8 +352,14 @@ try {
     Save-Results
 
     # --- destructive paths (review M3). Oracle for "correct re-prefill": the 4K cold output (full prefill of P+Z).
+    # Same rule as the identity legs: an output difference while the 4K restored runs disagreed with each other is
+    # engine run-to-run nondeterminism -> INCONCLUSIVE, not FAIL. Every mechanism condition must hold regardless.
     $PZ4 = Concat (Head $all 4096) $Z
     $cold4 = $Results.legA.identity_4k.cold
+    $engineDeterministic = [bool] $Results.legA.identity_4k.restored_runs_agree
+    function Destructive-Verdict([bool] $Mechanism, [bool] $SameOutput) {
+        if (-not $Mechanism) { 'FAIL' } elseif ($SameOutput) { 'PASS' } elseif (-not $engineDeterministic) { 'INCONCLUSIVE' } else { 'FAIL' }
+    }
 
     # (a) empty-slot round trip: a state saved right after erase restores as an erase (no loader call), server stays up
     [void] (Slot 'erase' $null)
@@ -362,10 +368,12 @@ try {
     $re = Slot 'restore' 'empty.state'
     $alive = $false; try { $alive = ((Invoke-RestMethod -Uri "$Base/health" -TimeoutSec 5).status -eq 'ok') } catch {}
     $ae = Complete $PZ4 64
-    $emptyOk = ($se.Status -eq 200) -and ($se.Body.n_saved -eq 0) -and ($re.Status -eq 200) -and ($re.Body.stateos.empty -eq $true) -and $alive -and
-               ($ae.prompt_n -eq $PZ4.Length) -and ($ae.content -ceq $cold4.content)
-    $Results.legA.empty_roundtrip = [ordered]@{ save_status = $se.Status; restore_status = $re.Status; restore = $re.Body.stateos; alive = $alive; next = $ae; pass = $emptyOk }
-    Log "empty-slot round trip: save=$($se.Status) restore=$($re.Status) empty=$($re.Body.stateos.empty) alive=$alive next prompt_n=$($ae.prompt_n)/$($PZ4.Length) same-as-cold=$($ae.content -ceq $cold4.content) pass=$emptyOk"
+    $emptyMech = ($se.Status -eq 200) -and ($se.Body.n_saved -eq 0) -and ($re.Status -eq 200) -and ($re.Body.stateos.empty -eq $true) -and $alive -and
+                 ($ae.prompt_n -eq $PZ4.Length)
+    $emptySame = ($ae.content -ceq $cold4.content)
+    $emptyVerdict = Destructive-Verdict $emptyMech $emptySame
+    $Results.legA.empty_roundtrip = [ordered]@{ save_status = $se.Status; restore_status = $re.Status; restore = $re.Body.stateos; alive = $alive; next = $ae; mechanism = $emptyMech; same_as_cold = $emptySame; verdict = $emptyVerdict; pass = ($emptyVerdict -eq 'PASS') }
+    Log "empty-slot round trip: save=$($se.Status) restore=$($re.Status) empty=$($re.Body.stateos.empty) alive=$alive next prompt_n=$($ae.prompt_n)/$($PZ4.Length) same-as-cold=$emptySame verdict=$emptyVerdict"
 
     # (b) MAIN tamper: cell_count + 1 inside a well-formed container -> the loader fails after its seq_rm -> 500,
     #     slot_untouched:false, server alive, the next request re-prefills and is correct
@@ -378,10 +386,12 @@ try {
     $rt = Slot 'restore' 'main-tamper.state'
     $alive = $false; try { $alive = ((Invoke-RestMethod -Uri "$Base/health" -TimeoutSec 5).status -eq 'ok') } catch {}
     $at = Complete $PZ4 64
-    $tamperOk = ($rs.Status -eq 200) -and ($rt.Status -eq 500) -and ($rt.Body.error.slot_untouched -eq $false) -and $alive -and
-                ($at.prompt_n -eq $PZ4.Length) -and ($at.content -ceq $cold4.content)
-    $Results.legA.main_tamper = [ordered]@{ cell_count = $cc; status = $rt.Status; error = $rt.Body.error; alive = $alive; next = $at; pass = $tamperOk }
-    Log "MAIN tamper (cell_count $cc -> $($cc + 1)): status=$($rt.Status) slot_untouched=$($rt.Body.error.slot_untouched) alive=$alive next prompt_n=$($at.prompt_n)/$($PZ4.Length) same-as-cold=$($at.content -ceq $cold4.content) pass=$tamperOk"
+    $tamperMech = ($rs.Status -eq 200) -and ($rt.Status -eq 500) -and ($rt.Body.error.slot_untouched -eq $false) -and $alive -and
+                  ($at.prompt_n -eq $PZ4.Length)
+    $tamperSame = ($at.content -ceq $cold4.content)
+    $tamperVerdict = Destructive-Verdict $tamperMech $tamperSame
+    $Results.legA.main_tamper = [ordered]@{ cell_count = $cc; status = $rt.Status; error = $rt.Body.error; alive = $alive; next = $at; mechanism = $tamperMech; same_as_cold = $tamperSame; verdict = $tamperVerdict; pass = ($tamperVerdict -eq 'PASS') }
+    Log "MAIN tamper (cell_count $cc -> $($cc + 1)): status=$($rt.Status) slot_untouched=$($rt.Body.error.slot_untouched) alive=$alive next prompt_n=$($at.prompt_n)/$($PZ4.Length) same-as-cold=$tamperSame verdict=$tamperVerdict"
     Save-Results
     Stop-TestServer $proc; $proc = $null
 
@@ -409,23 +419,36 @@ try {
 
         # (c) companion sub-header tamper (review M3): a length-preserving edit of companion_kv_geometry -> 200 with
         #     the companion skipped, never a refusal
+        #     Guarded: a missing COMP section records a FAIL here and never aborts the 190K measurement below.
         $on32 = Join-Path $SlotDir 'on32k.state'
         $ct = Join-Path $SlotDir 'comp-tamper.state'
-        Copy-Item -LiteralPath $on32 -Destination $ct -Force
-        $c = Find-Section $ct 'COMP'
-        $sublen = [BitConverter]::ToUInt32((Read-BytesAt $ct $c.Offset 4), 0)
-        $sub = [System.Text.Encoding]::ASCII.GetString((Read-BytesAt $ct ($c.Offset + 4) ([int] $sublen)))
-        $gpos = $sub.IndexOf('companion_kv_geometry=')
-        if ($gpos -lt 0) { throw 'companion_kv_geometry not found in the COMP sub-header' }
-        $vpos = $gpos + 'companion_kv_geometry='.Length
-        $newc = if ($sub[$vpos] -eq '0') { [byte][char] '1' } else { [byte][char] '0' }
-        Write-BytesAt $ct ($c.Offset + 4 + $vpos) ([byte[]] @($newc))
-        [void] (Slot 'erase' $null); [void] (Complete $Q 8)
-        $rc = Slot 'restore' 'comp-tamper.state'
-        $compOk = ($rc.Status -eq 200) -and ([string] $rc.Body.stateos.companion).StartsWith("skipped: companion field 'companion_kv_geometry'")
-        $Results.legB.comp_tamper = [ordered]@{ status = $rc.Status; companion = $rc.Body.stateos.companion; pass = $compOk }
-        Log "COMP sub-header tamper: status=$($rc.Status) companion='$($rc.Body.stateos.companion)' pass=$compOk"
-        Remove-Item -LiteralPath $ct -Force -ErrorAction SilentlyContinue
+        $savedComp = [string] $Results.legB.companion_32k.save.companion
+        if ($savedComp -ne 'saved') {
+            $Results.legB.comp_tamper = [ordered]@{ verdict = 'FAIL'; pass = $false; reason = "on32k.state has no COMP section (save said: '$savedComp')" }
+            Log "COMP sub-header tamper: FAIL (no COMP section to tamper; save said '$savedComp')"
+        } else {
+            try {
+                Copy-Item -LiteralPath $on32 -Destination $ct -Force
+                $c = Find-Section $ct 'COMP'
+                $sublen = [BitConverter]::ToUInt32((Read-BytesAt $ct $c.Offset 4), 0)
+                $sub = [System.Text.Encoding]::ASCII.GetString((Read-BytesAt $ct ($c.Offset + 4) ([int] $sublen)))
+                $gpos = $sub.IndexOf('companion_kv_geometry=')
+                if ($gpos -lt 0) { throw 'companion_kv_geometry not found in the COMP sub-header' }
+                $vpos = $gpos + 'companion_kv_geometry='.Length
+                $newc = if ($sub[$vpos] -eq '0') { [byte][char] '1' } else { [byte][char] '0' }
+                Write-BytesAt $ct ($c.Offset + 4 + $vpos) ([byte[]] @($newc))
+                [void] (Slot 'erase' $null); [void] (Complete $Q 8)
+                $rc = Slot 'restore' 'comp-tamper.state'
+                $compOk = ($rc.Status -eq 200) -and ([string] $rc.Body.stateos.companion).StartsWith("skipped: companion field 'companion_kv_geometry'")
+                $Results.legB.comp_tamper = [ordered]@{ status = $rc.Status; companion = $rc.Body.stateos.companion; verdict = $(if ($compOk) { 'PASS' } else { 'FAIL' }); pass = $compOk }
+                Log "COMP sub-header tamper: status=$($rc.Status) companion='$($rc.Body.stateos.companion)' pass=$compOk"
+            } catch {
+                $Results.legB.comp_tamper = [ordered]@{ verdict = 'FAIL'; pass = $false; reason = $_.Exception.Message }
+                Log "COMP sub-header tamper: FAIL ($($_.Exception.Message)); continuing to the 190K measurement"
+            } finally {
+                Remove-Item -LiteralPath $ct -Force -ErrorAction SilentlyContinue
+            }
+        }
         Save-Results
 
         if (-not $Skip192K) {

@@ -2756,7 +2756,16 @@ void server_context::stateos_init_identity() {
     // computed once, right after the load, so a GGUF replaced on disk later cannot stamp saves with its identity
     const int64_t t0 = ggml_time_us();
     std::string err;
-    stateos_model_fp = stateos_model_fingerprint(params_base.model, &err);
+    try {
+        stateos_model_fp = stateos_model_fingerprint(params_base.model, &err);
+    } catch (const std::exception & e) {
+        // fail open: the server starts, State-OS stays off (/props omits it, save/restore answer 500)
+        stateos_model_fp.clear();
+        err = std::string("exception: ") + e.what();
+    } catch (...) {
+        stateos_model_fp.clear();
+        err = "unknown exception";
+    }
     if (stateos_model_fp.empty()) {
         SRV_WRN("State-OS disabled: model identity unavailable (%s); slot save/restore will answer 500\n", err.c_str());
         return;
@@ -2927,6 +2936,15 @@ void server_context::stateos_slot_save_impl(const server_task & task, server_slo
     fields.push_back({ STATEOS_HARD, "token_sha256", token_sha });
     fields.push_back({ STATEOS_INFO, "saved_unix",   std::to_string((long long) time(nullptr)) });
     fields.push_back({ STATEOS_INFO, "slot_id",      std::to_string(slot.id) });
+
+    // tokens without KV cells (e.g. after a failed RAM prompt-cache load) would restore as a false success
+    const llama_pos kv_pos_max_save = llama_kv_cache_seq_pos_max(ctx, slot.id);
+    if (!stateos_kv_consistent(n_tokens, kv_pos_max_save)) {
+        send_slot_error(task, 409, "state_inconsistent",
+                string_format("the slot lists %zu tokens but holds no KV cells; nothing was saved", n_tokens),
+                { {"slot_untouched", true} });
+        return;
+    }
 
     const size_t main_bytes = llama_state_seq_get_size(ctx, slot.id, 0);
     if (main_bytes == 0) {
@@ -3276,6 +3294,15 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
         llama_kv_cache_seq_rm(ctx, slot.id, -1, -1);
         send_slot_error(task, 500, "server_error",
                 "State-OS restore failed while loading the verified target state; the slot was cleared and re-prefills on the next request",
+                { {"slot_untouched", false} });
+        return;
+    }
+    // a MAIN with no cells under a non-empty TOKS would install tokens over an empty KV (a false success)
+    if (!stateos_kv_consistent(n_tokens, llama_kv_cache_seq_pos_max(ctx, slot.id))) {
+        stateos_clear_slot(slot);
+        send_slot_error(task, 500, "server_error",
+                string_format("State-OS restore failed: the file lists %zu tokens but its target state holds no KV cells; "
+                              "the slot was cleared and re-prefills on the next request", n_tokens),
                 { {"slot_untouched", false} });
         return;
     }

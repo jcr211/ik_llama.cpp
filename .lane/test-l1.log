@@ -1,23 +1,23 @@
 'vswhere.exe' is not recognized as an internal or external command,
 operable program or batch file.
 ==== test-stateos-header (direct)
-gguf_init_from_file: failed to open 'C:\Users\jcrog\AppData\Local\Temp\stateos-header-test-1790204126\fp-split-00002-of-00002.gguf': 'No such file or directory'
+gguf_init_from_file: failed to open 'C:\Users\jcrog\AppData\Local\Temp\stateos-header-test-1790205317\fp-split-00002-of-00002.gguf': 'No such file or directory'
 gguf_init_from_file: invalid magic characters 'JUNK'
-gguf_init_from_file: failed to open 'C:\Users\jcrog\AppData\Local\Temp\stateos-header-test-1790204126\missing.gguf': 'No such file or directory'
-test-stateos-header: 195 checks, 0 failures
+gguf_init_from_file: failed to open 'C:\Users\jcrog\AppData\Local\Temp\stateos-header-test-1790205317\missing.gguf': 'No such file or directory'
+test-stateos-header: 202 checks, 0 failures
 test-stateos-header exit=0
 ==== ctest
 Test project D:/AI/worktrees/stateos-lane1/build-stateos-l1
     Start 22: test-speculative-params
-1/2 Test #22: test-speculative-params ..........   Passed    0.09 sec
+1/2 Test #22: test-speculative-params ..........   Passed    0.10 sec
     Start 23: test-stateos-header
-2/2 Test #23: test-stateos-header ..............   Passed    1.97 sec
+2/2 Test #23: test-stateos-header ..............   Passed    2.04 sec
 
 100% tests passed out of 2
 
 Label Time Summary:
-main    =   2.06 sec*proc (2 tests)
+main    =   2.14 sec*proc (2 tests)
 
-Total Test time (real) =   2.17 sec
+Total Test time (real) =   2.39 sec
 ctest exit=0
 test-l1 exit=0

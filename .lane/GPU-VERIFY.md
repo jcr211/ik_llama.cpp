@@ -91,7 +91,12 @@ round (`P` = 190000 ids, `n_predict=16`, no cold control) measures the state byt
   text, for both restores, and `prompt_n` equal to warm's and ≤ |Z|+1 (no re-prefill). `PASS-IDENTITY /
   REUSE-INCONCLUSIVE` means identity held but the warm run itself re-prefilled (read `prompt_n` in results.json).
 - `refusals`: every entry `pass: true`; `soft_build.pass: true`; `slot_untouched_after_refusals.pass: true`.
-- `empty_roundtrip.pass` and `main_tamper.pass` (Leg A); `comp_tamper.pass` (Leg B, report-only leg but a hard expectation).
+- `empty_roundtrip.verdict` and `main_tamper.verdict` (Leg A) = `PASS`. Their mechanism conditions (status codes,
+  `slot_untouched`, server alive, full re-prefill) must hold in every case. If only the output differs from the cold
+  run while `identity_4k.restored_runs_agree` is false, the verdict is `INCONCLUSIVE` (engine nondeterminism, the same
+  rule as the identity legs), not `FAIL`.
+- `comp_tamper.verdict` (Leg B, report-only leg but a hard expectation) = `PASS`. If `on32k.state` carries no COMP
+  section, the step records `FAIL` with the reason and the run continues to the 190K measurement.
 - Report-only: `identity_cold_vs_warm_report_only` (a cold/warm difference is the known batch-shape arithmetic effect,
   not a state defect), everything in Leg B, `restored_runs_agree` (false = engine run-to-run nondeterminism: mark
   INCONCLUSIVE, not FAIL).

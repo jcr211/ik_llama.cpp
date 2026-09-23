@@ -156,6 +156,10 @@ struct stateos_section_check {
 
 stateos_section_check stateos_check_sections(const stateos_scan_result & scan, size_t n_ctx_slot);
 
+// KV <-> tokens: a slot (or a just-loaded state) that claims tokens must hold at least one KV cell. kv_pos_max is
+// llama_kv_cache_seq_pos_max (-1 = no cells). The exact pos_max == n_tokens - 1 relation stays report-only.
+bool stateos_kv_consistent(size_t n_tokens, int32_t kv_pos_max);
+
 // Replace `dst` with `src` (same directory). Windows: MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH) with short
 // retries; the previous `dst` is never deleted first, so a transient lock cannot destroy the last good state.
 bool stateos_replace_file(const std::string & src, const std::string & dst, std::string * err);

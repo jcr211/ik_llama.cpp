@@ -76,3 +76,29 @@ valid MAIN is caught after seq_rm (slot cleared, 500), so a content checksum is 
 - Tests: `.lane/test-l1.cmd` exit 0. `test-stateos-header` runs 195 checks with 0 failures, and ctest passes 2/2
   (`test-speculative-params` too). The new checks cover section checks, the `/props` predicate, file replace, the
   fingerprint windows, real tensor data and split shards.
+
+## Fix round 2 (re-review of ec0b962a = ALLOW; N1/N2 before merge, N3/N4 cheap)
+
+- N1: `llama-gguf-split --merge` writes `split.count = 0`. The fingerprint now treats 0 as a single file, like the
+  loader, instead of refusing it (which disabled State-OS on merged GGUFs). Unit case: a tensor GGUF with
+  `split.count = 0` fingerprints. Negative values of a signed type are still refused.
+- N2: KV↔tokens.
+  - Save refuses with 409 `state_inconsistent` (`slot_untouched: true`, no file written) when the slot lists tokens
+    but holds no KV cells.
+  - Restore answers 500 with `slot_untouched: false` when a MAIN loads cleanly but leaves no cells under a non-empty
+    TOKS. That became reachable once the empty-sequence early return landed. The slot is cleared and re-prefills.
+  - Pure helper `stateos_kv_consistent`, unit-tested. The exact `pos_max == n_tokens - 1` relation stays
+    report-only (`kv_pos_max`).
+- N3: `stateos_init_identity` is wrapped in try/catch. A throw fails open with a warning: `/props` omits `stateos`,
+  and save/restore answer 500.
+- N4 (script):
+  - Step (c) runs only when the 32K save reported `companion: saved`, and inside its own try. Otherwise it records
+    FAIL with the reason and continues to the 190K measurement.
+  - Steps (a) and (b) now report `verdict` = PASS / INCONCLUSIVE / FAIL. The mechanism conditions must always hold;
+    an output-only difference while `identity_4k.restored_runs_agree` is false is INCONCLUSIVE, the same rule as the
+    identity legs.
+- Not done (P3, follow-ups): N4 (iii) COMP payload-tamper step, N4 (iv) RAM prompt-cache request, N5 nits, N6
+  cosmetic, and the open parts of F6/F10/F11.
+- Build: before it, no nvcc, cl, cmake or ninja from another lane was running. `.lane/build-l1.cmd` exit 0; no
+  diagnostics in lane files.
+- Tests: `.lane/test-l1.cmd` exit 0. `test-stateos-header` runs 202 checks with 0 failures; ctest 2/2.

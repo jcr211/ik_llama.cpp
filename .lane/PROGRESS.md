@@ -28,3 +28,5 @@ Log (ET, approximate):
   before post), model_fingerprint_v2 (16 windows/shard, all shards, shard count); P3 extras: section cap 16,
   TOKS bounded before read, checkpoint position sanity, MoveFileExW replace (no delete-first), replace-mode JSON dump
 - 18:57 build exit 0, test-l1 exit 0 (195 checks / 0 failures, ctest 2/2); no compiler of another lane was running
+- 19:17 fix round 2 (re-review ALLOW): N1 split.count=0, N2 KV<->tokens save refusal + restore failure, N3 guarded
+  startup identity, N4 script guards/verdicts; build exit 0, test-l1 exit 0 (202 checks / 0 failures, ctest 2/2)

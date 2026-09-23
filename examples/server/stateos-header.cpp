@@ -532,6 +532,10 @@ stateos_section_check stateos_check_sections(const stateos_scan_result & scan, s
     return c;
 }
 
+bool stateos_kv_consistent(size_t n_tokens, int32_t kv_pos_max) {
+    return n_tokens == 0 || kv_pos_max >= 0;
+}
+
 bool stateos_replace_file(const std::string & src, const std::string & dst, std::string * err) {
 #if defined(_WIN32)
     const std::wstring wsrc = stateos_path(src).wstring();

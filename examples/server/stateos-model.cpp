@@ -54,6 +54,9 @@ static bool gguf_probe(const std::string & path, uint64_t & data_offset, int & n
         }
     }
     gguf_free(g);
+    if (n_split == 0) {
+        n_split = 1; // llama-gguf-split --merge writes 0; the loader treats anything <= 1 as one file
+    }
     if (n_split < 1) {
         *err = "unreadable split.count in '" + path + "'";
         return false;

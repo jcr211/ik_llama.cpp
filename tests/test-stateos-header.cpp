@@ -482,6 +482,13 @@ static void test_section_checks() {
     c = stateos_check_sections(r, 196608);
     CHECK(!c.ok && c.field == "section:TOKS");
 
+    // KV <-> tokens: tokens need at least one KV cell (save refuses, restore fails and clears the slot)
+    CHECK(stateos_kv_consistent(0, -1));      // empty slot
+    CHECK(stateos_kv_consistent(4096, 4095)); // the normal case
+    CHECK(stateos_kv_consistent(4096, 4094)); // off-by-one stays report-only (kv_pos_max in the responses)
+    CHECK(!stateos_kv_consistent(4096, -1));  // tokens over an empty KV
+    CHECK(!stateos_kv_consistent(1, -1));
+
     // checkpoint positions must be ordered and non-negative
     std::vector<stateos_checkpoint_rec> recs(2);
     recs[0].pos_min = 0;  recs[0].pos_max = 99;  recs[0].pos_min_prompt = 0;  recs[0].pos_max_prompt = 99;
@@ -526,8 +533,8 @@ static bool write_tensor_gguf(const std::string & path, size_t n_floats, int spl
     }
     gguf_context * g = gguf_init_empty();
     gguf_set_val_str(g, "general.name", "stateos-fp-test");
-    if (split_count > 1) {
-        gguf_set_val_u16(g, "split.count", (uint16_t) split_count);
+    if (split_count != 1) {
+        gguf_set_val_u16(g, "split.count", (uint16_t) split_count); // 0 = what llama-gguf-split --merge writes
     }
     gguf_add_tensor(g, t);
     gguf_write_to_file(g, path.c_str(), false);
@@ -620,6 +627,16 @@ static void test_fingerprint_v2() {
     CHECK(write_tensor_gguf(misnamed, 1024, 2, 3.0f));
     err.clear();
     CHECK(stateos_model_fingerprint(misnamed, &err).empty() && !err.empty());
+
+    // a merged GGUF (llama-gguf-split --merge writes split.count = 0) is one file, like the loader treats it
+    const std::string merged = tmp_file("fp-merged.gguf");
+    CHECK(write_tensor_gguf(merged, 1024, 0, 4.0f));
+    err.clear();
+    const std::string fpm = stateos_model_fingerprint(merged, &err);
+    CHECK(fpm.size() == 64);
+    if (fpm.size() != 64) {
+        std::fprintf(stderr, "  merged fingerprint error: %s\n", err.c_str());
+    }
 }
 
 // the current server's model identity (argv[1] = a small GGUF, e.g. models/ggml-vocab-qwen2.gguf)
