@@ -209,6 +209,12 @@ llama_build_and_test(test-speculative-params.cpp)
 llama_build_and_test(test-iq4-ks-kt-decode.cpp)
 target_include_directories(test-iq4-ks-kt-decode PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src)
 
+# SL-1 per-step speculative checkpoints (CPU backend only)
+llama_build_and_test(test-ple-perstep.cpp)
+target_include_directories(test-ple-perstep PRIVATE ${PROJECT_SOURCE_DIR}/src)
+llama_build_and_test(test-iqk-moe-chunks.cpp)
+llama_target_and_test(test-spec-ckpt-sampler.cpp ARGS ${CMAKE_CURRENT_SOURCE_DIR}/../models/ggml-vocab-qwen2.gguf)
+
 # llama_target_and_test(test-opt.cpp) # SLOW
 
 llama_target_and_test(test-model-load-cancel.cpp  LABEL "model")
