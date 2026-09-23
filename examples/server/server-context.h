@@ -2,6 +2,7 @@
 #include "server-queue.h"
 #include "speculative.h"
 #include "json-schema-to-grammar.h"
+#include "stateos-header.h"
 #include <nlohmann/json_fwd.hpp>
 
 #include <cstddef>
@@ -342,6 +343,18 @@ struct server_context {
     void split_multiprompt_task(int id_multi, server_task& multiprompt_task);
 
     void process_single_task(server_task&& task);
+
+    // State-OS v1 keyed slot state (/slots/{id}?action=save|restore)
+    std::string stateos_model_fp; // model fingerprint, computed on first use
+
+    stateos_fields stateos_identity_fields(std::string* err);
+
+    // slot tasks answer on the legacy result queue that the /slots handlers wait on
+    void send_slot_error(const server_task& task, int code, const std::string& type, const std::string& message, json extra = json::object());
+
+    void stateos_slot_save(const server_task& task, server_slot& slot);
+
+    void stateos_slot_restore(const server_task& task, server_slot& slot);
 
     void on_finish_multitask(const server_task_multi& multitask);
 

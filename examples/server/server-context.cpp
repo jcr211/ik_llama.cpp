@@ -13,6 +13,10 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <regex>
@@ -2706,113 +2710,608 @@ void server_context::split_multiprompt_task(int id_multi, server_task& multiprom
 
 
 
-static size_t save_checkpoints_to_file(const std::string & filename, const std::list<server_prompt_checkpoint> & checkpoints) {
-    if (checkpoints.size() == 0) {
-        return 0;
-    }
-    std::ofstream file(filename, std::ios::binary);
-    uint32_t magic = LLAMA_STATE_SEQ_MAGIC;
-    file.write(reinterpret_cast<const char *>(&magic), sizeof(magic));
-    uint32_t version = LLAMA_STATE_SEQ_VERSION;
-    file.write(reinterpret_cast<const char *>(&version), sizeof(version));
-    size_t count = checkpoints.size();
-    file.write(reinterpret_cast<const char *>(&count), sizeof(count));
+// ---- State-OS v1 keyed slot state -----------------------------------------------------------------
+//
+// SLOT_SAVE writes one container (stateos-header.h): a hard/soft keyed header, the token ids (TOKS), the
+// target sequence state (MAIN), the slot's context checkpoints (CKPT) and, when present, the MTP companion
+// KV (COMP) with its own sub-header. It is written to "<file>.tmp" and renamed, so a failed save never
+// leaves a truncated file under the requested name.
+//
+// SLOT_RESTORE parses and verifies everything (structure, header, token hash, checkpoints, companion
+// sub-header) BEFORE the first destructive step; a refusal answers 409 and leaves the slot untouched. The
+// destructive part is one server-side operation: load MAIN + drop the previous conversation's MTP
+// companion/hidden state (reloading the saved companion when it verified) + replace the in-memory
+// checkpoint list + replace the slot's RAM prompt-cache record.
 
-    for (const auto & checkpoint : checkpoints) {
-        file.write(reinterpret_cast<const char *>(&checkpoint.pos_min), sizeof(checkpoint.pos_min));
-        file.write(reinterpret_cast<const char *>(&checkpoint.pos_max), sizeof(checkpoint.pos_max));
-        file.write(reinterpret_cast<const char *>(&checkpoint.pos_min_prompt), sizeof(checkpoint.pos_min_prompt));
-        file.write(reinterpret_cast<const char *>(&checkpoint.pos_max_prompt), sizeof(checkpoint.pos_max_prompt));
-        size_t data_len = checkpoint.data.size();
-        file.write(reinterpret_cast<const char *>(&data_len), sizeof(data_len));
-        if (data_len > 0) {
-            file.write(reinterpret_cast<const char *>(checkpoint.data.data()), data_len * sizeof(uint8_t));
+static_assert(STATEOS_LEGACY_SEQ_MAGIC == LLAMA_STATE_SEQ_MAGIC, "State-OS legacy detection must match llama's state-seq magic");
+
+static std::string stateos_layout_line(llama_context * ctx, const char * prefix) {
+    const int32_t n = llama_state_seq_layout_desc(ctx, nullptr, 0);
+    std::vector<char> buf((size_t) std::max<int32_t>(n, 0) + 1, '\0');
+    llama_state_seq_layout_desc(ctx, buf.data(), buf.size());
+    const std::string desc(buf.data());
+    const std::string key = std::string(prefix) + "=";
+    size_t pos = 0;
+    while (pos < desc.size()) {
+        const size_t nl = desc.find('\n', pos);
+        const std::string line = desc.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+        if (line.compare(0, key.size(), key) == 0) {
+            return line.substr(key.size());
         }
+        if (nl == std::string::npos) {
+            break;
+        }
+        pos = nl + 1;
     }
-    size_t pos = file.tellp();
-    file.close();
-    return pos;
+    return std::string();
 }
 
-static size_t load_checkpoints_from_file(const std::string & filename, std::list<server_prompt_checkpoint> & checkpoints) {
-    std::ifstream file(filename, std::ios::binary);
-    if (!file.is_open()) {
-        return 0;
+// sha256 over the GGUF header bytes [0, data offset) (all metadata + the full tensor table: names, types,
+// shapes, offsets), the file size and three 64 KiB samples of tensor data. Not a whole-file sha256 (that
+// is minutes on a 180 GB model); it changes with any metadata, quantization, layout or size change.
+static std::string stateos_model_fingerprint(const std::string & path, std::string * err) {
+    gguf_init_params gp = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
+    gguf_context * g = gguf_init_from_file(path.c_str(), gp);
+    if (g == nullptr) {
+        *err = "cannot parse the model GGUF header at '" + path + "'";
+        return std::string();
     }
-    checkpoints.clear();
-    // version checks
-    {
-        uint32_t magic;
-        file.read(reinterpret_cast<char *>(&magic), sizeof(magic));
-        uint32_t version;
-        file.read(reinterpret_cast<char *>(&version), sizeof(version));
+    const uint64_t data_offset = gguf_get_data_offset(g);
+    gguf_free(g);
 
-        if (magic != LLAMA_STATE_SEQ_MAGIC || version != LLAMA_STATE_SEQ_VERSION) {
-            LLAMA_LOG_ERROR("%s: unknown (magic, version) for checkpoint file: %08x, %08x\n", __func__, magic, version);
-            return 0;
+    std::error_code ec;
+    const std::filesystem::path p = std::filesystem::u8path(path);
+    const uint64_t file_size = (uint64_t) std::filesystem::file_size(p, ec);
+    if (ec || data_offset > file_size) {
+        *err = "cannot size the model file '" + path + "'";
+        return std::string();
+    }
+    std::ifstream f(p, std::ios::binary);
+    if (!f.is_open()) {
+        *err = "cannot open the model file '" + path + "'";
+        return std::string();
+    }
+
+    stateos_sha256 h;
+    const std::string tag = "stateos-model-fp/1";
+    h.update(tag.data(), tag.size());
+    std::vector<char> chunk(1u << 20);
+    uint64_t done = 0;
+    while (done < data_offset) {
+        const size_t n = (size_t) std::min<uint64_t>(chunk.size(), data_offset - done);
+        f.read(chunk.data(), (std::streamsize) n);
+        if ((size_t) f.gcount() != n) {
+            *err = "short read in the model GGUF header";
+            return std::string();
         }
+        h.update(chunk.data(), n);
+        done += n;
     }
-    // load the checkpoints
-    {
-        size_t count;
-        file.read(reinterpret_cast<char *>(&count), sizeof(count));
+    uint8_t size_le[8];
+    for (int i = 0; i < 8; ++i) {
+        size_le[i] = (uint8_t) (file_size >> (8 * i));
+    }
+    h.update(size_le, sizeof(size_le));
 
-        for (size_t i = 0; i < count; i++) {
-            server_prompt_checkpoint checkpoint;
-            file.read(reinterpret_cast<char *>(&checkpoint.pos_min), sizeof(checkpoint.pos_min));
-            file.read(reinterpret_cast<char *>(&checkpoint.pos_max), sizeof(checkpoint.pos_max));
-            file.read(reinterpret_cast<char *>(&checkpoint.pos_min_prompt), sizeof(checkpoint.pos_min_prompt));
-            file.read(reinterpret_cast<char *>(&checkpoint.pos_max_prompt), sizeof(checkpoint.pos_max_prompt));
+    const uint64_t sample = 64u << 10;
+    const uint64_t data_size = file_size - data_offset;
+    const uint64_t probes[3] = { data_offset, data_offset + data_size / 2, file_size > sample ? file_size - sample : 0 };
+    for (const uint64_t off : probes) {
+        const size_t n = (size_t) std::min<uint64_t>(sample, file_size - std::min(off, file_size));
+        f.clear();
+        f.seekg((std::streamoff) off, std::ios::beg);
+        f.read(chunk.data(), (std::streamsize) n);
+        if ((size_t) f.gcount() != n) {
+            *err = "short read while sampling model tensor data";
+            return std::string();
+        }
+        h.update(chunk.data(), n);
+    }
+    return h.final_hex();
+}
 
-            size_t data_len;
-            file.read(reinterpret_cast<char *>(&data_len), sizeof(data_len));
-            if (data_len > 0) {
-                checkpoint.data.resize(data_len);
-                file.read(reinterpret_cast<char *>(checkpoint.data.data()), data_len * sizeof(uint8_t));
+stateos_fields server_context::stateos_identity_fields(std::string * err) {
+    if (stateos_model_fp.empty()) {
+        const int64_t t0 = ggml_time_us();
+        stateos_model_fp = stateos_model_fingerprint(params_base.model, err);
+        if (stateos_model_fp.empty()) {
+            return {};
+        }
+        SRV_INF("State-OS model fingerprint %s (%.1f ms)\n", stateos_model_fp.c_str(), (ggml_time_us() - t0) / 1000.0);
+    }
+    const std::string kv = stateos_layout_line(ctx, "kv");
+    const std::string sys_sha = stateos_token_sha256(system_tokens.data(), system_tokens.size());
+
+    // order matters: the first refused field is the one a refusal names, so the specific fields precede
+    // the catch-all geometry digest
+    stateos_fields fields = {
+        { STATEOS_HARD, "model_fingerprint", stateos_model_fp },
+        { STATEOS_HARD, "n_ctx",             std::to_string(llama_n_ctx(ctx)) },
+        { STATEOS_HARD, "cache_type_k",      params_base.cache_type_k },
+        { STATEOS_HARD, "cache_type_v",      params_base.cache_type_v },
+        { STATEOS_HARD, "rope",              stateos_layout_line(ctx, "rope") },
+        { STATEOS_HARD, "kv_layout_version", string_format("stateos-kv/%u llama-seq/%d", STATEOS_KV_LAYOUT_VERSION, LLAMA_STATE_SEQ_VERSION) },
+        { STATEOS_HARD, "system_prompt_sha256", sys_sha },
+        { STATEOS_HARD, "kv_geometry",       stateos_sha256_hex(kv.data(), kv.size()) },
+        { STATEOS_SOFT, "build",             string_format("%d-%s", LLAMA_BUILD_NUMBER, LLAMA_COMMIT) },
+    };
+    return fields;
+}
+
+void server_context::send_slot_error(const server_task & task, int code, const std::string & type, const std::string & message, json extra) {
+    LOG_ERROR("slot task error", { {"id_task", task.id}, {"code", code}, {"error", message} });
+    json err = { {"code", code}, {"type", type}, {"message", message} };
+    for (auto it = extra.begin(); it != extra.end(); ++it) {
+        err[it.key()] = it.value();
+    }
+    server_task_result result;
+    result.id    = task.id;
+    result.error = true;
+    result.data  = err;
+    queue_results.send(result);
+}
+
+static json stateos_mismatches_json(const std::vector<stateos_mismatch> & ms) {
+    json arr = json::array();
+    for (const auto & m : ms) {
+        arr.push_back({ {"field", m.key}, {"saved", m.saved}, {"current", m.current} });
+    }
+    return arr;
+}
+
+static stateos_fields stateos_companion_fields(llama_context * ctx_mtp, const std::string & token_sha) {
+    const std::string kv = stateos_layout_line(ctx_mtp, "kv");
+    return {
+        { STATEOS_HARD, "companion_layout_version", string_format("stateos-comp/%u llama-seq/%d", STATEOS_COMP_LAYOUT_VERSION, LLAMA_STATE_SEQ_VERSION) },
+        { STATEOS_HARD, "companion_n_ctx",          std::to_string(llama_n_ctx(ctx_mtp)) },
+        { STATEOS_HARD, "companion_kv_geometry",    stateos_sha256_hex(kv.data(), kv.size()) },
+        { STATEOS_HARD, "token_sha256",             token_sha },
+    };
+}
+
+// the MTP companion this slot drafts with, when it is the in-GGUF head of the served model
+static llama_context * stateos_own_companion(const server_slot & slot, const llama_model * model, std::string & why_not) {
+    llama_context * ctx_mtp = slot.spec ? common_speculative_get_mtp_companion_ctx(slot.spec) : nullptr;
+    if (ctx_mtp == nullptr) {
+        why_not = "no MTP companion on this server";
+        return nullptr;
+    }
+    if (llama_get_model(ctx_mtp) != model) {
+        why_not = "the MTP companion is an external assistant model (not persisted by State-OS v1)";
+        return nullptr;
+    }
+    return ctx_mtp;
+}
+
+void server_context::stateos_slot_save(const server_task & task, server_slot & slot) {
+    const int64_t t_start = ggml_time_us();
+    const std::string filename = task.data.at("filename");
+    const std::string filepath = task.data.at("filepath");
+    const std::string tmppath  = filepath + ".tmp";
+
+    if (slot.cache_tokens.has_mtmd_data()) {
+        send_slot_error(task, 501, "not_supported_error", "State-OS v1 does not persist a slot that holds media (image/audio) chunks");
+        return;
+    }
+
+    std::string err;
+    stateos_fields fields = stateos_identity_fields(&err);
+    if (fields.empty()) {
+        send_slot_error(task, 500, "server_error", "State-OS identity unavailable: " + err);
+        return;
+    }
+
+    const size_t n_tokens = slot.cache_tokens.size();
+    std::vector<int32_t> ids(n_tokens);
+    for (size_t i = 0; i < n_tokens; ++i) {
+        ids[i] = slot.cache_tokens[i];
+    }
+    const std::string token_sha = stateos_token_sha256(ids.data(), ids.size());
+    fields.push_back({ STATEOS_HARD, "n_tokens",     std::to_string(n_tokens) });
+    fields.push_back({ STATEOS_HARD, "token_sha256", token_sha });
+    fields.push_back({ STATEOS_INFO, "saved_unix",   std::to_string((long long) time(nullptr)) });
+    fields.push_back({ STATEOS_INFO, "slot_id",      std::to_string(slot.id) });
+
+    const size_t main_bytes = llama_state_seq_get_size(ctx, slot.id, 0);
+    if (main_bytes == 0) {
+        send_slot_error(task, 501, "not_supported_error", "this model/context does not support per-sequence state save");
+        return;
+    }
+
+    const llama_pos pos_next = slot.cache_tokens.pos_next();
+    std::vector<stateos_checkpoint_rec> recs;
+    for (const auto & c : slot.server_cached_prompt.checkpoints) {
+        if (c.pos_max >= pos_next) {
+            continue; // never persist a checkpoint the saved tokens do not reach
+        }
+        stateos_checkpoint_rec r;
+        r.pos_min        = c.pos_min;
+        r.pos_max        = c.pos_max;
+        r.pos_min_prompt = c.pos_min_prompt;
+        r.pos_max_prompt = c.pos_max_prompt;
+        r.n_tokens       = c.n_tokens;
+        r.data           = c.data;
+        recs.push_back(std::move(r));
+    }
+    std::vector<uint8_t> ckpt_bytes;
+    stateos_encode_checkpoints(recs, ckpt_bytes);
+
+    std::string comp_status;
+    std::vector<uint8_t> comp_prefix;
+    size_t comp_bytes = 0;
+    llama_context * ctx_mtp = stateos_own_companion(slot, model, comp_status);
+    if (ctx_mtp != nullptr) {
+        const llama_pos comp_pos_max = llama_kv_cache_seq_pos_max(ctx_mtp, slot.id);
+        comp_bytes = comp_pos_max >= 0 ? llama_state_seq_get_size(ctx_mtp, slot.id, 0) : 0;
+        if (comp_bytes == 0) {
+            comp_status = "the MTP companion holds no cells for this slot";
+            ctx_mtp = nullptr;
+        } else {
+            stateos_fields sub = stateos_companion_fields(ctx_mtp, token_sha);
+            sub.push_back({ STATEOS_INFO, "companion_pos_max", std::to_string(comp_pos_max) });
+            sub.push_back({ STATEOS_INFO, "mtp_warmed_heads",  std::to_string(common_speculative_mtp_get_warmed_heads(slot.spec)) });
+            std::string sub_text;
+            if (!stateos_encode_header(sub, sub_text, &err)) {
+                send_slot_error(task, 500, "server_error", "State-OS companion header: " + err);
+                return;
             }
-            checkpoints.push_back(checkpoint);
+            stateos_encode_companion_prefix(sub_text, comp_prefix);
+            comp_status = "saved";
         }
     }
-    size_t pos = file.tellg();
-    file.close();
-    return pos;
+
+    std::string header_text;
+    if (!stateos_encode_header(fields, header_text, &err)) {
+        send_slot_error(task, 500, "server_error", "State-OS header: " + err);
+        return;
+    }
+
+    std::vector<uint8_t> toks(n_tokens * 4);
+    for (size_t i = 0; i < n_tokens; ++i) {
+        const uint32_t v = (uint32_t) ids[i];
+        toks[4 * i]     = (uint8_t) v;
+        toks[4 * i + 1] = (uint8_t) (v >> 8);
+        toks[4 * i + 2] = (uint8_t) (v >> 16);
+        toks[4 * i + 3] = (uint8_t) (v >> 24);
+    }
+
+    // every write goes to the .tmp file; the rename at the end is the commit point
+    auto fail = [&](const std::string & step) {
+        std::error_code ec_rm;
+        std::filesystem::remove(std::filesystem::u8path(tmppath), ec_rm);
+        send_slot_error(task, 500, "server_error", "State-OS save failed (" + step + "); no file was written under '" + filename + "'");
+    };
+    auto append_bytes = [&](const std::vector<std::pair<uint32_t, const std::vector<uint8_t> *>> & parts, const char * mode) {
+        std::FILE * f = ggml_fopen(tmppath.c_str(), mode);
+        if (f == nullptr) {
+            return false;
+        }
+        bool ok = true;
+        for (const auto & part : parts) {
+            ok = ok && (part.first == 0 || stateos_write_section_header(f, part.first, part.second ? part.second->size() : 0));
+            ok = ok && (part.second == nullptr || stateos_write_bytes(f, part.second->data(), part.second->size()));
+        }
+        return (std::fclose(f) == 0) && ok;
+    };
+
+    {
+        std::FILE * f = ggml_fopen(tmppath.c_str(), "wb");
+        bool ok = f != nullptr && stateos_write_preamble(f, header_text);
+        ok = ok && stateos_write_section_header(f, STATEOS_TAG_TOKS, toks.size()) && stateos_write_bytes(f, toks.data(), toks.size());
+        ok = ok && stateos_write_section_header(f, STATEOS_TAG_MAIN, main_bytes);
+        if (f != nullptr) {
+            ok = (std::fclose(f) == 0) && ok;
+        }
+        if (!ok) {
+            fail("cannot write the header");
+            return;
+        }
+    }
+    const size_t main_written = llama_state_seq_append_to_file(ctx, tmppath.c_str(), slot.id, 0);
+    if (main_written != main_bytes) {
+        fail(string_format("target state wrote %zu of %zu bytes", main_written, main_bytes));
+        return;
+    }
+    if (!append_bytes({ { STATEOS_TAG_CKPT, &ckpt_bytes } }, "ab")) {
+        fail("cannot write the checkpoints");
+        return;
+    }
+    if (ctx_mtp != nullptr) {
+        std::FILE * f = ggml_fopen(tmppath.c_str(), "ab");
+        bool ok = f != nullptr && stateos_write_section_header(f, STATEOS_TAG_COMP, comp_prefix.size() + comp_bytes);
+        ok = ok && stateos_write_bytes(f, comp_prefix.data(), comp_prefix.size());
+        if (f != nullptr) {
+            ok = (std::fclose(f) == 0) && ok;
+        }
+        if (!ok) {
+            fail("cannot write the companion header");
+            return;
+        }
+        const size_t comp_written = llama_state_seq_append_to_file(ctx_mtp, tmppath.c_str(), slot.id, 0);
+        if (comp_written != comp_bytes) {
+            fail(string_format("companion state wrote %zu of %zu bytes", comp_written, comp_bytes));
+            return;
+        }
+    }
+    if (!append_bytes({ { STATEOS_TAG_END, nullptr } }, "ab")) {
+        fail("cannot write the END section");
+        return;
+    }
+
+    std::error_code ec;
+    const std::filesystem::path final_path = std::filesystem::u8path(filepath);
+    std::filesystem::rename(std::filesystem::u8path(tmppath), final_path, ec);
+    if (ec) {
+        std::error_code ec_rm;
+        std::filesystem::remove(final_path, ec_rm);
+        ec.clear();
+        std::filesystem::rename(std::filesystem::u8path(tmppath), final_path, ec);
+    }
+    if (ec) {
+        fail("cannot rename the finished file into place: " + ec.message());
+        return;
+    }
+    const uint64_t n_written = (uint64_t) std::filesystem::file_size(final_path, ec);
+
+    const double t_save_ms = (ggml_time_us() - t_start) / 1000.0;
+    SRV_INF("State-OS save slot=%d tokens=%zu bytes=%llu (main=%zu companion=%zu checkpoints=%zu) %.1f ms\n",
+            slot.id, n_tokens, (unsigned long long) n_written, main_bytes, comp_bytes, recs.size(), t_save_ms);
+
+    json header_json = json::object();
+    for (const auto & fl : fields) {
+        header_json[fl.key] = fl.value;
+    }
+    server_task_result result;
+    result.id    = task.id;
+    result.error = false;
+    result.data  = json{
+        { "id_slot",   slot.id },
+        { "filename",  filename },
+        { "n_saved",   n_tokens },  // tokens saved
+        { "n_written", n_written }, // bytes written
+        { "timings", {
+            { "save_ms", t_save_ms }
+        } },
+        { "stateos", {
+            { "container_version", STATEOS_CONTAINER_VERSION },
+            { "token_sha256",      token_sha },
+            { "bytes", {
+                { "main",        main_bytes },
+                { "companion",   ctx_mtp != nullptr ? comp_bytes : 0 },
+                { "checkpoints", ckpt_bytes.size() },
+                { "tokens",      toks.size() },
+                { "file",        n_written },
+            } },
+            { "checkpoints_saved", recs.size() },
+            { "companion",         comp_status },
+            { "header",            header_json },
+        } },
+    };
+    queue_results.send(result);
 }
 
-static size_t save_server_tokens_to_file(const std::string & filename, const server_tokens & tokens) {
-    std::ofstream file(filename, std::ios::binary);
-    json token_json = tokens.to_json();
-    token_json["magic"] = LLAMA_SERVER_MAGIC;
-    token_json["version"] = LLAMA_SERVER_VERSION;
-    size_t pos = 0;
-    if (file.is_open()) {
-        file << token_json;
-        pos = file.tellp();
-        file.close();
-    }
-    return pos;
-}
+void server_context::stateos_slot_restore(const server_task & task, server_slot & slot) {
+    const int64_t t_start = ggml_time_us();
+    const std::string filename = task.data.at("filename");
+    const std::string filepath = task.data.at("filepath");
 
-static size_t load_server_tokens_from_file(const std::string & filename,  server_tokens & tokens) {
-    std::ifstream file(filename, std::ios::binary);
-    if (!file.is_open()) {
-        return 0;
+    // ---- verification: nothing below touches the slot until "destructive" ----
+    const stateos_scan_result scan = stateos_scan_file(filepath);
+    switch (scan.status) {
+        case STATEOS_SCAN_OK:
+            break;
+        case STATEOS_SCAN_NOT_FOUND:
+            send_slot_error(task, 404, "not_found_error", scan.error + ": '" + filename + "'", { {"slot_untouched", true} });
+            return;
+        case STATEOS_SCAN_LEGACY:
+            send_slot_error(task, 409, "state_legacy_unkeyed", scan.error,
+                    { {"refused_field", "format"}, {"slot_untouched", true} });
+            return;
+        case STATEOS_SCAN_UNRECOGNIZED:
+        case STATEOS_SCAN_UNSUPPORTED:
+            send_slot_error(task, 409, "state_refused", scan.error, { {"refused_field", "format"}, {"slot_untouched", true} });
+            return;
+        case STATEOS_SCAN_CORRUPT:
+            send_slot_error(task, 409, "state_corrupt", "State-OS container is corrupt: " + scan.error,
+                    { {"refused_field", "container"}, {"slot_untouched", true} });
+            return;
     }
-    size_t pos = 0;
-    json token_json;
-    if (file.is_open()) {
-        file >> token_json;
-        pos = file.tellg();
-        file.close();
-    }
-    uint32_t magic = token_json.value<uint32_t>("magic", 0);
-    uint32_t version = token_json.value<uint32_t>("version", 0);
-    if (magic != LLAMA_SERVER_MAGIC || version != LLAMA_SERVER_VERSION) {
-        LLAMA_LOG_ERROR("%s: unknown (magic, version) for token file: %08x, %08x\n", __func__, magic, version);
-        return 0;
-    }
-    tokens.from_json(token_json);
 
-    return pos;
+    auto corrupt = [&](const std::string & field, const std::string & msg) {
+        send_slot_error(task, 409, "state_corrupt", "State-OS restore refused: " + msg + "; slot untouched",
+                { {"refused_field", field}, {"slot_untouched", true} });
+    };
+
+    std::string err;
+    stateos_fields saved;
+    if (!stateos_decode_header(scan.header_text, saved, &err)) {
+        corrupt("header", "unreadable header (" + err + ")");
+        return;
+    }
+    const stateos_section * s_toks = scan.find(STATEOS_TAG_TOKS);
+    const stateos_section * s_main = scan.find(STATEOS_TAG_MAIN);
+    const stateos_section * s_ckpt = scan.find(STATEOS_TAG_CKPT);
+    const stateos_section * s_comp = scan.find(STATEOS_TAG_COMP);
+    if (s_toks == nullptr || s_main == nullptr) {
+        corrupt(s_toks == nullptr ? "section:TOKS" : "section:MAIN", "a required section is missing");
+        return;
+    }
+    if (s_toks->size % 4 != 0) {
+        corrupt("section:TOKS", "token section size is not a multiple of 4");
+        return;
+    }
+    const size_t n_tokens = (size_t) (s_toks->size / 4);
+    std::vector<uint8_t> toks;
+    if (!stateos_read_range(filepath, s_toks->offset, s_toks->size, toks, &err)) {
+        corrupt("section:TOKS", err);
+        return;
+    }
+    std::vector<int32_t> ids(n_tokens);
+    for (size_t i = 0; i < n_tokens; ++i) {
+        ids[i] = (int32_t) ((uint32_t) toks[4 * i] | ((uint32_t) toks[4 * i + 1] << 8) | ((uint32_t) toks[4 * i + 2] << 16) | ((uint32_t) toks[4 * i + 3] << 24));
+    }
+    const std::string token_sha = stateos_token_sha256(ids.data(), ids.size());
+
+    stateos_fields current = stateos_identity_fields(&err);
+    if (current.empty()) {
+        send_slot_error(task, 500, "server_error", "State-OS identity unavailable: " + err, { {"slot_untouched", true} });
+        return;
+    }
+    // integrity fields: recomputed from the file itself, so a header cannot vouch for other tokens
+    current.push_back({ STATEOS_HARD, "n_tokens",     std::to_string(n_tokens) });
+    current.push_back({ STATEOS_HARD, "token_sha256", token_sha });
+
+    const stateos_verdict verdict = stateos_verify(saved, current);
+    if (!verdict.ok) {
+        const stateos_mismatch & first = verdict.refused.front();
+        send_slot_error(task, 409, "state_refused",
+                "State-OS restore refused: hard field '" + first.key + "' differs (saved=" + first.saved + ", current=" + first.current + "); slot untouched",
+                { {"refused_field", first.key}, {"refused", stateos_mismatches_json(verdict.refused)},
+                  {"warnings", stateos_mismatches_json(verdict.warnings)}, {"slot_untouched", true} });
+        return;
+    }
+    if ((int64_t) n_tokens > slot.n_ctx) {
+        corrupt("n_tokens", string_format("%zu tokens exceed the slot context of %d", n_tokens, slot.n_ctx));
+        return;
+    }
+    const int32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
+    for (size_t i = 0; i < n_tokens; ++i) {
+        if (ids[i] < 0 || ids[i] >= n_vocab) {
+            corrupt("section:TOKS", string_format("token %zu (id %d) is outside the vocabulary", i, ids[i]));
+            return;
+        }
+    }
+
+    std::vector<stateos_checkpoint_rec> recs;
+    if (s_ckpt != nullptr) {
+        std::vector<uint8_t> ckpt_bytes;
+        if (!stateos_read_range(filepath, s_ckpt->offset, s_ckpt->size, ckpt_bytes, &err) ||
+            !stateos_decode_checkpoints(ckpt_bytes.data(), ckpt_bytes.size(), recs, &err)) {
+            corrupt("section:CKPT", err);
+            return;
+        }
+    }
+
+    // companion: decided now, loaded after the target; never a reason to refuse the restore
+    std::string comp_status;
+    llama_context * ctx_mtp = stateos_own_companion(slot, model, comp_status);
+    uint64_t comp_offset = 0;
+    uint64_t comp_size = 0;
+    int32_t comp_warmed_heads = 0;
+    bool comp_load = false;
+    if (s_comp == nullptr) {
+        comp_status = ctx_mtp != nullptr ? "absent from the file (re-warms on demand)" : comp_status;
+    } else if (ctx_mtp == nullptr) {
+        comp_status = "skipped: " + comp_status;
+    } else {
+        std::string sub_text;
+        stateos_fields sub;
+        if (!stateos_read_companion(filepath, *s_comp, sub_text, comp_offset, comp_size, &err) ||
+            !stateos_decode_header(sub_text, sub, &err)) {
+            comp_status = "skipped: unreadable companion section (" + err + ")";
+        } else {
+            const stateos_verdict cv = stateos_verify(sub, stateos_companion_fields(ctx_mtp, token_sha));
+            if (!cv.ok) {
+                comp_status = "skipped: companion field '" + cv.refused.front().key + "' differs (re-warms on demand)";
+            } else {
+                const stateos_field * wh = stateos_find(sub, "mtp_warmed_heads");
+                comp_warmed_heads = wh ? std::atoi(wh->value.c_str()) : 0;
+                comp_load = true;
+            }
+        }
+    }
+
+    for (const auto & w : verdict.warnings) {
+        SRV_WRN("State-OS restore: soft field '%s' differs (saved=%s, current=%s); proceeding\n", w.key.c_str(), w.saved.c_str(), w.current.c_str());
+    }
+
+    // ---- destructive: one server-side operation from here ----
+    const size_t n_dropped_ckpt = slot.server_cached_prompt.checkpoints.size();
+    const size_t nread = llama_state_seq_load_file_range(ctx, filepath.c_str(), (size_t) s_main->offset, (size_t) s_main->size, slot.id, 0);
+
+    // whatever happens next, nothing the previous conversation left may survive
+    if (slot.spec) {
+        LOG_VERBOSE(string_format("MTP invalidate: SLOT_RESTORE slot=%d pos=0", slot.id).c_str(), {});
+        common_speculative_mtp_invalidate(slot.spec, slot.id, 0);
+        common_speculative_mtp_set_warmed_heads(slot.spec, 0);
+    }
+    slot.server_cached_prompt.checkpoints.clear();
+    slot.server_cached_prompt.data.clear();
+    slot.server_cached_prompt.data.shrink_to_fit();
+    slot.server_cached_prompt.n_kept_prompt = 0;
+    slot.server_cached_prompt.n_discarded_prompt = 0;
+    slot.n_kept_prompt = 0;
+    slot.n_discarded_prompt = 0;
+    slot.checkpoint_pos = -1;
+
+    if (nread != (size_t) s_main->size) {
+        llama_kv_cache_seq_rm(ctx, slot.id, -1, -1);
+        slot.cache_tokens.clear();
+        slot.server_cached_prompt.tokens.clear();
+        send_slot_error(task, 500, "server_error",
+                "State-OS restore failed while loading the verified target state; the slot was cleared and re-prefills on the next request",
+                { {"slot_untouched", false} });
+        return;
+    }
+
+    slot.cache_tokens = server_tokens(llama_tokens(ids.begin(), ids.end()), mctx != nullptr);
+    const llama_pos pos_next = slot.cache_tokens.pos_next();
+
+    if (comp_load) {
+        const size_t comp_read = llama_state_seq_load_file_range(ctx_mtp, filepath.c_str(), (size_t) comp_offset, (size_t) comp_size, slot.id, 0);
+        if (comp_read == (size_t) comp_size) {
+            common_speculative_mtp_set_warmed_heads(slot.spec, comp_warmed_heads);
+            comp_status = "loaded";
+        } else {
+            comp_status = "skipped: the companion payload failed to load (re-warms on demand)";
+        }
+    }
+
+    size_t n_ckpt_restored = 0;
+    for (auto & r : recs) {
+        if (r.pos_max >= pos_next) {
+            continue;
+        }
+        server_prompt_checkpoint c;
+        c.pos_min        = r.pos_min;
+        c.pos_max        = r.pos_max;
+        c.pos_min_prompt = r.pos_min_prompt;
+        c.pos_max_prompt = r.pos_max_prompt;
+        c.n_tokens       = r.n_tokens;
+        c.data           = std::move(r.data);
+        slot.server_cached_prompt.checkpoints.push_back(std::move(c));
+        slot.checkpoint_pos = r.pos_max;
+        ++n_ckpt_restored;
+    }
+    slot.server_cached_prompt.tokens = slot.cache_tokens.clone();
+
+    const double t_restore_ms = (ggml_time_us() - t_start) / 1000.0;
+    SRV_INF("State-OS restore slot=%d tokens=%zu bytes=%zu companion=%s checkpoints=%zu (dropped %zu in-memory) %.1f ms\n",
+            slot.id, n_tokens, nread, comp_status.c_str(), n_ckpt_restored, n_dropped_ckpt, t_restore_ms);
+
+    server_task_result result;
+    result.id    = task.id;
+    result.error = false;
+    result.data  = json{
+        { "id_slot",    slot.id },
+        { "filename",   filename },
+        { "n_restored", n_tokens }, // tokens restored
+        { "n_read",     nread },    // bytes read (target state)
+        { "timings", {
+            { "restore_ms", t_restore_ms }
+        } },
+        { "stateos", {
+            { "container_version",            scan.version },
+            { "token_sha256",                 token_sha },
+            { "warnings",                     stateos_mismatches_json(verdict.warnings) },
+            { "companion",                    comp_status },
+            { "checkpoints_restored",         n_ckpt_restored },
+            { "checkpoints_dropped_in_memory", n_dropped_ckpt },
+            { "prompt_cache_record_replaced", true },
+            { "file_bytes",                   scan.file_size },
+        } },
+    };
+    queue_results.send(result);
 }
 
 void server_context::process_single_task(server_task&& task) {
@@ -2966,7 +3465,7 @@ void server_context::process_single_task(server_task&& task) {
         int id_slot = task.data.at("id_slot");
         server_slot* slot = get_slot_by_id(id_slot);
         if (slot == nullptr) {
-            send_error(task, "Invalid slot ID", ERROR_TYPE_INVALID_REQUEST);
+            send_slot_error(task, 400, "invalid_request_error", "Invalid slot ID");
             break;
         }
         if (!slot->available()) {
@@ -2977,43 +3476,18 @@ void server_context::process_single_task(server_task&& task) {
         }
 
         if (llama_model_is_openpangu(model)) {
-            send_error(task, "slot save is unsupported for openPangu because per-sequence file state is not implemented", ERROR_TYPE_NOT_SUPPORTED);
+            send_slot_error(task, 501, "not_supported_error", "slot save is unsupported for openPangu because per-sequence file state is not implemented");
             break;
         }
 
-        const size_t token_count = slot->cache_tokens.size();
-        const int64_t t_start = ggml_time_us();
-
-        std::string filename = task.data.at("filename");
-        std::string filepath = task.data.at("filepath");
-        save_server_tokens_to_file(filepath+".tokens.json", slot->cache_tokens);
-        size_t saved = save_checkpoints_to_file(filepath + ".checkpoints", slot->server_cached_prompt.checkpoints);
-
-        const size_t nwrite = llama_state_seq_save_file(ctx, filepath.c_str(), slot->id, slot->cache_tokens.data(), token_count);
-
-        const int64_t t_end = ggml_time_us();
-        const double t_save_ms = (t_end - t_start) / 1000.0;
-
-        server_task_result result;
-        result.id = task.id;
-        result.error = false;
-        result.data = json{
-            { "id_slot",   id_slot },
-            { "filename",  filename },
-            { "n_saved",   token_count }, // tokens saved
-            { "n_written", nwrite + saved },      // bytes written
-            { "timings", {
-                { "save_ms", t_save_ms }
-            } }
-        };
-        queue_results.send(result);
+        stateos_slot_save(task, *slot);
     } break;
     case SERVER_TASK_TYPE_SLOT_RESTORE:
     {
         int id_slot = task.data.at("id_slot");
         server_slot* slot = get_slot_by_id(id_slot);
         if (slot == nullptr) {
-            send_error(task, "Invalid slot ID", ERROR_TYPE_INVALID_REQUEST);
+            send_slot_error(task, 400, "invalid_request_error", "Invalid slot ID");
             break;
         }
         if (!slot->available()) {
@@ -3022,58 +3496,20 @@ void server_context::process_single_task(server_task&& task) {
             queue_tasks.defer(std::move(task));
             break;
         }
-        const int64_t t_start = ggml_time_us();
 
-        std::string filename = task.data.at("filename");
-        std::string filepath = task.data.at("filepath");
-
-        slot->cache_tokens.resize(slot->n_ctx);
-        size_t token_count = 0;
-        size_t nread = llama_state_seq_load_file(ctx, filepath.c_str(), slot->id, slot->cache_tokens.data(), slot->cache_tokens.size(), &token_count);
-        if (nread == 0) {
-            slot->cache_tokens.resize(0);
-            send_error(task, "Unable to restore slot, no available space in KV cache or invalid slot save file", ERROR_TYPE_INVALID_REQUEST);
+        if (llama_model_is_openpangu(model)) {
+            send_slot_error(task, 501, "not_supported_error", "slot restore is unsupported for openPangu because per-sequence file state is not implemented");
             break;
         }
-        load_server_tokens_from_file(filepath+".tokens.json", slot->cache_tokens);
-        size_t loaded = load_checkpoints_from_file(filepath + ".checkpoints", slot->server_cached_prompt.checkpoints);
 
-        const llama_pos pos_next = slot->cache_tokens.pos_next();
-        if (slot->spec) {
-            LOG_VERBOSE(string_format("MTP invalidate: SLOT_RESTORE slot=%d pos=%d", slot->id, pos_next).c_str(), {});
-            common_speculative_mtp_invalidate(slot->spec, slot->id, pos_next);
-        }
-        for (auto it = slot->server_cached_prompt.checkpoints.begin(); it != slot->server_cached_prompt.checkpoints.end();) {
-            if (it->pos_max >= pos_next) {
-                it = slot->server_cached_prompt.checkpoints.erase(it);
-            } else {
-                ++it;
-            }
-        }
-
-        const int64_t t_end = ggml_time_us();
-        const double t_restore_ms = (t_end - t_start) / 1000.0;
-
-        server_task_result result;
-        result.id = task.id;
-        result.error = false;
-        result.data = json{
-            { "id_slot",    id_slot },
-            { "filename",   filename },
-            { "n_restored", token_count }, // tokens restored
-            { "n_read",     nread },       // bytes read
-            { "timings", {
-                { "restore_ms", t_restore_ms }
-            } }
-        };
-        queue_results.send(result);
+        stateos_slot_restore(task, *slot);
     } break;
     case SERVER_TASK_TYPE_SLOT_ERASE:
     {
         int id_slot = task.data.at("id_slot");
         server_slot* slot = get_slot_by_id(id_slot);
         if (slot == nullptr) {
-            send_error(task, "Invalid slot ID", ERROR_TYPE_INVALID_REQUEST);
+            send_slot_error(task, 400, "invalid_request_error", "Invalid slot ID");
             break;
         }
         if (!slot->available()) {

@@ -206,6 +206,11 @@ llama_build_and_test(test-regex-partial.cpp)
 
 llama_build_and_test(test-speculative-params.cpp)
 
+# State-OS v1 keyed slot-state container (pure helpers shared with llama-server; no model needed)
+llama_build_and_test(test-stateos-header.cpp ${PROJECT_SOURCE_DIR}/examples/server/stateos-header.cpp)
+target_include_directories(test-stateos-header PRIVATE ${PROJECT_SOURCE_DIR}/examples/server)
+target_compile_features(test-stateos-header PRIVATE cxx_std_17)
+
 llama_build_and_test(test-iq4-ks-kt-decode.cpp)
 target_include_directories(test-iq4-ks-kt-decode PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src)
 

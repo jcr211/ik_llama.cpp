@@ -1775,22 +1775,43 @@ int main(int argc, char ** argv) {
                     continue;
                 }
 
-                std::ifstream file(entry.path(), std::ios::binary);
-                if (!file) continue;
+                std::vector<llama_token> tokens;
+                uint32_t n_token_count = 0;
+                std::string format = "llama-seq";
 
-                uint32_t magic, version, n_token_count;
-                file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
-                file.read(reinterpret_cast<char*>(&version), sizeof(version));
-                file.read(reinterpret_cast<char*>(&n_token_count), sizeof(n_token_count));
+                // State-OS keyed container: tokens come from its TOKS section
+                const stateos_scan_result scan = stateos_scan_file(entry.path().u8string());
+                const stateos_section * toks = scan.status == STATEOS_SCAN_OK ? scan.find(STATEOS_TAG_TOKS) : nullptr;
+                if (toks != nullptr && toks->size % 4 == 0) {
+                    std::vector<uint8_t> bytes;
+                    if (!stateos_read_range(entry.path().u8string(), toks->offset, toks->size, bytes, nullptr)) {
+                        continue;
+                    }
+                    n_token_count = (uint32_t) (bytes.size() / 4);
+                    tokens.resize(n_token_count);
+                    for (size_t i = 0; i < tokens.size(); ++i) {
+                        tokens[i] = (llama_token) ((uint32_t) bytes[4 * i] | ((uint32_t) bytes[4 * i + 1] << 8) |
+                                                   ((uint32_t) bytes[4 * i + 2] << 16) | ((uint32_t) bytes[4 * i + 3] << 24));
+                    }
+                    format = "stateos-v" + std::to_string(scan.version);
+                } else {
+                    std::ifstream file(entry.path(), std::ios::binary);
+                    if (!file) continue;
 
-                if (magic != LLAMA_STATE_SEQ_MAGIC ||
-                    version != LLAMA_STATE_SEQ_VERSION ||
-                    entry.file_size() < (12 + (n_token_count * sizeof(llama_token)))) {
-                    continue;
+                    uint32_t magic, version;
+                    file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+                    file.read(reinterpret_cast<char*>(&version), sizeof(version));
+                    file.read(reinterpret_cast<char*>(&n_token_count), sizeof(n_token_count));
+
+                    if (magic != LLAMA_STATE_SEQ_MAGIC ||
+                        version != LLAMA_STATE_SEQ_VERSION ||
+                        entry.file_size() < (12 + (n_token_count * sizeof(llama_token)))) {
+                        continue;
+                    }
+
+                    tokens.resize(n_token_count);
+                    file.read(reinterpret_cast<char*>(tokens.data()), tokens.size() * sizeof(llama_token));
                 }
-
-                std::vector<llama_token> tokens(n_token_count);
-                file.read(reinterpret_cast<char*>(tokens.data()), tokens.size() * sizeof(llama_token));
 
                 //C++17 is not modern enough to have a nice and portable way to get the mtime of a file
                 //so the following seems to be needed
@@ -1815,6 +1836,7 @@ int main(int argc, char ** argv) {
                     {"filesize", entry.file_size()},
                     {"mtime", str_time},
                     {"token_count", n_token_count},
+                    {"format", format},
                     {"prompt", tokens_to_str(ctx_server.ctx, tokens)}
                 });
             }
