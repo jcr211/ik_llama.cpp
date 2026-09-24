@@ -15,6 +15,7 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -508,7 +509,7 @@ static void test_section_checks() {
 
     r.sections[1].size = 0;
     c = stateos_check_sections(r, 196608);
-    CHECK(!c.ok && c.field == "section:MAIN");
+    CHECK(!c.ok && c.field == "section:MAIN" && c.type == "state_corrupt");
 
     r.sections[1].size = 50;
     r.sections[0].size = 0; // a state saved from an empty slot
@@ -521,7 +522,7 @@ static void test_section_checks() {
 
     r.sections[0].size = 8;
     c = stateos_check_sections(r, 1);
-    CHECK(!c.ok && c.field == "n_tokens");
+    CHECK(!c.ok && c.field == "n_tokens" && c.type == "state_refused"); // valid file, larger context: refused
 
     r.sections = { { STATEOS_TAG_TOKS, 100, 8 } };
     c = stateos_check_sections(r, 196608);
@@ -588,7 +589,10 @@ static void test_replace_file() {
     CHECK(stateos_replace_file(b, a, &err));
     CHECK(read_all(a) == std::vector<uint8_t>({ 'n', 'e', 'w', '!' }));
     CHECK(!std::filesystem::exists(stateos_path(b)));
+    const auto t0 = std::chrono::steady_clock::now();
     CHECK(!stateos_replace_file(tmp_file("replace-missing.state"), a, &err));
+    const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    CHECK(waited < 300); // a missing source is not retried (was ~1.5 s of sleeps, one after the last attempt)
     CHECK(read_all(a) == std::vector<uint8_t>({ 'n', 'e', 'w', '!' })); // a failed replace keeps the old file
 
     // durability before the commit rename

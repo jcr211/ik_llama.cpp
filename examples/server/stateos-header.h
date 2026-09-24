@@ -149,6 +149,7 @@ bool stateos_read_range(const std::string & path, uint64_t offset, uint64_t size
 // context first). ok=false names the refusing field ("section:TOKS", "section:MAIN", "n_tokens").
 struct stateos_section_check {
     bool        ok       = false;
+    std::string type;    // 409 error type when !ok: "state_refused" (valid file, this server cannot hold it) or "state_corrupt"
     std::string field;
     std::string error;
     size_t      n_tokens = 0;

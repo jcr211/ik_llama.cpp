@@ -2919,13 +2919,36 @@ void server_context::stateos_clear_slot(server_slot & slot) {
 
 void server_context::stateos_slot_save(const server_task & task, server_slot & slot) {
     std::string what;
+    bool committed = false;
     try {
-        stateos_slot_save_impl(task, slot);
+        stateos_slot_save_impl(task, slot, committed);
         return;
     } catch (const std::exception & e) {
         what = e.what();
     } catch (...) {
         what = "unknown exception";
+    }
+    if (committed) {
+        // the file is written and in place: answer success (the fields a client needs), not "save failed"
+        try {
+            std::error_code ec;
+            const std::string filepath = task.data.at("filepath").get<std::string>();
+            server_task_result result;
+            result.id    = task.id;
+            result.error = false;
+            result.data  = json{
+                { "id_slot",   slot.id },
+                { "filename",  task.data.at("filename") },
+                { "n_saved",   slot.cache_tokens.size() },
+                { "n_written", (uint64_t) std::filesystem::file_size(stateos_path(filepath), ec) },
+                { "stateos",   { { "reply", "minimal: the full reply could not be built (" + what + ")" } } },
+            };
+            queue_results.send(result);
+            return;
+        } catch (...) {}
+        send_slot_error(task, 500, "server_error", "State-OS save wrote the file but could not reply: " + what,
+                { {"slot_untouched", true}, {"file_written", true} });
+        return;
     }
     try {
         std::error_code ec;
@@ -2954,7 +2977,7 @@ void server_context::stateos_slot_restore(const server_task & task, server_slot 
             { {"slot_untouched", !destroyed} });
 }
 
-void server_context::stateos_slot_save_impl(const server_task & task, server_slot & slot) {
+void server_context::stateos_slot_save_impl(const server_task & task, server_slot & slot, bool & committed) {
     const int64_t t_start = ggml_time_us();
     const std::string filename = task.data.at("filename");
     const std::string filepath = task.data.at("filepath");
@@ -3127,6 +3150,7 @@ void server_context::stateos_slot_save_impl(const server_task & task, server_slo
         fail("cannot move the finished file into place: " + err);
         return;
     }
+    committed = true;
     std::error_code ec;
     const uint64_t n_written = (uint64_t) std::filesystem::file_size(stateos_path(filepath), ec);
 
@@ -3216,7 +3240,8 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
     // required sections present, TOKS bounded by the slot context before it is read, MAIN not empty
     const stateos_section_check sc = stateos_check_sections(scan, (size_t) std::max(slot.n_ctx, 0));
     if (!sc.ok) {
-        corrupt(sc.field, sc.error);
+        send_slot_error(task, 409, sc.type, "State-OS restore refused: " + sc.error + "; slot untouched",
+                { {"refused_field", sc.field}, {"slot_untouched", true} });
         return;
     }
     const stateos_section * s_toks = scan.find(STATEOS_TAG_TOKS);
@@ -3345,7 +3370,7 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
                 { "token_sha256",                  token_sha },
                 { "empty",                         true },
                 { "warnings",                      stateos_mismatches_json(verdict.warnings) },
-                { "companion",                     "cleared (empty state)" },
+                { "companion",                     ctx_mtp != nullptr ? std::string("cleared (empty state)") : comp_status },
                 { "checkpoints_restored",          0 },
                 { "checkpoints_dropped_in_memory", n_dropped_ckpt },
                 { "prompt_cache_record_replaced",  true },

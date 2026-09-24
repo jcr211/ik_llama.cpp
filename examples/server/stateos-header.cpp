@@ -515,6 +515,7 @@ bool stateos_read_range(const std::string & path, uint64_t offset, uint64_t size
 
 stateos_section_check stateos_check_sections(const stateos_scan_result & scan, size_t n_ctx_slot) {
     stateos_section_check c;
+    c.type = "state_corrupt";
     const stateos_section * toks = scan.find(STATEOS_TAG_TOKS);
     const stateos_section * target = scan.find(STATEOS_TAG_MAIN);
     if (toks == nullptr || target == nullptr) {
@@ -529,6 +530,8 @@ stateos_section_check stateos_check_sections(const stateos_scan_result & scan, s
     }
     c.n_tokens = (size_t) (toks->size / 4);
     if (c.n_tokens > n_ctx_slot) {
+        // a well-formed state from a larger-context server: a refusal, not corruption
+        c.type  = "state_refused";
         c.field = "n_tokens";
         c.error = std::to_string(c.n_tokens) + " tokens exceed the slot context of " + std::to_string(n_ctx_slot);
         return c;
@@ -542,6 +545,7 @@ stateos_section_check stateos_check_sections(const stateos_scan_result & scan, s
     }
     c.empty = c.n_tokens == 0;
     c.ok    = true;
+    c.type.clear();
     return c;
 }
 
@@ -643,11 +647,17 @@ bool stateos_replace_file(const std::string & src, const std::string & dst, std:
     const std::wstring wsrc = stateos_path(src).wstring();
     const std::wstring wdst = stateos_path(dst).wstring();
     DWORD last = 0;
-    for (int attempt = 0; attempt < 5; ++attempt) {
+    const int attempts = 5;
+    for (int attempt = 0; attempt < attempts; ++attempt) {
         if (MoveFileExW(wsrc.c_str(), wdst.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
             return true;
         }
         last = GetLastError();
+        // only a lock (scanner, indexer, sharing) is worth waiting for; a missing file or path never appears
+        const bool transient = last == ERROR_SHARING_VIOLATION || last == ERROR_LOCK_VIOLATION || last == ERROR_ACCESS_DENIED;
+        if (!transient || attempt + 1 == attempts) {
+            break; // no sleep after the final attempt
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
     }
     set_err(err, "MoveFileExW failed (Win32 error " + std::to_string((unsigned long) last) + ")");

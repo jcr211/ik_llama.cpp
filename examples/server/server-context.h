@@ -362,7 +362,8 @@ struct server_context {
 
     void stateos_slot_restore(const server_task& task, server_slot& slot);
 
-    void stateos_slot_save_impl(const server_task& task, server_slot& slot);
+    // sets `committed` once the file is in place under its name
+    void stateos_slot_save_impl(const server_task& task, server_slot& slot, bool& committed);
 
     // sets `destroyed` at the first step that modifies the slot
     void stateos_slot_restore_impl(const server_task& task, server_slot& slot, bool& destroyed);
