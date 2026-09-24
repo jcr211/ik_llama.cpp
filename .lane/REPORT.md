@@ -220,7 +220,8 @@ tampers `effective_model` among the hard fields.
   - Unit tests cover the helpers: the cvec parts with startup live and dropped, and a bad-id request leaving the
     scales untouched.
   - **Failed apply.** While the stamp is `unknown`, every save is refused with 409 `state_adapters_unknown`, and every
-    restore is refused as an `effective_model` mismatch (`current=unknown`). A later successful apply clears it.
+    restore is refused as an `effective_model` mismatch (`current=unknown`). Only a later successful
+    `/control-vectors/apply` clears it; a `/lora-adapters` call keeps it (F11-3 P3-1).
 - `91579f16` **P3-1:** `/rename_prompt` runs `fs_validate_filename` on both names (400). The reserved-suffix check now
   strips Windows trailing dots and spaces first, so `x.stateos.tmp.` and `x.stateos.tmp ` are refused too. It applies to
   save and restore names and to both rename names.
@@ -237,8 +238,9 @@ tampers `effective_model` among the hard fields.
   1. Erase the slot: `POST /slots/{id}?action=erase`. This clears the KV and stamps the current generation.
   2. Re-prefill the conversation with a normal request, then save again.
   - A request whose prompt diverges at token 0 also re-prefills from empty and has the same effect.
-  - If the stamp itself is `unknown` (failed control-vector apply), fix the adapter set first with a successful
-    `/control-vectors/apply` or `/lora-adapters` call.
+  - If the stamp itself is `unknown` (failed control-vector apply), first make it known with a successful
+    `/control-vectors/apply` (an empty array, which disables steering, also counts). A `/lora-adapters` call does not
+    clear `unknown`.
 - Build: before every build a process check showed no nvcc, cl, cmake or ninja from another lane.
   `.lane/build-f11.cmd` exit 0.
 - Tests: `.lane/test-f11.cmd` exit 0 with `CUDA_VISIBLE_DEVICES=-1`: `test-stateos-header` 285 checks, 0 failures;

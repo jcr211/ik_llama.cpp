@@ -3040,8 +3040,8 @@ void server_context::stateos_slot_save_impl(const server_task & task, server_slo
     // after a failed runtime adapter apply nobody knows what the context computes with: never stamp that
     if (stateos_effective_cur == STATEOS_EFFECTIVE_UNKNOWN) {
         send_slot_error(task, 409, "state_adapters_unknown",
-                "the last runtime LoRA/control-vector apply failed, so the applied adapter set is unknown; nothing was "
-                "saved (a successful apply makes it known again)",
+                "a runtime control-vector apply failed, so the applied adapter set is unknown; nothing was saved "
+                "(a successful /control-vectors/apply makes it known again)",
                 { {"slot_untouched", true} });
         return;
     }
@@ -3780,7 +3780,8 @@ void server_context::process_single_task(server_task&& task) {
         ++stateos_adapter_gen; // KV built before this point was computed under another adapter set
         llama_lora_adapters_apply(ctx, lora_adapters);
         stateos_lora_live = true; // the containers' scales are now what the context computes with
-        stateos_refresh_effective(true);
+        // a failed control-vector apply left the context's vector unknown: only a successful control-vector apply clears it
+        stateos_refresh_effective(stateos_effective_cur != STATEOS_EFFECTIVE_UNKNOWN);
         server_task_result result;
         result.id = task.id;
         result.error = false;
