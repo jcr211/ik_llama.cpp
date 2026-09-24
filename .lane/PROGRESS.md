@@ -17,6 +17,18 @@ Order: `D:/Projects/longspear/docs/drafts/decode-throughput-merged-plan-20260924
 - [x] `.lane/GPU-WINDOW.md` (coordinator recipe); report delivered in the final message (the REPORT.md write was
   refused by a hook)
 
+## Fix round 1 (cross-family review of c4c50b2b: sessions/.council-tmp/sf-merge/opus-sl1-review.md et al.)
+- [ ] B1 host PLE n-gram history rewind — WAITS for `lane/ple-hist-rewind` (D:/AI/worktrees/ik-ple-hist); then merge
+  it and call `llama_ple_history_set` at the per-step direct restore and the crosscheck's gpu-fallback replay
+- [x] B2 clamp reaches ngram-mod/suffix bookkeeping (`common_speculative_truncate_draft`) + test-spec-ckpt-clamp (4d127fd6)
+- [x] S1 `k_prop` in [spec-host]; gate compares pre-clamp drafts and fit-round acceptance (4d127fd6, c5491063)
+- [x] S2 crosscheck commits the MTP companion the per-step way; row A2 gates mtp_skip (4d127fd6, c5491063)
+- [x] S3 auto-stop chain `.lane/w-sl1-chain.sh` + fixture selftest 9/9 (1f0b1d8f)
+- [x] AMEND 1 / AMEND 2 adopted into GPU-WINDOW.md §2, §3, §8 (INCONCLUSIVE rule at the 600-round cap)
+- [x] N1 PCIe delta from the row's first numeric sample, NA STOPs; N2 failed restore STOPs, per-arm mode check (c5491063)
+- [x] DeepSeek #6 proposal_dists only shortened (4d127fd6)
+- [x] rebuild in a checked slot, tests (a)-(d) + clamp test exit 0
+
 ## Commit 2 code-reading note — `kv.cells[seq_id].pos = accepted_pos` (src/llama.cpp PER_STEP restore)
 What the write means depends on the cache kind:
 - **Pure recurrent (Mamba, `kv.recurrent`, `llm_arch_is_recurrent`)**: `cells[]` is indexed by sequence; cell
