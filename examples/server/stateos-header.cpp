@@ -766,6 +766,16 @@ bool stateos_ckpt_within_budget(uint64_t section_size, uint64_t max_records, uin
     return section_size <= framing + max_records * per;
 }
 
+uint64_t stateos_ckpt_record_bound(uint64_t partial_now, uint64_t n_ctx_slot, bool compacted, uint64_t main_size) {
+    if (compacted) {
+        return main_size;
+    }
+    if (n_ctx_slot > (UINT64_MAX - partial_now) / STATEOS_CELL_META_BYTES) {
+        return UINT64_MAX;
+    }
+    return partial_now + STATEOS_CELL_META_BYTES * n_ctx_slot;
+}
+
 bool stateos_checkpoints_fit(const std::vector<stateos_checkpoint_rec> & recs, uint64_t max_record_bytes, std::string * err) {
     for (size_t i = 0; i < recs.size(); ++i) {
         if ((uint64_t) recs[i].data.size() > max_record_bytes) {

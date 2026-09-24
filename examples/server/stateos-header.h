@@ -208,6 +208,14 @@ bool stateos_decode_checkpoints(const uint8_t * data, size_t size, std::vector<s
 // (plus the codec's framing). A section over budget is skipped (restored without checkpoints), never allocated.
 bool stateos_ckpt_within_budget(uint64_t section_size, uint64_t max_records, uint64_t max_record_bytes);
 
+// Per-checkpoint bound that does not depend on what the target slot holds now. A partial (checkpoint) state is a fixed
+// part (recurrent rows) plus STATEOS_CELL_META_BYTES per cell of its source conversation (write_kv_cache_meta: pos +
+// n_seq_id), so a checkpoint of a long conversation outgrows a partial measured on a short one. partial_now is
+// llama_state_seq_get_size(PARTIAL_ONLY) of the slot as it is (>= the fixed part); the bound adds room for a full
+// context of cells. A compacted SWA window can grow a checkpoint up to the full state: then the MAIN size bounds it.
+constexpr uint64_t STATEOS_CELL_META_BYTES = 8;
+uint64_t stateos_ckpt_record_bound(uint64_t partial_now, uint64_t n_ctx_slot, bool compacted, uint64_t main_size);
+
 // After decode: every record's state fits max_record_bytes (a larger one is corrupt).
 bool stateos_checkpoints_fit(const std::vector<stateos_checkpoint_rec> & recs, uint64_t max_record_bytes, std::string * err);
 

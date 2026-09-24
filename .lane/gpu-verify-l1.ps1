@@ -259,6 +259,16 @@ function Test-Identity([string] $Tag, [int[]] $P, [int[]] $Z, [int[]] $Q, [int] 
     $res.restored = $runs
     $res.ple_resets_pos_gt0 = [int] $runs[0].ple.resets_pos_gt0 + [int] $runs[1].ple.resets_pos_gt0
     $res.ple_ok = ($res.ple_resets_pos_gt0 -eq 0) -and ($runs[0].ple.sets_server_resume -ge 1) -and ($runs[1].ple.sets_server_resume -ge 1)
+    # every saved checkpoint comes back, whatever the slot held before the restore (review F11 P1: the restores here
+    # follow a short Q conversation, which a slot-length-dependent bound got wrong)
+    $saved = [int] $res.save.checkpoints_saved
+    $res.ckpt_ok = $true
+    foreach ($run in $runs) {
+        $st = [string] $run.restore.stateos.checkpoints
+        $okStatus = if ($saved -gt 0) { $st -eq 'restored' } else { ($st -eq 'restored') -or ($st -eq 'absent') }
+        if (-not $okStatus -or ([int] $run.restore.stateos.checkpoints_restored -ne $saved)) { $res.ckpt_ok = $false }
+    }
+    Log "$Tag checkpoints: saved=$saved restored=$($runs[0].restore.stateos.checkpoints_restored)/$($runs[1].restore.stateos.checkpoints_restored) status='$($runs[0].restore.stateos.checkpoints)' ok=$($res.ckpt_ok)"
     if (-not $NoCold) {
         [void] (Slot 'erase' $null)
         $res.cold = Complete $PZ $NGen                           # full prefill of P+Z, report-only

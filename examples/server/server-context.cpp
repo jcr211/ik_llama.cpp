@@ -3284,15 +3284,16 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
         return;
     }
 
-    // checkpoints: bounded by what this context can hold BEFORE the section is read. A checkpoint is a partial
-    // (recurrent + compacted window) state: its size is fixed unless the SWA window is compacted, where it can
-    // grow up to the full state.
+    // checkpoints: bounded by what this context can hold BEFORE the section is read, independently of what the
+    // target slot holds right now (a checkpoint carries 8 B per cell of its source conversation; see
+    // stateos_ckpt_record_bound)
     std::vector<stateos_checkpoint_rec> recs;
     std::string ckpt_status = s_ckpt == nullptr ? "absent" : "restored";
     if (s_ckpt != nullptr) {
         const bool compacted = stateos_layout_line(ctx, "kv").find(" compact=1") != std::string::npos;
-        const uint64_t max_record = compacted ? (uint64_t) s_main->size
-                                              : (uint64_t) llama_state_seq_get_size(ctx, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        const uint64_t max_record = stateos_ckpt_record_bound(
+                (uint64_t) llama_state_seq_get_size(ctx, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY),
+                (uint64_t) std::max(slot.n_ctx, 0), compacted, (uint64_t) s_main->size);
         const uint64_t max_records = (uint64_t) std::max(params_base.ctx_checkpoints_n, 1);
         if (!stateos_ckpt_within_budget(s_ckpt->size, max_records, max_record)) {
             // optional section: restore without checkpoints rather than allocate an oversized one

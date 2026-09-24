@@ -570,6 +570,31 @@ static void test_section_checks() {
     CHECK(!stateos_ckpt_within_budget(12 + 2 * (32 + 100) + 1, 2, 100));
     CHECK(!stateos_ckpt_within_budget(1ull << 40, 32, 112u << 20)); // a crafted terabyte section is never read
     CHECK(stateos_ckpt_within_budget(UINT64_MAX, UINT64_MAX, UINT64_MAX)); // no overflow in the bound itself
+    // the per-record bound does not depend on the target slot's current length (review P1): a checkpoint taken in a
+    // 4K conversation must fit when measured against a slot that now holds 10 cells, or none
+    {
+        const uint64_t fixed = 112u << 20;                       // recurrent rows
+        const uint64_t ckpt_4k = fixed + STATEOS_CELL_META_BYTES * 4096;
+        const uint64_t partial_short = fixed + STATEOS_CELL_META_BYTES * 10;
+        const uint64_t partial_empty = fixed;
+        CHECK(stateos_ckpt_record_bound(partial_short, 196608, false, 0) >= ckpt_4k);
+        CHECK(stateos_ckpt_record_bound(partial_empty, 196608, false, 0) >= ckpt_4k);
+        CHECK(stateos_ckpt_record_bound(partial_empty, 196608, false, 0) >= fixed + STATEOS_CELL_META_BYTES * 196608);
+        CHECK(stateos_ckpt_record_bound(partial_short, 196608, true, 5000) == 5000); // compacted: the MAIN size
+        CHECK(stateos_ckpt_record_bound(UINT64_MAX - 1, UINT64_MAX, false, 0) == UINT64_MAX); // saturates
+        std::vector<stateos_checkpoint_rec> long_ckpt(32);
+        for (auto & c : long_ckpt) {
+            c.data.resize(1024 + STATEOS_CELL_META_BYTES * 4096);
+        }
+        const uint64_t bound = stateos_ckpt_record_bound(1024 + STATEOS_CELL_META_BYTES * 10, 196608, false, 0);
+        CHECK(stateos_checkpoints_fit(long_ckpt, bound, &err));
+        uint64_t section = 12;
+        for (const auto & c : long_ckpt) {
+            section += 32 + c.data.size();
+        }
+        CHECK(stateos_ckpt_within_budget(section, 32, bound)); // a full list of long checkpoints is not skipped
+    }
+
     // after decode: every record fits a partial state of this context
     std::vector<stateos_checkpoint_rec> fit(2);
     fit[0].data.assign(100, 1);
