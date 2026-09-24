@@ -101,10 +101,11 @@ dry run against D:\AI\worktrees\stateos-lane1\build-stateos-l1\gpu-verify\specon
   ok    Ple-Counts on known lines: resets=1 sets=2 resume=1
   ok    Acceptance on known responses: 3/6 rate 0.5; undrafted 0/0 rate null
   ok    Parse-Restore on the F11 shape: checkpoints=restored/3; without the status: throws
-  ok    identity verdict rule: 10 cases
-  ok    identity mechanism rule: good leg ok; 5 bad legs refused
+  ok    identity verdict rule: 14 cases
+  ok    identity mechanism rule: good leg ok; 5 bad legs refused; spec on: companion loaded ok, skipped / not saved refused
+  ok    attestation parsers + completion timeouts: build-info bb0b30ea, 'unknown' refused; --version bb0b30ea; timeouts: continuation 136 s, Q 134 s, 32K prefill 284 s, 190K prefill 1070 s
   ok    First-Divergence: abc/abd=2 equal=-1 prefix=2 tokens=1
-  ok    binary identity (this worktree): sha256=743e9e74dd7b2b1aaae1bda78dd980e8d02994e31d880233efdb804d79a422b1 HEAD=3f63e63c46d365568282c95633d9a44dd3d84a19 exe_mtime=2026-09-24T01:57:25.5164581-04:00 newest tracked=2026-09-24T01:57:06.9580705-04:00 ok=True
+  ok    binary identity (this worktree): embedded=bb0b30ea HEAD=bb0b30eab515700ee0a66d683409068c2f267cd7 ok=True; llama-server.exe 9aa21b518b2f (mtime 2026-09-24T05:37:49.4406278-04:00, newest input 2026-09-24T01:57:03.3075973-04:00); llama.dll da07abd36e24 (mtime 2026-09-24T01:12:16.7808301-04:00, newest input 2026-09-24T01:04:27.3563309-04:00); ggml.dll 379dd33958d9 (mtime 2026-09-24T01:12:14.9081520-04:00, newest input 2026-09-24T01:01:35.8836450-04:00); mtmd.dll f9dff0a0695b (mtime 2026-09-24T01:12:26.6630240-04:00, newest input 2026-09-24T01:01:36.0566006-04:00)
   ok    verdict legA.identity_4k: recorded=PASS now=PASS (ckpt status: pre-F11 recording, counts only); first divergence (chars) r1=-1 r2=-1; draft acceptance warm/r1/r2 = 0/0 0/0 0/0
   ok    verdict legA.identity_32k: recorded=PASS now=PASS (ckpt status: pre-F11 recording, counts only); first divergence (chars) r1=-1 r2=-1; draft acceptance warm/r1/r2 = 0/0 0/0 0/0
   ok    verdict legB.companion_32k: recorded=FAIL now=UNPROVEN [restored != warm with speculation on, and no valid warm-vs-warm control] (ckpt status: pre-F11 recording, counts only); first divergence (chars) r1=74 r2=339; draft acceptance warm/r1/r2 = 84/107 107/116 113/123

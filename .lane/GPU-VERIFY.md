@@ -14,9 +14,17 @@ Production safety: the preflight (files, disk, binary identity) runs before anyt
 stop, the sleep and the `nvidia-smi` log are inside the protected `try`. The `finally` block stops the test server,
 clears the PLE switches and relaunches the standing server first — each step before the relaunch in its own
 `try/catch`, so none can skip it — then polls `:8099/health`, and only then saves `results.json` (in its own
-`try/catch`). HTTP calls carry their own timeouts (60 s for calls without prefill, 600 s for slot save/restore, 3600 s
-for completions), so a hung small call aborts the run into that `finally` instead of holding production down for the
-client's 60-minute bound.
+`try/catch`). HTTP calls carry timeouts sized by their expected work, so no single hung call can hold production down
+for long before the run aborts into that `finally`: 60 s for calls without prefill (props, tokenize, list, erase,
+adapters, rename), 600 s for slot save/restore (lane 1: 190K save 23 s, restore 9 s), and for completions
+120 s + 5 ms per token expected to be prefilled + 0.25 s per generated token (`Get-CompletionTimeout`; 200 tokens/s,
+2–3× below lane 1's rates). A continuation that should reuse the cached or restored prefix passes only |Z|+1 as its
+expected prefill (≈ 136–152 s); the Q prompt ≈ 134 s; only real prefills get long bounds (32K ≈ 284 s, 190K ≈ 1070 s).
+A "reusing" call that re-prefills a 190K prompt therefore times out and aborts the run, the right outcome for that
+defect.
+
+If the `try` is left neither completed nor aborted (Ctrl+C, host stop), the `finally` still relaunches production and
+records `results.json → interrupted: true`.
 
 **Exit code:** 0 only when the run completed, every hard expectation held (Leg A identity legs PASS*, every `pass`
 field, every refusal, `ple_hist.all_ok`, a Leg B identity leg not `FAIL`) and production is back; otherwise 1, with
@@ -24,13 +32,31 @@ the list in `results.json → hard_failures` and on the last console line.
 
 ## Preconditions
 
-1. Build exists: `D:\AI\worktrees\stateos-lane1-f11\build-stateos-f11\bin\llama-server.exe`. **Binary identity is
-   enforced** (`Assert-Binary`, in the preflight before anything is stopped and again before each launch): the exe's
-   SHA-256 and the worktree's `git rev-parse HEAD` are recorded (`results.json → binary.<preflight|specoff|specon>`, and
-   a `==== <time> attempt: exe sha256 …, HEAD … ====` separator plus a `<name> binary:` line per launch in
-   `launch-args.txt`); the run is refused when a tracked file outside `.lane/` is modified, when any tracked file outside
-   `.lane/` is newer than the exe (rebuild), or when the exe's hash changes between launches. `.lane/` is excluded
-   because it holds this script, its logs and notes, which are not build inputs. See `.lane/REPORT.md` for the build.
+1. Build exists: `D:\AI\worktrees\stateos-lane1-f11\build-stateos-f11\bin\llama-server.exe`, built by
+   `.lane\build-f11.cmd`. That script deletes `common\build-info.cpp` before every build, so the exe embeds the HEAD it
+   was built from (`LLAMA_COMMIT`). In this worktree the build-info dependency on the git index is missing from
+   `build.ninja` (the `.git` file is not resolved by `common/CMakeLists.txt`), so without the delete the embedded
+   commit stays at the last configure (the exe before this round said `0c1bebea`).
+   **The build is attested, not inferred** (`Assert-Binary`, in the preflight before anything is stopped and again
+   before each launch; recorded in `results.json → binary.<preflight|specoff|specon>`, plus a
+   `==== <time> attempt: exe sha256 …, HEAD … ====` separator and a `<name> binary:` line per launch in
+   `launch-args.txt`). Build inputs = `CMakeLists.txt, cmake/, common/, ggml/, include/, src/, vendor/,
+   examples/CMakeLists.txt, examples/server/, examples/mtmd/` (not docs, scripts, tests or `.lane/`). The run is refused
+   unless:
+   - the embedded commit (from `common\build-info.cpp`) appears in the exe's bytes as the NUL-terminated literal,
+     resolves to an ancestor of HEAD, and `git diff` between it and HEAD over the build inputs is empty (the exe was
+     built from exactly the inputs HEAD has);
+   - no build input is modified in the worktree;
+   - `llama-server.exe`, `llama.dll`, `ggml.dll` and `mtmd.dll` each hash (a failed hash refuses; all four SHA-256s are
+     recorded and must not change between launches) and each is newer than every tracked file among its own inputs
+     (exe: all build inputs; `llama.dll`: `src, include, ggml/include`, CMake; `ggml.dll`: `ggml`, CMake; `mtmd.dll`:
+     `examples/mtmd, include, ggml/include`, CMake; ninja relinks a DLL only when its own inputs change);
+   - with production already down, `llama-server --version` (exits in the argument parser, 30 s bound) prints the same
+     commit (`binary.version_output`).
+
+   **Freeze the worktree for the window:** the attestation runs again before Leg B's launch, so committing or editing
+   a build input (or rebuilding) mid-run refuses Leg B (the run aborts into the production-first `finally`).
+   Edits under `.lane/` are fine but should also wait.
 2. `bench/gpu-justify/<YYYYMMDD>-stateos-lane1-f11.md` committed in the Longspear repo in the TEMPLATE headings (draft
    text at the end of this file), and posted to James at launch.
 3. Quiet box: no battery/campaign on the GPU; `nvidia-smi` shows nothing else resident; nobody else on `:8099`
@@ -45,6 +71,8 @@ the list in `results.json → hard_failures` and on the last console line.
 8. The script sets `LONGSPEAR_PLE_HIST_REWIND=1` and `LONGSPEAR_PLE_HIST_LOG=1` (plus `LONGSPEAR_VERIFY_TIMING=1`,
    `LONGSPEAR_CG_REVIVE=1`) in the environment every 8101 server inherits, in both legs. It records them per server as
    `<name> env: ...` in `launch-args.txt`, and removes the two PLE switches before relaunching the standing server.
+   They are set inside the protected block, after the preflight, so a refused preflight leaves the shell's environment
+   alone.
 
 ## PLE n-gram history (merged `lane/ple-hist-rewind`)
 
@@ -79,20 +107,26 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\AI\worktrees\stateos-
 # e.g. against lane 1's receipts:  ... -DryRun -DryRunDir D:\AI\worktrees\stateos-lane1\build-stateos-l1\gpu-verify
 ```
 
-**Dry run first.** `-DryRun` exits before the preflight: it stops nothing, starts nothing, creates no directory and
-does not write the receipts. It reads the receipts in `-DryRunDir` (default this build's `gpu-verify\`): every
+**Dry run first.** `-DryRun` exits before the preflight: it stops nothing, starts nothing (not even
+`llama-server --version`), creates no directory and does not write the receipts. It does write two short-lived files
+under `%TEMP%` (`gpu-verify-dry-*.log` / `*.bin`, for the synthetic `[ple-hist]` lines and the byte-search test) and
+deletes them. It reads the receipts in `-DryRunDir` (default this build's `gpu-verify\`): every
 request/response pair recorded in `specoff.log` and `specon.log` (or one `-DryRunLog`) goes through the same parsers the
 live run uses (tokenize, completion incl. draft acceptance, save, restore, erase, /props). It also checks:
 - the `[ple-hist]` counter on each recorded log pair and on known synthetic lines;
 - draft acceptance summed over the recorded completions, and on synthetic drafted/undrafted responses;
 - that a missing response field throws an error naming the field, and the F11 restore shape (`stateos.checkpoints`);
-- the identity verdict rule on ten branches, the mechanism rule (a good leg; zero checkpoints, short `n_saved`, short
-  `n_restored`, a skipped checkpoint status and an empty output each refused) and `First-Divergence`, then every
+- the identity verdict rule on fourteen branches (including a restored run that re-prefilled while warm reused, a
+  restored `prompt_n` that differs from warm's, everything re-prefilled, and warm alone re-prefilled), the mechanism
+  rule (a good leg; zero checkpoints, short `n_saved`, short `n_restored`, a skipped checkpoint status and an empty
+  output each refused; spec on: companion `saved`/`loaded` required, a skipped companion or an unsaved one refused),
+  the attestation parsers (`build-info.cpp`, `--version`, the NUL-terminated byte search), the completion timeouts,
+  and `First-Divergence`, then every
   identity leg in the recorded `results.json` (`recorded=… now=… [reason]`, first divergence in characters), with each
   leg's warm/round-1/round-2 draft acceptance read back from the recorded responses (matched in order by text,
   `prompt_n` and `predicted_n`);
-- the binary identity of this worktree's build (read-only: SHA-256, HEAD, mtimes; the result is printed, nothing is
-  refused in a dry run);
+- the build attestation of this worktree (read-only: embedded commit, HEAD, the four SHA-256s and mtimes; the result
+  is printed, nothing is refused in a dry run);
 - the header readers on a recorded `slots\id4k.state` (and whether it carries `effective_model`).
 
 A restore recorded by a binary before `b29a940c` (lane 1's 7c77724b) has no `stateos.checkpoints` status, which the F11
@@ -190,7 +224,10 @@ production context.
     re-used exactly as much), neither the warm window (erase → warm continuation) nor the control window (erase →
     control continuation) may contain a RAM prompt-cache line (`prompt cache load` or `MTP invalidate: prompt_load`,
     either log), and the control must produce output. An invalid control counts as no control: a restored ≠ warm stays
-    `UNPROVEN`.
+    `UNPROVEN`. In practice the `prompt_n` condition is the one that can fire: every request here pins `id_slot: 0`,
+    and a pinned slot bypasses `get_available_slot`, which is where the RAM prompt cache is saved and loaded
+    (server-context.cpp `process_single_task`), so the prompt-cache-line condition is a guard that is not expected to
+    trigger (lane 1's logs contain no such line).
   - **Uncontrolled variation, recorded not removed** (`warm_control.uncontrolled`): the server-wide ngram-mod table
     and the MTP draft history grow with every request, so they differ between the first warm run and the control (and
     between the restore rounds). A valid control that disagrees shows decode nondeterminism is present; it does not
@@ -215,11 +252,16 @@ production context.
   `(Invoke-RestMethod http://127.0.0.1:8101/props).stateos`.
 - `identity_4k.verdict` and `identity_32k.verdict` = `PASS`: restored output == in-memory (warm) output, byte-exact
   text, for both restores, and `prompt_n` equal to warm's and ≤ |Z|+1 (no re-prefill). `PASS-IDENTITY /
-  REUSE-INCONCLUSIVE` means identity held but the warm run itself re-prefilled (read `prompt_n` in results.json).
+  REUSE-INCONCLUSIVE` means identity held and the restored runs reused, but the warm run alone re-prefilled (read
+  `prompt_n` in results.json).
 - **Identity verdict rule, every identity leg** (`Get-IdentityVerdict`, shared by the live run and the dry run; the
   reason is in `verdict_reason`, and in `fail_reason` for a FAIL):
   1. mechanism not met (`mechanism.ok` / `ckpt_ok` false, below) → `FAIL`, whatever the outputs;
-  2. both restored outputs == warm → `PASS` (or `PASS-IDENTITY / REUSE-INCONCLUSIVE`, above);
+  1b. **a restored run re-prefilled** → `FAIL` ("restored run re-prefilled: the restored state was not used"): a
+     restored `prompt_n` > |Z|+1, or, when warm reused, a restored `prompt_n` ≠ warm's. The server drops a restored
+     state it cannot continue from (e.g. `verify_restored_checkpoint` fails → `do_reset` → full re-prefill,
+     server-context.cpp ~4453–4501); the output would then match warm without saying anything about the restore;
+  2. both restored outputs == warm → `PASS`, or `PASS-IDENTITY / REUSE-INCONCLUSIVE` when only warm re-prefilled;
   3. restored ≠ warm with **speculation off (Leg A)** → `FAIL`. No nondeterminism allowance: lane 1's receipts show
      spec-off decode is deterministic (4K and 32K: both restored runs equal warm, and the destructive re-prefills equal
      cold), and Leg A has no warm-vs-warm control;
@@ -237,8 +279,9 @@ production context.
   (`n_saved` = |P|) with **at least one checkpoint** (`checkpoints_saved ≥ 1`, so the checkpoint restore cannot pass
   vacuously; lane 1 saved 3 / 17 / 17 / 32); every restore round has `n_restored` = |P|, status
   `stateos.checkpoints == "restored"` and `checkpoints_restored == checkpoints_saved` (≥ 1); and warm and both restored
-  runs produced output (`predicted_n > 0`, non-empty text). The rounds restore right after a short conversation (Q),
-  which is where a bound measured on the slot's current length wrongly refused or dropped checkpoints.
+  runs produced output (`predicted_n > 0`, non-empty text). Leg B (spec on) also requires the save's
+  `companion: "saved"` and every restore's `companion: "loaded"`. The rounds restore right after a short conversation
+  (Q), which is where a bound measured on the slot's current length wrongly refused or dropped checkpoints.
 - `identity_*.ple_ok` (hard) and `ple_hist.all_ok`: 0 `[ple-hist]` resets at pos > 0 and at least one
   `site=server-resume` set in every identity restore round (see "PLE n-gram history" above).
 - `refusals`: every entry `pass: true`; `soft_build.pass: true`; `slot_untouched_after_refusals.pass: true`.

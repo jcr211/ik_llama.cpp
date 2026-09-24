@@ -21,6 +21,13 @@ set "CFG_RC=%ERRORLEVEL%"
 echo configure exit=%CFG_RC%
 if not "%CFG_RC%"=="0" exit /b 12
 
+rem build-info.cpp (LLAMA_COMMIT, printed by --version and embedded in the exe) is regenerated only when its git-index
+rem dependency fires, and in this worktree that dependency is missing from build.ninja (the .git file is not resolved),
+rem so the embedded commit went stale (0c1bebea). Delete it so every build embeds the HEAD it was built from: the GPU
+rem acceptance script attests the exe against that commit.
+if exist "%SRC%\common\build-info.cpp" del /f /q "%SRC%\common\build-info.cpp"
+for /f %%h in ('git -C "%SRC%" rev-parse --short HEAD') do echo building at HEAD %%h
+
 echo ==== build
 cmake --build "%BLD%" --target llama-server test-stateos-header test-speculative-params test-ple-hist test-stateos-layout -j 12
 set "BUILD_RC=%ERRORLEVEL%"
