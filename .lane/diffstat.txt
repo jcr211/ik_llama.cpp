@@ -1,0 +1,43 @@
+e8f58bd5 docs(lane): SV2-E1 code-reading note (partial payload, list order, shadow contents, bonus token, n_past_offset)
+.lane/PROGRESS.md | 124 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+1 file changed, 124 insertions(+)
+4c0258c8 feat(server): [stateos-div] divergence telemetry behind LONGSPEAR_STATEOS_DIV_LOG=1
+examples/server/server-context.cpp | 142 ++++++++++++++++++++++++++++++--
+examples/server/server-context.h   |  19 ++++-
+examples/server/server-task.h      |   3 +
+examples/server/stateos-v2.h       | 160 +++++++++++++++++++++++++++++++++++++
+4 files changed, 314 insertions(+), 10 deletions(-)
+b0d09d9d refactor(llama): factor partial-state emission into a pure helper
+src/llama-partial-state.h    | 100 ++++++++++++++++++++++++++
+src/llama.cpp                |  73 +++++--------------
+tests/CMakeLists.txt         |   6 ++
+tests/test-partial-state.cpp | 165 +++++++++++++++++++++++++++++++++++++++++++
+4 files changed, 289 insertions(+), 55 deletions(-)
+f8fa7e91 feat(llama): capped and shadow-sourced partial writer
+common/speculative.cpp       |  18 +++-
+include/llama.h              |  43 ++++++++++
+src/llama-context.h          |  10 +++
+src/llama.cpp                | 199 +++++++++++++++++++++++++++++++++++++++++--
+tests/test-partial-state.cpp |  88 +++++++++++++++++++
+5 files changed, 350 insertions(+), 8 deletions(-)
+865ef7e7 feat(server): tail snapshot at release behind LONGSPEAR_STATEOS_TAIL_SNAPSHOT=1
+examples/server/server-context.cpp | 150 +++++++++++++++++++++++++++++++--
+examples/server/server-context.h   |   4 +
+examples/server/server-task.h      |   2 +
+examples/server/stateos-v2.h       | 165 ++++++++++++++++++++++++++++++++++++-
+4 files changed, 313 insertions(+), 8 deletions(-)
+0f919909 diag(server): tail crosscheck behind LONGSPEAR_STATEOS_TAIL_XCHECK=1
+examples/server/server-context.cpp | 153 +++++++++++++++++++++++++++++++++++--
+examples/server/server-context.h   |   7 ++
+examples/server/stateos-v2.h       | 114 +++++++++++++++++++++++++++
+3 files changed, 267 insertions(+), 7 deletions(-)
+a01586b5 test+tools: SV2-E1 unit tests, census, gate driver, build script, launchers
+build-stateos-tail.cmd              |  51 ++++++
+launch-stateos-tail-8099.ps1        |  55 ++++++
+launch-stateos-tail-xcheck-8099.ps1 |   4 +
+tests/CMakeLists.txt                |   3 +
+tests/test-stateos-tail.cpp         | 332 +++++++++++++++++++++++++++++++++
+tools/stateos-div-census.mjs        | 355 ++++++++++++++++++++++++++++++++++++
+tools/stateos-tail-gate.mjs         | 329 +++++++++++++++++++++++++++++++++
+tools/stateos-tail-tools.test.mjs   | 159 ++++++++++++++++
+8 files changed, 1288 insertions(+)

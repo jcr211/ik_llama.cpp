@@ -6,14 +6,18 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
 ## Status
 - [x] worktree created (`git worktree add -b lane/stateos-tail ... d583c220`)
 - [x] commit 0 code-reading note (this file)
-- [ ] commit 1 telemetry
-- [ ] commit 2 helper refactor + test
-- [ ] commit 3 capped/shadow writer + tests
-- [ ] commit 4 tail snapshot
-- [ ] commit 5 xcheck
-- [ ] commit 6 tests + tools + build script + launchers
-- [ ] build (compile slot granted by coordinator 09-23; stale BOX-LOCK renamed by coordinator;
-      check `tasklist` for SL-1 nvcc/cl/cmake/ninja before every compile)
+- [x] commit 1 telemetry (4c0258c8) — built (full Release build, llama-server)
+- [x] commit 2 helper refactor + test (b0d09d9d) — built, test-partial-state 14/14
+- [x] commit 3 capped/shadow writer + tests (f8fa7e91) — built, test-partial-state 41/41
+- [x] census tool written early; reproduces the order's numbers on ik-serve-8099.err.log (.lane/census-prod.txt)
+- [x] commit 4 tail snapshot (865ef7e7) — built
+- [x] commit 5 xcheck (0f919909) — built
+- [x] commit 6 tests + tools + build script + launchers (a01586b5)
+- [x] build: Release, all three targets, BUILD_STATEOS_TAIL_OK (flags are runtime env: one build covers both
+      states); test-partial-state 41/41, test-stateos-tail 65/65, node tools tests 6/6
+- [x] flag audit: `.lane/flag-audit.sh` -> `.lane/flag-audit.txt`; census: `.lane/census-prod.txt`
+- [ ] pending coordinator: merge lane/ple-hist-rewind and call llama_ple_history_set after a tail restore
+- REPORT.md: blocked by a hook for subagents; the report is returned as text to the coordinator
 
 ## Commit 0 — code-reading note (base d583c220; line numbers are the base file's)
 
@@ -119,6 +123,18 @@ For text-only caches `pos_next(n) == n` and `size_up_to_pos(p) == min(p, size)` 
 4. The per-step (SL-1) path writes `kv.cells[seq_id].pos` (llama.cpp:10024); out of scope (V2: PER_STEP
    never records `shadow_pos`).
 
+## Open items from the coordinator
+- PLE n-gram history (coordinator 09-23, from the SL-1 review): qwen4exp keeps host-side per-sequence
+  `lctx.ple_hist` that no save/restore covers; after ANY rewind (tail restore, flag-off restore, xcheck
+  replay) the first 2 re-decoded tokens get wrong PLE rows. Do NOT implement a fix here: lane
+  `lane/ple-hist-rewind` (D:/AI/worktrees/ik-ple-hist) adds `llama_ple_history_set` behind
+  `LONGSPEAR_PLE_HIST_REWIND=1`. When the coordinator says it is ready: merge it and call the setter after a
+  tail restore (history = cached tokens before the resume position). GPU-window assumption: the xcheck
+  comparison is only meaningful when BOTH paths set the history.
+
 ## Log
 - 09-23: read order, draft C1, code; coordinator renamed stale BOX-LOCK and granted a compile slot
   (SL-1 tasklist check still binding).
+- 09-23: commits 1-3 built and tested. Session hit the API limit mid commit 4; resumed. Commit 4 in progress:
+  stateos-v2.h gained eligibility/order/search/SHA-256; server-context.cpp has create_tail_snapshot();
+  still to wire: call at release before create_checkpoint, sha check in apply_checkpoint's search.

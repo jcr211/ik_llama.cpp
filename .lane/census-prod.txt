@@ -1,0 +1,10 @@
+files: D:/AI/ik_llama-qwen4exp/ik-serve-8099.err.log
+legacy: timed requests=3557 prefill=621 t/s decode=26.1 t/s busy=68855 s
+legacy restores=200 gap tokens=171023 (p50 383, p90 2324, max 3992); restores without a Cache line=0; verify failures=0
+  tail distance 1: n=167 gap tokens=161879
+  tail distance 2-5: n=1 gap tokens=991
+  tail distance 6-64: n=0 gap tokens=0
+  tail distance 65-512: n=9 gap tokens=9
+  tail distance >512: n=23 gap tokens=8144
+legacy forced full re-processing=491 (with a Cache line 491; common prefix < 64: 491; max prefix 41; prefix tokens 13421)
+stateos-div: no [stateos-div] lines
