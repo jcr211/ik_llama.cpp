@@ -176,6 +176,10 @@ struct stateos_cvec_desc {
 std::vector<std::string> stateos_cvec_parts(bool startup_live, const std::vector<stateos_cvec_desc> & startup,
                                             const std::vector<stateos_cvec_desc> & runtime);
 
+// LoRA items of effective_model ({path, scale} per loaded adapter). `live` is false while the loaded scales were never
+// applied to the context (--lora-init-without-apply until the first /lora-adapters apply): no lines then.
+std::vector<std::string> stateos_lora_parts(bool live, const std::vector<std::pair<std::string, float>> & loras);
+
 // Apply a runtime scale request ({id, scale} pairs) all-or-nothing: every id is validated first; on a bad id nothing
 // changes and false is returned. Otherwise every scale is zeroed and the requested ones set (the endpoints' semantics).
 bool stateos_apply_scales(std::vector<float> & scales, const std::vector<std::pair<int64_t, float>> & request, std::string * err);

@@ -275,6 +275,7 @@ bool server_context::load_model(const gpt_params& params_) {
 
     stateos_init_identity();
     stateos_startup_cvec_live = !params_base.control_vectors.empty();
+    stateos_lora_live = !params_base.lora_init_without_apply;
     stateos_refresh_effective(true);
 
     return true;
@@ -2796,13 +2797,14 @@ void server_context::stateos_init_identity() {
 // is not the KV of another)
 // computed only on the main loop, from what was actually applied (see stateos_refresh_effective)
 static std::string stateos_effective_model(const gpt_params & params, const std::vector<llama_lora_adapter_container> & loras,
-                                           const std::vector<control_vector_container> & cvs, bool startup_cvec_live) {
-    std::vector<std::string> parts;
+                                           const std::vector<control_vector_container> & cvs, bool lora_live,
+                                           bool startup_cvec_live) {
+    // --lora-init-without-apply loads the adapters at their scales but never applies them: no lines until SET_LORA
+    std::vector<std::pair<std::string, float>> lora_list;
     for (const auto & la : loras) {
-        if (la.scale != 0.0f) {
-            parts.push_back(string_format("lora path=%s scale=%.9g", la.path.c_str(), la.scale));
-        }
+        lora_list.emplace_back(la.path, la.scale);
     }
+    std::vector<std::string> parts = stateos_lora_parts(lora_live, lora_list);
     // --control-vector / --control-vector-scaled / --control-vector-layer-range are applied at load (never in `cvs`)
     // and stay applied only until the first runtime control-vector change replaces the context's vector
     std::vector<stateos_cvec_desc> startup;
@@ -2838,7 +2840,7 @@ static std::string stateos_effective_model(const gpt_params & params, const std:
 
 void server_context::stateos_refresh_effective(bool apply_ok) {
     stateos_effective_cur = apply_ok
-        ? stateos_effective_model(params_base, lora_adapters, control_vectors, stateos_startup_cvec_live)
+        ? stateos_effective_model(params_base, lora_adapters, control_vectors, stateos_lora_live, stateos_startup_cvec_live)
         : std::string(STATEOS_EFFECTIVE_UNKNOWN);
 }
 
@@ -3777,6 +3779,7 @@ void server_context::process_single_task(server_task&& task) {
         }
         ++stateos_adapter_gen; // KV built before this point was computed under another adapter set
         llama_lora_adapters_apply(ctx, lora_adapters);
+        stateos_lora_live = true; // the containers' scales are now what the context computes with
         stateos_refresh_effective(true);
         server_task_result result;
         result.id = task.id;

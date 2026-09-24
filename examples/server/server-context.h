@@ -361,6 +361,7 @@ struct server_context {
     // (HTTP threads may hold requests in flight).
     std::string stateos_effective_cur = "none";
     bool stateos_startup_cvec_live = false; // --control-vector* still applied (cleared by any runtime cvec change)
+    bool stateos_lora_live = true; // lora_adapters' scales are applied (false under --lora-init-without-apply until SET_LORA)
 
     void stateos_refresh_effective(bool apply_ok);
 

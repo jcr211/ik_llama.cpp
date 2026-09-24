@@ -511,6 +511,15 @@ static void test_effective_model() {
         CHECK(stateos_effective_model_value(stateos_cvec_parts(false, startup, none)) == "none");
     }
 
+    // --lora-init-without-apply: loaded at scale 1 but never applied, so no lora lines until SET_LORA (review F11-3 P2-1)
+    {
+        const std::vector<std::pair<std::string, float>> loras = { { "x.gguf", 1.0f }, { "off.gguf", 0.0f } };
+        CHECK(stateos_lora_parts(true, loras) == std::vector<std::string>({ "lora path=x.gguf scale=1" }));
+        CHECK(stateos_lora_parts(false, loras).empty());
+        CHECK(stateos_effective_model_value(stateos_lora_parts(false, loras)) == "none");
+        CHECK(stateos_effective_model_value(stateos_lora_parts(true, loras)) != "none");
+    }
+
     // a scale request is all-or-nothing: a bad id changes nothing, so the cached stamp (computed from what was applied)
     // stays true (review F11-2 P2-A)
     {

@@ -592,6 +592,19 @@ std::vector<std::string> stateos_cvec_parts(bool startup_live, const std::vector
     return parts;
 }
 
+std::vector<std::string> stateos_lora_parts(bool live, const std::vector<std::pair<std::string, float>> & loras) {
+    std::vector<std::string> parts;
+    if (!live) {
+        return parts;
+    }
+    for (const auto & la : loras) {
+        if (la.second != 0.0f) {
+            parts.push_back("lora path=" + la.first + " scale=" + stateos_fmt_g(la.second));
+        }
+    }
+    return parts;
+}
+
 bool stateos_apply_scales(std::vector<float> & scales, const std::vector<std::pair<int64_t, float>> & request, std::string * err) {
     for (const auto & r : request) {
         if (r.first < 0 || r.first >= (int64_t) scales.size()) {
