@@ -3694,6 +3694,41 @@ void server_context::create_checkpoint_at_interval(server_slot & slot, uint8_t o
     }
 }
 
+// LONGSPEAR State-OS v2: hex sha256 of the token ids [0, n) as int32 little-endian. `media` is set when a
+// media placeholder (LLAMA_TOKEN_NULL) is among them (then index != position).
+static std::string stateos_prefix_sha(const server_tokens & toks, int64_t n, bool & media) {
+    stateos_sha256 h;
+    uint8_t buf[4096];
+    size_t nb = 0;
+    media = false;
+    for (int64_t i = 0; i < n; ++i) {
+        const uint32_t t = (uint32_t) toks[(size_t) i];
+        if ((llama_token) t == LLAMA_TOKEN_NULL) {
+            media = true;
+        }
+        buf[nb++] = (uint8_t) t;
+        buf[nb++] = (uint8_t) (t >> 8);
+        buf[nb++] = (uint8_t) (t >> 16);
+        buf[nb++] = (uint8_t) (t >> 24);
+        if (nb == sizeof(buf)) {
+            h.update(buf, nb);
+            nb = 0;
+        }
+    }
+    h.update(buf, nb);
+    return stateos_hex(h.digest());
+}
+
+// LONGSPEAR State-OS v2 (M8): a tail snapshot is valid only while the cache still holds the token prefix
+// it was built from (the RAM prompt cache or a slot restore can swap the cache under the list).
+static bool stateos_tail_matches(const server_slot & slot, const server_prompt_checkpoint & ckpt) {
+    if (ckpt.n_tokens <= 0 || ckpt.n_tokens > slot.cache_tokens.n_tokens()) {
+        return false;
+    }
+    bool media = false;
+    return !ckpt.tail_sha.empty() && stateos_prefix_sha(slot.cache_tokens, ckpt.n_tokens, media) == ckpt.tail_sha && !media;
+}
+
 // LONGSPEAR State-OS v2: tokens [center-2, center+2] as `id:"piece"`, the token at center marked '*'.
 static std::string stateos_token_window(llama_context * ctx, const server_tokens & toks, int32_t center) {
     std::string out = "[";
@@ -3755,12 +3790,22 @@ void server_context::apply_checkpoint(server_slot & slot) {
             double      stateos_restore_ms     = 0.0;
             const char * stateos_outcome       = "reset:no-checkpoint";
 
-            // search for a context checkpoint
-            const auto it = std::find_if(
-                slot.server_cached_prompt.checkpoints.rbegin(),
-                slot.server_cached_prompt.checkpoints.rend(),
-                [&](const auto & cur) {
-                    return cur.pos_max < (is_dsv4 || is_openpangu ? pos_next : pos_min_thold);
+            // search for a context checkpoint (newest with pos_max below the threshold). A tail snapshot
+            // (LONGSPEAR_STATEOS_TAIL_SNAPSHOT=1 only) must still match the cached token prefix it was
+            // built from (M8); a mismatch is reported and skipped, never restored.
+            const auto it = stateos_find_restore(
+                slot.server_cached_prompt.checkpoints,
+                is_dsv4 || is_openpangu ? pos_next : pos_min_thold,
+                [&](const server_prompt_checkpoint & cur) {
+                    if (cur.origin != STATEOS_ORIGIN_TAIL) {
+                        return true;
+                    }
+                    if (stateos_tail_matches(slot, cur)) {
+                        return true;
+                    }
+                    fprintf(stderr, "[stateos-div] event=tail_sha_mismatch slot=%d task=%d pos_max=%d n_tokens=%" PRId64 " cache_n=%d\n",
+                        slot.id, slot.id_task, cur.pos_max, cur.n_tokens, slot.cache_tokens.n_tokens());
+                    return false;
                 }
             );
 
@@ -3967,6 +4012,95 @@ bool server_context::create_checkpoint(server_slot & slot, uint8_t origin) {
         }
     }
     return do_checkpoint;
+}
+
+void server_context::create_tail_snapshot(server_slot & slot) {
+    const int64_t t_start = ggml_time_us();
+    auto & ckpts = slot.server_cached_prompt.checkpoints;
+
+    stateos_tail_input in;
+    in.flag              = true;
+    in.defrag_on         = params_base.defrag_thold >= 0.0f;
+    in.per_step          = llama_spec_ckpt_fixed_mode(ctx) == LLAMA_SPEC_CKPT_PER_STEP;
+    in.shadow_pos        = llama_spec_ckpt_shadow_pos(ctx, slot.id);
+    in.last_ckpt_pos_max = ckpts.empty() ? -1 : ckpts.back().pos_max;
+    in.cache_pos_max     = llama_kv_cache_seq_pos_max(slot.ctx, slot.id);
+
+    auto skip = [&](const char * cause) {
+        fprintf(stderr, "[stateos-div] event=tail_skip slot=%d task=%d cause=%s shadow_pos=%d cache_pos_max=%d last_ckpt_pos_max=%d n_ckpt=%d\n",
+            slot.id, slot.id_task, cause, in.shadow_pos, in.cache_pos_max, in.last_ckpt_pos_max, (int) ckpts.size());
+    };
+
+    // text-only cache: index == position, so the prefix [0, shadow_pos] is shadow_pos + 1 tokens
+    const int64_t n_tokens = (int64_t) in.shadow_pos + 1;
+    stateos_tail_verdict v = stateos_tail_eligibility(in);
+    std::string sha;
+    if (v.eligible) {
+        if (n_tokens > slot.cache_tokens.n_tokens()) {
+            v = { false, "cache-short" };
+        } else {
+            bool media = false;
+            sha = stateos_prefix_sha(slot.cache_tokens, n_tokens, media);
+            in.media = media;
+            v = stateos_tail_eligibility(in);
+        }
+    }
+    if (v.eligible && !stateos_is_ascending(ckpts)) {
+        v = { false, "order" };
+    }
+    if (!v.eligible) {
+        skip(v.cause);
+        return;
+    }
+
+    // one writer, capped metadata + shadow rows (M1); a size mismatch skips, never aborts
+    const size_t size = llama_state_seq_get_size_ext(ctx, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY, in.shadow_pos, LLAMA_STATE_SEQ_SOURCE_SPEC_SHADOW);
+    if (size == 0) {
+        skip("refused");
+        return;
+    }
+    server_prompt_checkpoint tail;
+    tail.data.resize(size);
+    const size_t n = llama_state_seq_get_data_ext(ctx, tail.data.data(), size, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY, in.shadow_pos, LLAMA_STATE_SEQ_SOURCE_SPEC_SHADOW);
+    if (n != size) {
+        skip("size-mismatch");
+        return;
+    }
+    tail.pos_min        = in.shadow_pos;
+    tail.pos_max        = in.shadow_pos;
+    tail.pos_min_prompt = in.shadow_pos + slot.n_past_offset;
+    tail.pos_max_prompt = in.shadow_pos + slot.n_past_offset;
+    tail.n_tokens       = n_tokens;
+    tail.origin         = STATEOS_ORIGIN_TAIL;
+    tail.tail_sha       = sha;
+
+    // the existing list and cap (ctx_checkpoints_n), same eviction as create_checkpoint; no new RAM budget.
+    // Room is made for the release checkpoint too: otherwise its variance eviction would pick the tail,
+    // whose gap to the release checkpoint is the smallest in the list.
+    const size_t n_keep = params_base.ctx_checkpoints_n > 1 ? (size_t) params_base.ctx_checkpoints_n - 1 : 1;
+    while (ckpts.size() >= n_keep) {
+        auto it = ckpts.begin();
+        if (params_base.ctx_checkpoint_eviction == COMMON_CHECKPOINT_EVICTION_VARIANCE ||
+            params_base.ctx_checkpoint_eviction == COMMON_CHECKPOINT_EVICTION_AUTO) {
+            it = evict_checkpoint_by_variance(slot, ckpts);
+        }
+        SLT_WRN(slot, "erasing old context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
+            it->pos_min, it->pos_max, it->n_tokens, (float) it->data.size() / 1024 / 1024);
+        ckpts.erase(it);
+    }
+    ckpts.push_back(std::move(tail));
+
+    // M4: apply_checkpoint's reverse search needs the list ascending (checked, never aborts)
+    if (!stateos_is_ascending(ckpts)) {
+        ckpts.pop_back();
+        skip("order");
+        return;
+    }
+
+    const auto & cur = ckpts.back();
+    fprintf(stderr, "[stateos-div] event=create slot=%d task=%d origin=tail pos_min=%d pos_max=%d n_tokens=%" PRId64 " bytes=%zu ms=%.2f n_ckpt=%d cache_pos_max=%d\n",
+        slot.id, slot.id_task, cur.pos_min, cur.pos_max, cur.n_tokens, cur.data.size(),
+        (ggml_time_us() - t_start) / 1000.0, (int) ckpts.size(), in.cache_pos_max);
 }
 
 void server_context::batch_pending_prompt(const int32_t n_ubatch, const int32_t n_batch,  int32_t & batch_type) {
@@ -4558,6 +4692,10 @@ void server_context::release_slot_after_final_response(server_slot & slot) {
         slot.stateos_round_stop_idx = -1;
     }
     if (params_base.do_checkpoint) {
+        if (stateos_tail_snapshot()) {
+            // before the release checkpoint, so the list stays ascending (M4)
+            create_tail_snapshot(slot);
+        }
         create_checkpoint(slot, STATEOS_ORIGIN_RELEASE);
     }
     slot.release();

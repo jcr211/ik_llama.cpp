@@ -411,5 +411,9 @@ struct server_context {
 
     void create_checkpoint_at_interval(server_slot & slot, uint8_t origin);
 
+    // LONGSPEAR State-OS v2 (C1): LONGSPEAR_STATEOS_TAIL_SNAPSHOT=1 only; appends a checkpoint built from
+    // the speculative shadow (state before the final verify round) ahead of the release checkpoint
+    void create_tail_snapshot(server_slot & slot);
+
     void release_slot_after_final_response(server_slot & slot);
 };

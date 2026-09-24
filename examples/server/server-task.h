@@ -363,6 +363,8 @@ struct server_prompt_checkpoint {
 
     // LONGSPEAR State-OS v2: stateos_ckpt_origin (stateos-v2.h). Not serialized.
     uint8_t origin = 0;
+    // tail snapshots only: hex sha256 of the cached token ids [0, n_tokens), checked before a restore
+    std::string tail_sha;
 
     size_t size() const {
         return data.size();
