@@ -85,6 +85,8 @@ export function newCensus() {
       xcheck: [],
       xcheckSkips: {},
     },
+    ple: { sets: 0, setsBySite: {}, resetsAtPos0: 0, resetsAfterPos0: 0 },
+    cudaErrors: 0,
     _last: null,
     _tailPending: new Map(),
   };
@@ -125,6 +127,22 @@ export function feed(c, line) {
     }
     if (f.event && f.event.startsWith("tail")) c.v2.tailEvents += 1;
     return;
+  }
+  if (line.startsWith("[ple-hist]")) {
+    // LONGSPEAR_PLE_HIST_LOG=1: "set ... site=X" at every rewind site, "reset seq= pos= next_pos="
+    // when the input builder had to restart the history at pos > 0 (a rewind nothing repaired)
+    const f = parseFields(line);
+    if (/^\[ple-hist\] set /.test(line)) {
+      c.ple.sets += 1;
+      c.ple.setsBySite[f.site ?? "?"] = (c.ple.setsBySite[f.site ?? "?"] ?? 0) + 1;
+    } else if (/^\[ple-hist\] reset /.test(line)) {
+      if (num(f.pos) > 0) c.ple.resetsAfterPos0 += 1;
+      else c.ple.resetsAtPos0 += 1;
+    }
+    return;
+  }
+  if (/CUDA error/.test(line)) {
+    c.cudaErrors += 1;
   }
   if (line.startsWith("[ckpt-xcheck]")) {
     const f = parseFields(line);
@@ -267,7 +285,96 @@ export function summarize(c) {
       bitEqualRows: V.xcheck.filter((x) => x.n !== null && x.nBitequal === x.n).length,
     },
   };
-  return { legacy, v2 };
+  return { legacy, v2, ple: c.ple, cudaErrors: c.cudaErrors };
+}
+
+const miss = (name, ok, detail) => ({ name, ok: Boolean(ok), detail });
+
+/**
+ * W-SV2 mechanism checks (merged plan section 4) on one step's summary; step 3 compares P0 with T1.
+ * Every step also requires the PLE history repair to be armed and complete: at least one
+ * "[ple-hist] set" line (LONGSPEAR_PLE_HIST_REWIND=1 + LONGSPEAR_PLE_HIST_LOG=1) and zero
+ * "[ple-hist] reset" at pos > 0, and zero CUDA error lines.
+ */
+export function checkStep(step, s, p0 = null) {
+  const V = s.v2;
+  const T = V.lastToken;
+  const checks = [
+    miss("ple-hist armed", s.ple.sets > 0, `[ple-hist] set lines=${s.ple.sets}`),
+    miss(
+      "ple-hist reset at pos > 0 == 0",
+      s.ple.resetsAfterPos0 === 0,
+      `resets=${s.ple.resetsAfterPos0}`,
+    ),
+    miss("CUDA errors == 0", s.cudaErrors === 0, `lines=${s.cudaErrors}`),
+  ];
+  if (step === "step1") {
+    checks.push(
+      miss("divergence events > 0", V.divergenceEvents > 0, `events=${V.divergenceEvents}`),
+    );
+    checks.push(
+      miss("last-token share >= 0.20", (T.shareOfEvents ?? 0) >= 0.2, `share=${T.shareOfEvents}`),
+    );
+    checks.push(
+      miss(
+        "last-token after a drafted round with >= 1 accepted >= 0.50",
+        (T.shareAfterDraftedRoundWithAccepted ?? 0) >= 0.5,
+        `share=${T.shareAfterDraftedRoundWithAccepted}`,
+      ),
+    );
+  } else if (step === "step2") {
+    checks.push(
+      miss(
+        "tail available on >= 1 last-token divergence",
+        T.withTailAvailable > 0,
+        `n=${T.withTailAvailable}`,
+      ),
+    );
+    checks.push(
+      miss(
+        "origin=tail restores >= 0.90 of eligible",
+        (T.tailHitRate ?? 0) >= 0.9,
+        `rate=${T.tailHitRate}`,
+      ),
+    );
+    checks.push(
+      miss(
+        "size mismatches == 0",
+        (V.tailSkips["size-mismatch"] ?? 0) === 0,
+        JSON.stringify(V.tailSkips),
+      ),
+    );
+    checks.push(miss("sha mismatches == 0", V.tailShaMismatch === 0, `n=${V.tailShaMismatch}`));
+    checks.push(
+      miss(
+        "verify failures == 0",
+        s.legacy.verifyFailures === 0 && (V.byOutcome["reset:verify-failed"] ?? 0) === 0,
+        `legacy=${s.legacy.verifyFailures} v2=${V.byOutcome["reset:verify-failed"] ?? 0}`,
+      ),
+    );
+  } else if (step === "step3") {
+    if (!p0) throw new Error("step3 needs the P0 summary");
+    const before = p0.v2.lastToken.gapTokens;
+    const after = T.gapTokens;
+    checks.push(miss("P0 has last-token gap tokens", before > 0, `P0=${before}`));
+    checks.push(
+      miss(
+        "T1 last-token gap tokens >= 90% below P0",
+        before > 0 && after <= 0.1 * before,
+        `P0=${before} T1=${after}`,
+      ),
+    );
+    checks.push(
+      miss(
+        "P0 ple-hist armed and clean",
+        p0.ple.sets > 0 && p0.ple.resetsAfterPos0 === 0,
+        `sets=${p0.ple.sets} resets=${p0.ple.resetsAfterPos0}`,
+      ),
+    );
+  } else {
+    throw new Error(`unknown step ${step}`);
+  }
+  return { step, pass: checks.every((c) => c.ok), checks };
 }
 
 export async function censusOfFiles(files) {
@@ -298,6 +405,9 @@ export function renderText(files, s) {
   }
   out.push(
     `legacy forced full re-processing=${L.forced} (with a Cache line ${L.forcedWithPrefix}; common prefix < 64: ${L.forcedPrefixLt64}; max prefix ${fmt(L.forcedPrefixMax)}; prefix tokens ${L.forcedPrefixTokens})`,
+  );
+  out.push(
+    `ple-hist: set lines=${s.ple.sets} ${JSON.stringify(s.ple.setsBySite)}; resets at pos > 0=${s.ple.resetsAfterPos0} (at pos 0: ${s.ple.resetsAtPos0}); CUDA error lines=${s.cudaErrors}`,
   );
   const V = s.v2;
   if (V.divergenceEvents === 0 && Object.keys(V.creates).length === 0) {
@@ -332,11 +442,27 @@ export function renderText(files, s) {
   return out.join("\n");
 }
 
+// Usage: [--json] [log ...] | --check step1|step2 <log> | --check step3 --p0 <P0 log> <T1 log>
+// --check exits 2 on any miss (the chain script's auto-stop), 0 when every check passes.
 async function main(argv) {
   const json = argv.includes("--json");
-  const files = argv.filter((a) => a !== "--json");
+  const ci = argv.indexOf("--check");
+  const pi = argv.indexOf("--p0");
+  const step = ci >= 0 ? argv[ci + 1] : null;
+  const p0File = pi >= 0 ? argv[pi + 1] : null;
+  const skip = new Set([...(ci >= 0 ? [ci, ci + 1] : []), ...(pi >= 0 ? [pi, pi + 1] : [])]);
+  const files = argv.filter((a, i) => a !== "--json" && !skip.has(i));
   if (!files.length) files.push(DEFAULT_LOG);
   const s = await censusOfFiles(files);
+  if (step) {
+    const p0 = p0File ? await censusOfFiles([p0File]) : null;
+    const r = checkStep(step, s, p0);
+    for (const c of r.checks)
+      process.stdout.write(`${c.ok ? "PASS" : "MISS"} ${c.name}: ${c.detail}\n`);
+    process.stdout.write(`${step}: ${r.pass ? "PASS" : "STOP"}\n`);
+    process.exitCode = r.pass ? 0 : 2;
+    return;
+  }
   if (json) {
     process.stdout.write(`${JSON.stringify({ files, ...s }, null, 2)}\n`);
   } else {

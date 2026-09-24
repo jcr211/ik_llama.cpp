@@ -15,6 +15,10 @@
 // Arms (one server launch each, speculation config identical, flags per arm):
 //   A0 flag off, A1 flag-off repeat (fresh process, determinism control), C flag on
 //   (LONGSPEAR_STATEOS_TAIL_SNAPSHOT=1), benign A5 (-no-fmoe -no-fug) and A3 (-fa 0) flag off.
+//   Launch every arm through launch-stateos-tail-8099.ps1: it sets LONGSPEAR_PLE_HIST_REWIND=1 and
+//   LONGSPEAR_PLE_HIST_LOG=1 in all of them, so the arms differ only in the tail lever. Check each
+//   arm's log with `node tools/stateos-div-census.mjs --check step2 <log>` style gates: any
+//   "[ple-hist] reset" at pos > 0 means a rewind the history repair missed.
 //
 // Usage:
 //   node tools/stateos-tail-gate.mjs run --arm A0 --out <dir> [--url http://127.0.0.1:8099]

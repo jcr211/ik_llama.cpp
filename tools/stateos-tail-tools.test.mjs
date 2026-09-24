@@ -6,7 +6,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 
-import { bucketOf, feed, newCensus, parseFields, summarize } from "./stateos-div-census.mjs";
+import {
+  bucketOf,
+  checkStep,
+  feed,
+  newCensus,
+  parseFields,
+  summarize,
+} from "./stateos-div-census.mjs";
 import { DEFAULT_LIB, forcedPrompt, score } from "./stateos-tail-gate.mjs";
 
 test("bucketOf matches the C++ buckets", () => {
@@ -111,6 +118,71 @@ test("stateos-div lines: tail availability, hit rate, gaps, crosscheck rows", ()
   assert.equal(s.xcheck.rows, 1);
   assert.equal(s.xcheck.relL2Max, 0.05);
   assert.deepEqual(s.xcheck.skips, { "flag-off-reset": 1 });
+});
+
+test("ple-hist lines and the step checks (auto-stop)", () => {
+  const armed = [
+    "[ple-hist] set seq=0 next_pos=1996 n_prev=2 site=server-resume",
+    "[ple-hist] reset seq=0 pos=0 next_pos=-1",
+  ];
+  const c = newCensus();
+  for (const l of armed) feed(c, l);
+  feed(
+    c,
+    "[stateos-div] event=create slot=0 task=6 origin=tail pos_min=1995 pos_max=1995 n_tokens=1996 bytes=1 ms=1 n_ckpt=2",
+  );
+  feed(
+    c,
+    restore(
+      "chosen_origin=tail chosen_pos_max=1995 gap=3 restore_ms=12 reason=tail outcome=restored",
+    ),
+  );
+  let s = summarize(c);
+  assert.equal(s.ple.sets, 1);
+  assert.equal(s.ple.resetsAtPos0, 1);
+  assert.equal(s.ple.resetsAfterPos0, 0);
+  assert.equal(checkStep("step1", s).pass, true);
+  assert.equal(checkStep("step2", s).pass, true);
+
+  // an unrepaired rewind stops the chain
+  feed(c, "[ple-hist] reset seq=0 pos=1996 next_pos=2001");
+  s = summarize(c);
+  const r = checkStep("step2", s);
+  assert.equal(r.pass, false);
+  assert.equal(r.checks.find((x) => x.name.startsWith("ple-hist reset")).ok, false);
+
+  // the repair not armed (no set lines) also stops it, and so does a CUDA error
+  const bare = newCensus();
+  feed(
+    bare,
+    restore(
+      "chosen_origin=tolerance chosen_pos_max=1700 gap=298 restore_ms=12 reason=tolerance outcome=restored",
+    ),
+  );
+  feed(bare, "CUDA error: an illegal memory access was encountered");
+  const b = summarize(bare);
+  assert.equal(b.cudaErrors, 1);
+  assert.equal(checkStep("step1", b).pass, false);
+
+  // step 3: T1's last-token gap tokens must be >= 90% below P0's
+  const p0 = newCensus();
+  for (const l of armed) feed(p0, l);
+  feed(
+    p0,
+    restore(
+      "chosen_origin=tolerance chosen_pos_max=1700 gap=298 restore_ms=12 reason=tolerance outcome=restored",
+    ),
+  );
+  const t1 = newCensus();
+  for (const l of armed) feed(t1, l);
+  feed(
+    t1,
+    restore(
+      "chosen_origin=tail chosen_pos_max=1995 gap=3 restore_ms=12 reason=tail outcome=restored",
+    ),
+  );
+  assert.equal(checkStep("step3", summarize(t1), summarize(p0)).pass, true);
+  assert.equal(checkStep("step3", summarize(p0), summarize(p0)).pass, false);
 });
 
 test("forcedPrompt replaces the last cached generated token", () => {

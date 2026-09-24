@@ -16,7 +16,30 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
 - [x] build: Release, all three targets, BUILD_STATEOS_TAIL_OK (flags are runtime env: one build covers both
       states); test-partial-state 41/41, test-stateos-tail 65/65, node tools tests 6/6
 - [x] flag audit: `.lane/flag-audit.sh` -> `.lane/flag-audit.txt`; census: `.lane/census-prod.txt`
-- [ ] pending coordinator: merge lane/ple-hist-rewind and call llama_ple_history_set after a tail restore
+- [x] merged lane/ple-hist-rewind (b54ba500; conflict only in tests/CMakeLists.txt). Code check:
+      - tail restore (flag on) and the flag-off restore both end in apply_checkpoint -> keep_first(n_past)
+        -> the server-resume choke point in batch_pending_prompt (n_prompt_tokens_processed == 0, p0 > 0),
+        which rebuilds the history from cache_tokens[n_past - n_hist, n_past) at p0. Covered, no extra call.
+      - xcheck replays (tail -> X, ref -> X) decode inside apply_checkpoint, outside the choke point:
+        stateos_decode_cached now calls common_ple_history_set(site=stateos-xcheck) before each replay.
+        The xcheck ends by restoring the ref checkpoint, which then passes the choke point. Covered.
+      - tail snapshot now also skips with cause=system-prompt (positions offset by system tokens).
+- [x] rebuilt; unit tests with CUDA_VISIBLE_DEVICES=-1: test-partial-state 41/41, test-stateos-tail 65/65,
+      test-ple-hist all passed, node tools 7/7
+- [x] launchers set LONGSPEAR_PLE_HIST_REWIND=1 + LONGSPEAR_PLE_HIST_LOG=1 in every arm; census has
+      `--check step1|step2|step3` (exit 2 = stop) incl. `[ple-hist] reset` at pos > 0 == 0 and "armed"
+
+## GPU-window assumptions (W-SV2)
+- Every arm (P0, T1, A0, A1, C, A5, A3, probe) launches via launch-stateos-tail-8099.ps1, so all run
+  with LONGSPEAR_PLE_HIST_REWIND=1 and LONGSPEAR_PLE_HIST_LOG=1; arms differ only in the tail lever
+  (and the benign-arm ExtraArgs).
+- Chain auto-stop after each step/row: `node tools/stateos-div-census.mjs --check stepN <log>`
+  (step3: `--check step3 --p0 <P0 log> <T1 log>`). Mechanism checks in every step: at least one
+  `[ple-hist] set` line (repair armed), zero `[ple-hist] reset` at pos > 0 (no unrepaired rewind), zero
+  CUDA error lines; plus the step's own criteria from merged plan section 4.
+- The xcheck relL2 is only meaningful with the repair on in both paths (it is: the tail replay, the ref
+  replay and the final resume all set the history).
+- PCIe replay counter before/after stays the coordinator's (not in the log).
 - REPORT.md: blocked by a hook for subagents; the report is returned as text to the coordinator
 
 ## Commit 0 — code-reading note (base d583c220; line numbers are the base file's)

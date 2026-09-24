@@ -3,6 +3,7 @@
 # 192K, -ncmoe 37), binary from this lane's build-stateos-tail. The API key is read from
 # D:\AI\llama-swap\config.yaml at launch, never stored here.
 #
+# Always set: LONGSPEAR_PLE_HIST_REWIND=1 and LONGSPEAR_PLE_HIST_LOG=1 (every arm, see below).
 # State-OS v2 flags (all unset unless a switch is given, so inherited values cannot leak in):
 #   -DivLog  LONGSPEAR_STATEOS_DIV_LOG=1        [stateos-div] telemetry
 #   -Tail    LONGSPEAR_STATEOS_TAIL_SNAPSHOT=1  tail snapshot at release (C1)
@@ -32,6 +33,11 @@ $key = $m.Groups[1].Value
 # the standing launcher's env, then the State-OS v2 flags exactly as requested
 $env:LONGSPEAR_VERIFY_TIMING = '1'
 $env:LONGSPEAR_CG_REVIVE = '1'
+# PLE n-gram history repair after every rewind (lane/ple-hist-rewind), in EVERY W-SV2 arm, flag-off
+# arms included, so the arms differ only in the tail lever; its log feeds the chain's mechanism check
+# ([ple-hist] reset at pos > 0 must stay 0: tools/stateos-div-census.mjs --check)
+$env:LONGSPEAR_PLE_HIST_REWIND = '1'
+$env:LONGSPEAR_PLE_HIST_LOG = '1'
 Remove-Item Env:LONGSPEAR_OP_CENSUS -ErrorAction SilentlyContinue
 Remove-Item Env:LONGSPEAR_CG_DEBUG -ErrorAction SilentlyContinue
 Remove-Item Env:LONGSPEAR_CG_DEBUG2 -ErrorAction SilentlyContinue
@@ -52,4 +58,4 @@ if ($ExtraArgs -ne '') { $argsx = $argsx + ' ' + $ExtraArgs }
 Start-Process -FilePath $exe -ArgumentList $argsx -WindowStyle Hidden `
     -RedirectStandardOutput ("D:\AI\ik_llama-qwen4exp\" + $LogStem + ".out.log") `
     -RedirectStandardError ("D:\AI\ik_llama-qwen4exp\" + $LogStem + ".err.log")
-Write-Output ("stateos-tail-8099-launched divlog=" + [int][bool]$DivLog + " tail=" + [int][bool]$Tail + " xcheck=" + [int][bool]$Xcheck + " extra='" + $ExtraArgs + "' log=" + $LogStem)
+Write-Output ("stateos-tail-8099-launched divlog=" + [int][bool]$DivLog + " tail=" + [int][bool]$Tail + " xcheck=" + [int][bool]$Xcheck + " ple_hist_rewind=1 ple_hist_log=1 extra='" + $ExtraArgs + "' log=" + $LogStem)

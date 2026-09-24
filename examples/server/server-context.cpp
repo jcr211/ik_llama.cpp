@@ -4053,6 +4053,10 @@ void server_context::create_tail_snapshot(server_slot & slot) {
     // text-only cache: index == position, so the prefix [0, shadow_pos] is shadow_pos + 1 tokens
     const int64_t n_tokens = (int64_t) in.shadow_pos + 1;
     stateos_tail_verdict v = stateos_tail_eligibility(in);
+    if (v.eligible && !system_tokens.empty()) {
+        // positions are offset by the system prompt: cache index != position
+        v = { false, "system-prompt" };
+    }
     std::string sha;
     if (v.eligible) {
         if (n_tokens > slot.cache_tokens.n_tokens()) {
@@ -4129,6 +4133,16 @@ void server_context::create_tail_snapshot(server_slot & slot) {
 static bool stateos_decode_cached(llama_context * ctx, const server_slot & slot, llama_pos from, llama_pos to) {
     if (to < from) {
         return true;
+    }
+    // this replay starts right after a state restore, outside the server's resume choke point in
+    // batch_pending_prompt: set the PLE n-gram history for `from` here (LONGSPEAR_PLE_HIST_REWIND=1)
+    {
+        const int32_t n_hist = llama_ple_history_len(ctx);
+        std::vector<llama_token> prev;
+        for (llama_pos p = std::max<llama_pos>(0, from - n_hist); p < from; ++p) {
+            prev.push_back(slot.cache_tokens[(size_t) p]);
+        }
+        common_ple_history_set(ctx, slot.id, prev.data(), (int32_t) prev.size(), from, "stateos-xcheck");
     }
     const int32_t n_batch = (int32_t) llama_n_batch(ctx);
     llama_batch b = llama_batch_init(n_batch, 0, 1);

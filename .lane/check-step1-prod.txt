@@ -1,0 +1,7 @@
+MISS ple-hist armed: [ple-hist] set lines=0
+PASS ple-hist reset at pos > 0 == 0: resets=0
+PASS CUDA errors == 0: lines=0
+MISS divergence events > 0: events=0
+MISS last-token share >= 0.20: share=null
+MISS last-token after a drafted round with >= 1 accepted >= 0.50: share=null
+step1: STOP

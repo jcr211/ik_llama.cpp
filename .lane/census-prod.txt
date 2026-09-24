@@ -7,4 +7,5 @@ legacy restores=200 gap tokens=171023 (p50 383, p90 2324, max 3992); restores wi
   tail distance 65-512: n=9 gap tokens=9
   tail distance >512: n=23 gap tokens=8144
 legacy forced full re-processing=491 (with a Cache line 491; common prefix < 64: 491; max prefix 41; prefix tokens 13421)
+ple-hist: set lines=0 {}; resets at pos > 0=0 (at pos 0: 0); CUDA error lines=0
 stateos-div: no [stateos-div] lines
