@@ -141,6 +141,9 @@ const TAIL_HIT =
 const FLAG_OFF =
   "chosen_origin=tolerance chosen_pos_max=1700 gap=298 restore_ms=12 reason=tolerance outcome=restored";
 
+const XCHECK_ROW =
+  "[ckpt-xcheck] origin=tail slot=0 task=8 x=1998 tail_pos=1995 ref_origin=gen-interval ref_pos=1800 layer=3 type=0 n_bitequal=10 n=20 relL2=0.05";
+
 const census = (lines) => {
   const c = newCensus();
   for (const l of lines) feed(c, l);
@@ -148,7 +151,8 @@ const census = (lines) => {
 };
 
 test("ple-hist lines, CUDA errors and the step-1/step-2 checks", () => {
-  let s = census([...ARMED, TAIL_CREATE, restore(TAIL_HIT)]);
+  // a step-2 probe runs with the crosscheck: its log carries [ckpt-xcheck] rows
+  let s = census([...ARMED, TAIL_CREATE, restore(TAIL_HIT), XCHECK_ROW]);
   assert.equal(s.ple.sets, 1);
   assert.equal(s.ple.resetsAtPos0, 1);
   assert.equal(s.ple.resetsAfterPos0, 0);
@@ -601,6 +605,16 @@ test("mislaunched runs are VOID; a CUDA error is STOP even when the step would b
   // a step-2 probe launched without -Tail
   const noTail = census([...ARMED, ...Array.from({ length: 6 }, () => restore(FLAG_OFF))]);
   assert.equal(checkStep("step2", noTail).verdict, "VOID");
+  // a step-2 probe launched with the tail but without the crosscheck (TAIL_XCHECK unset)
+  const tailOnly = census([...ARMED, TAIL_CREATE, restore(TAIL_HIT)]);
+  const r2 = checkStep("step2", tailOnly);
+  assert.equal(r2.verdict, "VOID");
+  assert.ok(r2.checks.find((c) => /crosscheck on/.test(c.name) && !c.ok));
+  // the same probe with the crosscheck on passes
+  assert.equal(
+    checkStep("step2", census([...ARMED, TAIL_CREATE, restore(TAIL_HIT), XCHECK_ROW])).verdict,
+    "PASS",
+  );
   // CUDA error wins over VOID
   const crashed = census([
     ...ARMED,

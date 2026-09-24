@@ -103,7 +103,11 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
   - Status: compatible-at-horizon PASS (exit 0); shellWorse, not-engaged:tails-not-used, cuda-errors,
     shell-errors STOP (2); insufficient-sample, void-determinism, mislaunched:xcheck,
     not-engaged:no-eligible-prompts VOID (3) - the gate did not answer, not a C1 kill.
-  - Step 2 VOID ("mislaunched") when the probe ran with the tail off.
+  - Step 2 VOID ("mislaunched") when the probe ran with the tail off OR with the crosscheck off (the probe
+    is TAIL_SNAPSHOT=1 TAIL_XCHECK=1 DIV_LOG=1; crosscheck on = [ckpt-xcheck] rows/skips or
+    *:xcheck-flag-off outcomes in its log).
+  - Step-3 floors (coordinator ruling): floor_T1 on the left, floor_P0 inside the bracket, each from its
+    own run's lines.
   - The slot erase before each prompt is a NO-OP in W-SV2 (/slots/:id exists only with --slot-save-path,
     which the launcher does not pass), so request A of prompt k+1 runs on prompt k's cache. Harmless: request
     A never chooses a tail (a tail sits at <= last cached - 2 of the previous generation, A diverges near the

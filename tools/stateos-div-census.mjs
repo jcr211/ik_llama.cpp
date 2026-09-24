@@ -450,7 +450,15 @@ export function checkStep(step, s, p0 = null) {
       ),
     );
   } else if (step === "step2") {
-    // the probe must run with the tail on (-Tail -Xcheck -DivLog); otherwise it was mislaunched
+    // the probe is TAIL_SNAPSHOT=1 TAIL_XCHECK=1 DIV_LOG=1 (launch-stateos-tail-xcheck-8099.ps1); the
+    // tail off or the crosscheck off means it was mislaunched
+    checks.push(
+      voidCheck(
+        "mislaunched? the probe ran with the crosscheck on",
+        V.xcheckActive,
+        `[ckpt-xcheck] rows=${V.xcheck.rows} skips=${JSON.stringify(V.xcheck.skips)} outcomes=${JSON.stringify(V.byOutcome)}`,
+      ),
+    );
     checks.push(
       voidCheck(
         "mislaunched? the probe ran with the tail on",
