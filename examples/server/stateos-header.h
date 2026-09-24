@@ -169,6 +169,17 @@ bool stateos_tokens_in_vocab(const int32_t * ids, size_t n, int32_t n_vocab, siz
 // llama_kv_cache_seq_pos_max (-1 = no cells). The exact pos_max == n_tokens - 1 relation stays report-only.
 bool stateos_kv_consistent(size_t n_tokens, int32_t kv_pos_max);
 
+// Suffix of the file a save writes before its commit rename (`<name>.stateos.tmp`).
+constexpr const char * STATEOS_TMP_SUFFIX = ".stateos.tmp";
+
+// Push a written file's data to the device (FlushFileBuffers / fsync) so the commit rename never publishes bytes that
+// a power loss could still take back.
+bool stateos_flush_file(const std::string & path, std::string * err);
+
+// Remove `*.stateos.tmp` files (only that suffix, regular files, not recursive) in `dir` whose last write is older
+// than `min_age_seconds`: leftovers of saves interrupted by a crash. Returns how many were removed.
+size_t stateos_cleanup_stale_tmp(const std::string & dir, int64_t min_age_seconds, std::vector<std::string> * removed);
+
 // Replace `dst` with `src` (same directory). Windows: MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH) with short
 // retries; the previous `dst` is never deleted first, so a transient lock cannot destroy the last good state.
 bool stateos_replace_file(const std::string & src, const std::string & dst, std::string * err);

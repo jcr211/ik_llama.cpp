@@ -2753,6 +2753,16 @@ void server_context::stateos_init_identity() {
     if (params_base.slot_save_path.empty()) {
         return; // no /slots routes: State-OS is off, and startup pays nothing
     }
+    // leftovers of saves a crash interrupted (only our temp suffix, only older than an hour)
+    try {
+        std::vector<std::string> removed;
+        stateos_cleanup_stale_tmp(params_base.slot_save_path, 3600, &removed);
+        for (const auto & name : removed) {
+            SRV_INF("State-OS: removed stale temp file %s\n", name.c_str());
+        }
+    } catch (const std::exception & e) {
+        SRV_WRN("State-OS: stale temp cleanup skipped (%s)\n", e.what());
+    }
     // computed once, right after the load, so a GGUF replaced on disk later cannot stamp saves with its identity
     const int64_t t0 = ggml_time_us();
     std::string err;
@@ -2919,7 +2929,7 @@ void server_context::stateos_slot_save(const server_task & task, server_slot & s
     }
     try {
         std::error_code ec;
-        std::filesystem::remove(stateos_path(task.data.at("filepath").get<std::string>() + ".stateos.tmp"), ec);
+        std::filesystem::remove(stateos_path(task.data.at("filepath").get<std::string>() + STATEOS_TMP_SUFFIX), ec);
     } catch (...) {}
     send_slot_error(task, 500, "server_error", "State-OS save failed: " + what, { {"slot_untouched", true} });
 }
@@ -2948,7 +2958,7 @@ void server_context::stateos_slot_save_impl(const server_task & task, server_slo
     const int64_t t_start = ggml_time_us();
     const std::string filename = task.data.at("filename");
     const std::string filepath = task.data.at("filepath");
-    const std::string tmppath  = filepath + ".stateos.tmp";
+    const std::string tmppath  = filepath + STATEOS_TMP_SUFFIX;
 
     if (slot.cache_tokens.has_mtmd_data()) {
         send_slot_error(task, 501, "not_supported_error", "State-OS v1 does not persist a slot that holds media (image/audio) chunks");
@@ -3108,6 +3118,11 @@ void server_context::stateos_slot_save_impl(const server_task & task, server_slo
         return;
     }
 
+    // durable before it becomes visible under its name
+    if (!stateos_flush_file(tmppath, &err)) {
+        fail("cannot flush the finished file to disk: " + err);
+        return;
+    }
     if (!stateos_replace_file(tmppath, filepath, &err)) {
         fail("cannot move the finished file into place: " + err);
         return;

@@ -16,6 +16,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 // ---- small LE helpers -------------------------------------------------------------------------------
@@ -574,6 +576,66 @@ bool stateos_tokens_in_vocab(const int32_t * ids, size_t n, int32_t n_vocab, siz
 
 bool stateos_kv_consistent(size_t n_tokens, int32_t kv_pos_max) {
     return n_tokens == 0 || kv_pos_max >= 0;
+}
+
+bool stateos_flush_file(const std::string & path, std::string * err) {
+#if defined(_WIN32)
+    const std::wstring w = stateos_path(path).wstring();
+    HANDLE h = CreateFileW(w.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        set_err(err, "cannot open for flush (Win32 error " + std::to_string((unsigned long) GetLastError()) + ")");
+        return false;
+    }
+    const BOOL ok = FlushFileBuffers(h);
+    const DWORD last = ok ? 0 : GetLastError();
+    CloseHandle(h);
+    if (!ok) {
+        set_err(err, "FlushFileBuffers failed (Win32 error " + std::to_string((unsigned long) last) + ")");
+        return false;
+    }
+    return true;
+#else
+    std::FILE * f = std::fopen(path.c_str(), "r+b");
+    if (f == nullptr) {
+        set_err(err, "cannot open for flush");
+        return false;
+    }
+    const bool ok = std::fflush(f) == 0 && fsync(fileno(f)) == 0;
+    std::fclose(f);
+    if (!ok) {
+        set_err(err, "fsync failed");
+    }
+    return ok;
+#endif
+}
+
+size_t stateos_cleanup_stale_tmp(const std::string & dir, int64_t min_age_seconds, std::vector<std::string> * removed) {
+    size_t n = 0;
+    std::error_code ec;
+    const std::string suffix = STATEOS_TMP_SUFFIX;
+    const auto now = std::filesystem::file_time_type::clock::now();
+    for (std::filesystem::directory_iterator it(stateos_path(dir), ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code ec2;
+        if (!it->is_regular_file(ec2) || ec2) {
+            continue;
+        }
+        const std::string name = stateos_path_utf8(it->path().filename());
+        if (name.size() <= suffix.size() || name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+            continue;
+        }
+        const auto mtime = std::filesystem::last_write_time(it->path(), ec2);
+        if (ec2 || now - mtime < std::chrono::seconds(min_age_seconds)) {
+            continue;
+        }
+        if (std::filesystem::remove(it->path(), ec2) && !ec2) {
+            ++n;
+            if (removed != nullptr) {
+                removed->push_back(name);
+            }
+        }
+    }
+    return n;
 }
 
 bool stateos_replace_file(const std::string & src, const std::string & dst, std::string * err) {

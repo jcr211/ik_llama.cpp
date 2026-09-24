@@ -576,6 +576,41 @@ static void test_replace_file() {
     CHECK(!std::filesystem::exists(stateos_path(b)));
     CHECK(!stateos_replace_file(tmp_file("replace-missing.state"), a, &err));
     CHECK(read_all(a) == std::vector<uint8_t>({ 'n', 'e', 'w', '!' })); // a failed replace keeps the old file
+
+    // durability before the commit rename
+    CHECK(stateos_flush_file(a, &err));
+    CHECK(!stateos_flush_file(tmp_file("flush-missing.state"), &err));
+}
+
+// startup cleanup: only our temp suffix, only regular files, only older than the age limit
+static void test_stale_tmp_cleanup() {
+    const std::filesystem::path dir = g_tmp / "cleanup";
+    std::filesystem::create_directories(dir);
+    const auto old_time = std::filesystem::file_time_type::clock::now() - std::chrono::hours(2);
+    auto make = [&](const std::string & name, bool old) {
+        const std::string p = stateos_path_utf8(dir / name);
+        write_raw(p, { 'x' });
+        if (old) {
+            std::filesystem::last_write_time(stateos_path(p), old_time);
+        }
+    };
+    make("crashed.state.stateos.tmp", true);  // removed
+    make("in-flight.state.stateos.tmp", false); // too young: a save may be writing it
+    make("user-file.tmp", true);               // not our suffix
+    make("saved.state", true);                 // a real state
+    make(".stateos.tmp", true);                // suffix only, no name: left alone
+    std::filesystem::create_directories(dir / "dir.stateos.tmp"); // not a regular file
+
+    std::vector<std::string> removed;
+    const size_t n = stateos_cleanup_stale_tmp(stateos_path_utf8(dir), 3600, &removed);
+    CHECK(n == 1 && removed.size() == 1 && removed[0] == "crashed.state.stateos.tmp");
+    CHECK(!std::filesystem::exists(dir / "crashed.state.stateos.tmp"));
+    CHECK(std::filesystem::exists(dir / "in-flight.state.stateos.tmp"));
+    CHECK(std::filesystem::exists(dir / "user-file.tmp"));
+    CHECK(std::filesystem::exists(dir / "saved.state"));
+    CHECK(std::filesystem::exists(dir / ".stateos.tmp"));
+    CHECK(std::filesystem::exists(dir / "dir.stateos.tmp"));
+    CHECK(stateos_cleanup_stale_tmp(stateos_path_utf8(dir / "does-not-exist"), 3600, nullptr) == 0);
 }
 
 // a GGUF with real tensor data (the vocab fixtures have none, so their sampling path is empty)
@@ -748,6 +783,7 @@ int main(int argc, char ** argv) {
     test_effective_model();
     test_section_checks();
     test_replace_file();
+    test_stale_tmp_cleanup();
     test_fingerprint_v2();
     if (argc > 1) {
         test_model_fingerprint(argv[1], argc > 2 ? argv[2] : "");
