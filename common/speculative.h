@@ -33,6 +33,9 @@ struct common_speculative_checkpoint {
     bool valid = false;
     int mode = LLAMA_SPEC_CKPT_NONE;
     llama_pos n_past = 0;
+    // LONGSPEAR_PLE_HIST_REWIND: the target's PLE n-gram history when the checkpoint was saved
+    std::vector<llama_token> ple_hist;
+    llama_pos ple_next_pos = -1;
     llama_token sampled = LLAMA_TOKEN_NULL;
     common_sampler * sampler = nullptr;
     bool sampler_borrowed = false; // LONGSPEAR_SPEC_CKPT_LEAN: sampler is the slot's persistent one
