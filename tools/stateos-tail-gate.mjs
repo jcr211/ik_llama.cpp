@@ -10,17 +10,14 @@
 //      request A never chooses a tail (a tail sits at <= last cached - 2 of the PREVIOUS prompt's
 //      generation, and A diverges near the prompt start), and A0, A1 and C take the same restore path
 //      for A (same prompts in the same order); the tail writer's extra eviction cannot change C's list
-//      below the 32-checkpoint cap. Every arm sends the same request sequence. Caveat (round 11
-//      correction): the ngram-mod draft table is server-lifetime state, fed every request's prompt
-//      and output, and it pre-empts MTP in the draft chain; the whole table is reset after three
-//      low-acceptance rounds in a row. A0 and A1 see the same history, so their tables stay identical;
-//      C's diverges once C's B continuation differs benignly from A0's - which a working C is EXPECTED
-//      to do on some prompts - and from then on C's tables, draft outcomes and reset timing can differ
-//      wholesale. This is NOT low probability. Two consequences: (a) C's final request-A round can
-//      hold no accepted draft where A0's did, so C writes no tail: rule 8 charges "no strict tail
-//      restore" only when C's OWN line shows an eligible round; (b) C's request-A output can differ
-//      only if greedy is not batch-invariant under different draft/verify shapes - its probability is
-//      unmeasured, it is charged to C, and the A1-vs-A0 control cannot see it;
+//      below the 32-checkpoint cap. Every arm sends the same request sequence. Draft state (round 12):
+//      every step-4 arm runs the MTP drafter ONLY (launcher -MtpOnly, drafters=mtp), so there is no
+//      server-lifetime ngram-mod table (fed every request's output, pre-empting MTP, reset after three
+//      low-acceptance rounds) to drift between A0 and C after a benign B divergence; MTP drafts come
+//      from the model's own head, per request. Tail eligibility still comes from MTP drafted rounds.
+//      The round-11 safeguards stay as a backstop: "no strict tail restore" is charged only with tail
+//      evidence or C's OWN eligible round (rule 9), and a C request-A difference (which would now need
+//      a greedy batch-shape difference within one MTP config) is charged to C;
 //   2. request A: greedy, max_tokens = --n-first, cache_prompt: true -> generated ids g[0..G-1].
 //      After A the slot caches prompt + g[0..G-2] (the last sampled token is never decoded);
 //   3. request B: the forced prompt, built ONCE from arm A0's request-A output:
@@ -33,44 +30,49 @@
 //   examples/server/server-task.cpp to_json_oaicompat_final -> probs_vector_to_json); the id count
 //   must equal usage.completion_tokens (a token that splits a UTF-8 character gets no logprobs entry).
 //
-// Arms (one server launch each through launch-stateos-tail-8099.ps1 with its own -LogStem; all with
-// -DivLog; the launcher sets LONGSPEAR_PLE_HIST_REWIND=1 + LONGSPEAR_PLE_HIST_LOG=1 in every arm):
+// Arms (one server launch each through launch-stateos-tail-8099.ps1 with its own -LogStem, ALL with
+// -DivLog -MtpOnly (round 12); the launcher sets LONGSPEAR_PLE_HIST_REWIND=1 + LONGSPEAR_PLE_HIST_LOG=1):
 //   A0 flag off (RUN FIRST: the other arms read its record), A1 flag-off repeat (determinism control),
-//   C = -Tail -DivLog, benign A5 (-ExtraArgs '-no-fmoe -no-fug') and A3 (-ExtraArgs '-fa 0') flag off.
+//   C = -Tail, benign A5 (-ExtraArgs '-no-fmoe -no-fug') and A3 (-ExtraArgs '-fa 0') flag off.
+// Runbook: after each launch run check-stateos-port-8099.ps1 ONCE, before any traffic; never re-run it
+// after the arm's traffic (its .port mtime must precede the record's startedAt).
 //
 // Arm records: `run` needs --log-stem <the server's launcher -LogStem>; the record carries it with url,
-// horizon, nFirst, receipt, bRequest (request B's extra body, {ignore_eos: true} in every arm) and per
-// row: generated (request A ids), continuation (request B ids), bSha,
-// bFinish, eosAt (B ended on EOS before the horizon), failedAt/errorKind on failure.
+// horizon, nFirst, receipt, bRequest (request B's extra body, {ignore_eos: true} in every arm),
+// startedAt/finishedAt and per row: sha256 (prompt content), generated (request A ids), continuation
+// (request B ids), bSha, bFinish, eosAt (B ended on EOS before the horizon), failedAt/errorKind.
 //
 // Scoring needs every arm's record and server log (--arm-log ARM=path). Each log's <LogStem>.flags
-// sidecar (launcher) records the effective flags, spec=on|off and logstem=; <LogStem>.port (written
-// by check-stateos-port-8099.ps1) and <LogStem>.pid are the only port evidence.
+// sidecar (launcher) records the effective flags, spec=on|off, drafters= and logstem=; <LogStem>.port
+// (written by check-stateos-port-8099.ps1) and <LogStem>.pid are the only port evidence.
 //
-// ONE validity rule (rowProblem) for engagement, determinism and scoring: a row is invalid when a
-// request failed, request A returned < 2 tokens, or request B returned fewer tokens than the horizon -
-// including an EOS before the horizon (row.eosAt), for every arm, because the v2 lib cannot express a
-// genuine end. A restore line binds to a row by request order AND content (n_past == the forced index,
-// cache-window marked token == g_A0[G-2], prompt-window marked token == X); a C row whose request B
-// reached the server but failed is bound with A0's row fields. Benign arms reach the same B from their
-// own cache, so their restore lines are not constrained.
+// ONE validity rule (rowProblem) for engagement and scoring: a row is invalid when a request failed,
+// request A returned < 2 tokens, or request B returned fewer tokens than the horizon - including an
+// EOS before the horizon (row.eosAt), for every arm, because the v2 lib cannot express a genuine end.
+// A restore line binds to a row by request order AND content (n_past == the forced index, cache-window
+// marked token == g_A0[G-2], prompt-window marked token == X); a C row whose request B reached the
+// server but failed is bound with A0's row fields. Benign arms reach the same B from their own cache,
+// so their restore lines are not constrained.
 //
 // VERDICT PRECEDENCE (the first rule that fires decides; tested pairwise in the tools test):
 //   0. refusal - error, exit 1:
 //      - checkRecords: exactly one record per arm A0, A1, C, A5, A3 and no other; one horizon, nFirst
 //        and receipt; bRequest == {ignore_eos: true} in every record; A0's prompt ids AND sha256 values
 //        in every record; url exactly http://127.0.0.1:8099; each record's logStem == its --arm-log
-//        stem == that .flags logstem=; distinct log stems and distinct .pid PIDs across the five arms;
-//        each record's startedAt after its own port check (the .port mtime);
-//      - receipt binding: A0's prompt ids and sha256 values == the receipt's inputsEcho.prompts;
+//        stem == that .flags logstem=; distinct log stems; a PID shared by two arms only if their
+//        [port check, finishedAt] intervals do not overlap (sequential reuse is fine); each record's
+//        startedAt after its own port check (the .port mtime);
+//      - receipt binding: A0's prompt ids and sha256 values == the receipt's prompts in order (all of
+//        them, or a leading prefix for a --smoke --limit run);
 //      - preregistered parameters (PREREG): the default receipt (by sha256), 24 prompts, horizon 256,
-//        n-first 64, min-prompts 20, n-min 6, shell C, benign A5,A3. Otherwise "non-preregistered
-//        parameters", or with --smoke a run labelled SMOKE that exits 4 (never 0 or 2);
+//        n-first 64, min-prompts 20, n-min 6, shell C, benign A5,A3 (and drafters=mtp, enforced as rule
+//        2). Otherwise "non-preregistered parameters", or with --smoke a run labelled SMOKE that exits
+//        4 (never 0 or 2);
 //   1. CUDA error lines in any arm's log - `cuda-errors` STOP;
-//   2. flags/spec mismatch - `mislaunched` VOID: recorded flags differ from the arm's required set
-//      (C: DIV_LOG + TAIL_SNAPSHOT; others DIV_LOG only; all PLE_HIST_REWIND + PLE_HIST_LOG; ExtraArgs
-//      A5 '-no-fmoe -no-fug', A3 '-fa 0', others none), no flags record, or the arms' spec states are
-//      mixed/unknown;
+//   2. flags/spec/drafters mismatch - `mislaunched` VOID: recorded flags differ from the arm's required
+//      set (C: DIV_LOG + TAIL_SNAPSHOT; others DIV_LOG only; all PLE_HIST_REWIND + PLE_HIST_LOG;
+//      ExtraArgs A5 '-no-fmoe -no-fug', A3 '-fa 0', others none), no flags record, the arms' spec
+//      states mixed/unknown, or any arm not drafters=mtp (drafters=none in the spec-off fallback);
 //   3. a `[ple-hist] reset` at pos > 0 in any arm - `ple-hist` STOP;
 //   4. a .port record missing or not (ok, port 8099, exactly one listener == .pid) - `mislaunched` VOID;
 //   5. no `[ple-hist] set` line in an arm - `ple-hist` STOP;
@@ -82,14 +84,18 @@
 //   8. invalid A0/A1 rows (control failures, never charged to C) > slack - `insufficient-control` VOID;
 //   9. C-attributable exclusions > the ONE shared slack (prompts - min-prompts, 24 - 20 = 4) -
 //      `shell-diverged` STOP. C reasons (only where A0's and A1's rows are valid and A1 reproduced A0's
-//      request A): C's row invalid; C's request A differs from A0's; C's B differs; on a prompt A0's line
-//      shows as eligible (prev_round=drafted, prev_n_acc >= 1): C's request-B line missing or not at
-//      tail_dist=1, or - only when C's OWN line also shows an eligible round - not a strict tail
-//      restore (chosen_origin=tail, outcome=restored, reason=tail). Each is reported with prompt,
-//      request (A or B) and reason; up to the slack = counted drops;
+//      request A): C's row invalid; C's request A differs from A0's; C's B differs; C's request-B line
+//      shows TAIL EVIDENCE (a tail written/available or chosen, or a tail outcome) without a strict tail
+//      restore - whatever the final-round markers say (round 12); on a prompt A0's line shows as
+//      eligible (prev_round=drafted, prev_n_acc >= 1): C's request-B line missing or not at
+//      tail_dist=1, or - when C's OWN line also shows an eligible round - not a strict tail restore
+//      (chosen_origin=tail, outcome=restored, reason=tail). Each is reported with prompt, request (A
+//      or B) and reason; up to the slack = counted drops;
 //  10. fewer than --min-prompts scorable strict tail restores (the shortfall is not C's: A0/A1 lines,
-//      A0 showing no eligible tail, C's own round not eligible, a benign arm's different B) -
-//      `not-engaged:no-eligible-prompts` VOID;
+//      A0 showing no eligible tail, C's own round not eligible and no tail evidence, a benign arm's
+//      different B) - `not-engaged:no-eligible-prompts` VOID. gate.json `partial` (and stdout) still
+//      reports the v2 score of the strict tail restores that did occur, labelled "partial, not a
+//      verdict" (round 12);
 //  11. score (v2 rule): compatible-at-horizon PASS; shellWorse STOP; insufficient-sample VOID.
 // Exit codes: PASS 0, STOP 2, VOID 3 (the gate did not answer; not a C1 kill), refusal 1, SMOKE 4.
 //
@@ -1362,6 +1368,9 @@ async function runScore(o) {
       shell: o.shell,
       benign: o.benign,
       bRequest: a0.bRequest,
+      drafters: Object.fromEntries(
+        records.map((r) => [r.arm, censusByArm[r.arm]?.flags?.drafters ?? null]),
+      ),
       specOff,
     },
     status,

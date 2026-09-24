@@ -65,6 +65,11 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
       them); prompt sha256 bound to A0 and the receipt, url exact; spec-off = dedicated VOID with
       determinism PASS/FAIL; B determinism at any length; distinct launches (stems, PIDs, startedAt
       after the port check); ngram-mod note corrected; node tools 45/45 (tools only)
+- [x] round 12 (check of b89275f0): step 4 runs every arm MTP-only (-MtpOnly, drafters=mtp, required;
+      steps 1-3 keep production drafters); tail evidence beats the final-round marker (Sol probe STOP);
+      not-engaged VOID reports the partial score of the restores that occurred; a shared PID is refused
+      only on overlapping launch intervals; runbook: one port check per launch before traffic; --smoke
+      with --limit reaches SMOKE exit 4; node tools 48/48 (tools + launcher only)
 
 ## GPU-window assumptions (W-SV2)
 - Every arm (P0, T1, A0, A1, C, A5, A3, probe) launches via launch-stateos-tail-8099.ps1, so all run
@@ -145,7 +150,18 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
     g_A0[G-2], prompt-window marked token == X). A C row whose request B reached the server but failed
     (parse or HTTP, recorded `failedAt: "B"`) is bound with A0's row fields. Benign arms reach the same B
     from their own cache and are not constrained.
-  - VERDICT PRECEDENCE (round 11; the first rule that fires decides; `gateRefusal`, then `score`; the
+  - STEP-4 PROTOCOL CHANGE (round 12, coordinator ruling): EVERY step-4 arm (A0, A1, C, A5, A3) is
+    launched with `-MtpOnly` (`--spec-type mtp:n_max=4` only; `.flags` records `drafters=mtp`), so there
+    is no server-lifetime ngram-mod draft table to drift between arms. Tail eligibility still comes from
+    MTP drafted rounds. Steps 1-3 keep the production drafters (`drafters=ngram-mod,mtp`, required: they
+    measure the served config). A step-4 arm with any other drafters = mislaunched (VOID, rule 2); the
+    spec-off fallback records drafters=none. drafters=mtp is part of the preregistered set (PREREG),
+    enforced from the launch records as rule 2 and recorded in gate.json `parameters.drafters`.
+  - RUNBOOK (round 12, Opus R5): after EACH launch, once the server answers and BEFORE any traffic, run
+    `check-stateos-port-8099.ps1 -LogStem <stem>` exactly once. NEVER re-run it after the arm's traffic:
+    the `.port` mtime must precede the record's startedAt (else the scorer refuses, exit 1). Every step-4
+    `run` passes `--log-stem <stem>`.
+  - VERDICT PRECEDENCE (round 12; the first rule that fires decides; `gateRefusal`, then `score`; the
     same list heads tools/stateos-tail-gate.mjs; one table-driven test feeds every adjacent pair):
     0. refusal = error, exit 1:
        - `checkRecords`: exactly one record per arm A0, A1, C, A5, A3 and no other (a stale
@@ -153,16 +169,19 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
          bRequest == {ignore_eos: true} everywhere; A0's ordered prompt ids AND per-prompt sha256 in
          every record; url exactly `http://127.0.0.1:8099`; each record's logStem (from
          `run --log-stem`) == its --arm-log stem == that log's .flags `logstem=`; DISTINCT launches:
-         distinct log stems and distinct `.pid` PIDs across the five arms, and each record's startedAt
-         after its own port check (the `.port` mtime);
-       - receipt binding: A0's prompt ids and sha256 == the receipt's inputsEcho.prompts;
+         distinct log stems; a `.pid` PID shared by two arms only when their [port check, finishedAt]
+         intervals do not overlap (round 12, Opus R3: sequential Windows PID reuse is fine; unknown
+         intervals are refused); each record's startedAt after its own port check (the `.port` mtime);
+       - receipt binding: A0's prompt ids and sha256 == the receipt's prompts in order - all of them, or
+         a leading prefix (round 12, Sol nit: so `--smoke --limit N` reaches SMOKE exit 4; the full 24
+         are enforced by the preregistered parameters);
        - PREREGISTERED parameters (`PREREG`): the default v2 receipt, pinned by sha256 7acd3270..., 24
          prompts, horizon 256, n-first 64, min-prompts 20, n-min 6, shell C, benign A5,A3. Anything
          else: "non-preregistered parameters" (exit 1), or with `score --smoke` a run labelled
          "SMOKE (not the gate)" that exits 4 (never 0 or 2). gate.json `parameters` records all of them
          and whether the run was the preregistered gate;
     1. CUDA error lines in any arm's log = cuda-errors (STOP);
-    2. flags/spec mismatch = mislaunched (VOID);
+    2. flags/spec/drafters mismatch = mislaunched (VOID) (step 4: every arm drafters=mtp);
     3. a `[ple-hist] reset` at pos > 0 in any arm = ple-hist (STOP);
     4. the port record missing or invalid in any arm = mislaunched (VOID);
     5. no `[ple-hist] set` line in an arm = ple-hist (STOP);
@@ -173,8 +192,15 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
        continuation where both B requests succeeded on the same B, AT ANY LENGTH (round 11: EOS-ended or
        short continuations included) = void-determinism (VOID; fallback: every arm -SpecOff);
     8. invalid A0/A1 rows (control failures) > slack = insufficient-control (VOID);
-    9. C-attributable exclusions > the shared slack = shell-diverged (STOP);
-    10. fewer than 20 scorable strict tail restores = not-engaged:no-eligible-prompts (VOID);
+    9. C-attributable exclusions > the shared slack = shell-diverged (STOP). Round 12 (Sol real-run
+       bug): TAIL EVIDENCE takes precedence over the final-round markers - if C's request-B line shows
+       a tail written/available or chosen (tailAvailable, chosen_origin=tail, or a tail
+       outcome/reason) and the restore was not strict, it is charged to C whatever C's or A0's
+       prev_round/prev_n_acc say (a root-only final round can keep an older eligible shadow tail);
+    10. fewer than 20 scorable strict tail restores = not-engaged:no-eligible-prompts (VOID). Round 12
+       (Opus R1): gate.json `partial` and stdout then also report the v2 score of the strict tail
+       restores that DID occur (count, signs, shell-earliest events, classifier result with
+       min-prompts = their count), labelled "partial, not a verdict", so a corrupting C is visible;
     11. score (v2 rule): compatible-at-horizon PASS (0); shellWorse STOP (2); insufficient-sample VOID (3).
   - ONE VALIDITY RULE (`rowProblem(row, horizon)`), shared by engagement, the determinism check and
     `score`: a row is invalid when a request failed (HTTP/connection, unparsed, not sent), request A
@@ -198,7 +224,8 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
     reason. A 5th stops the window.
   - NOT C: control failures; A0's or A1's request-B line missing or not at tail_dist=1; a benign arm
     answered a different B; A0's line shows no eligible tail and C did not restore from a tail.
-  - Shared draft state (round 11 correction, Opus B1): the ngram-mod draft table is server-lifetime
+  - Shared draft state - SUPERSEDED for step 4 by the round-12 MTP-only protocol (no ngram-mod table in
+    any step-4 arm); the round-11 rule below stays as a backstop. Round 11 (Opus B1): the ngram-mod draft table is server-lifetime
     state, fed every request's prompt and output; it pre-empts MTP in the draft chain and the whole
     table resets after three low-acceptance rounds in a row. A0 and A1 share a history, so their
     tables match; C's diverges once C's B continuation differs benignly from A0's (a working C is
