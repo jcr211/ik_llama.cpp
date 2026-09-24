@@ -562,6 +562,20 @@ static void test_section_checks() {
     recs[1].pos_min = 100;
     recs[1].pos_max_prompt = INT32_MAX; // pos_max_prompt + 1 would overflow
     CHECK(!stateos_checkpoints_sane(recs, &err));
+
+    // CKPT budget before reading: 12 framing + records x (32 + state bytes)
+    CHECK(stateos_ckpt_within_budget(12, 0, 100));                 // an empty list
+    CHECK(stateos_ckpt_within_budget(12 + 2 * (32 + 100), 2, 100));
+    CHECK(!stateos_ckpt_within_budget(12 + 2 * (32 + 100) + 1, 2, 100));
+    CHECK(!stateos_ckpt_within_budget(1ull << 40, 32, 112u << 20)); // a crafted terabyte section is never read
+    CHECK(stateos_ckpt_within_budget(UINT64_MAX, UINT64_MAX, UINT64_MAX)); // no overflow in the bound itself
+    // after decode: every record fits a partial state of this context
+    std::vector<stateos_checkpoint_rec> fit(2);
+    fit[0].data.assign(100, 1);
+    fit[1].data.assign(100, 2);
+    CHECK(stateos_checkpoints_fit(fit, 100, &err));
+    fit[1].data.push_back(3);
+    CHECK(!stateos_checkpoints_fit(fit, 100, &err) && err.find("checkpoint 1") != std::string::npos);
 }
 
 // the save's commit point: replace the previous state without deleting it first

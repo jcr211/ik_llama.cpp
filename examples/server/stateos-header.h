@@ -203,6 +203,13 @@ struct stateos_checkpoint_rec {
 void stateos_encode_checkpoints(const std::vector<stateos_checkpoint_rec> & in, std::vector<uint8_t> & out);
 bool stateos_decode_checkpoints(const uint8_t * data, size_t size, std::vector<stateos_checkpoint_rec> & out, std::string * err);
 
+// CKPT budget, checked BEFORE the section is read: at most max_records records of at most max_record_bytes each
+// (plus the codec's framing). A section over budget is skipped (restored without checkpoints), never allocated.
+bool stateos_ckpt_within_budget(uint64_t section_size, uint64_t max_records, uint64_t max_record_bytes);
+
+// After decode: every record's state fits max_record_bytes (a larger one is corrupt).
+bool stateos_checkpoints_fit(const std::vector<stateos_checkpoint_rec> & recs, uint64_t max_record_bytes, std::string * err);
+
 // Positions must be ordered and non-negative (a crafted record could otherwise overflow pos_max_prompt + 1 later).
 bool stateos_checkpoints_sane(const std::vector<stateos_checkpoint_rec> & recs, std::string * err);
 

@@ -743,6 +743,30 @@ bool stateos_decode_checkpoints(const uint8_t * data, size_t size, std::vector<s
     return true;
 }
 
+bool stateos_ckpt_within_budget(uint64_t section_size, uint64_t max_records, uint64_t max_record_bytes) {
+    const uint64_t framing = 12;  // u32 version + u64 count
+    const uint64_t per_rec = 32;  // 4 x i32 positions + i64 n_tokens + u64 length
+    if (max_record_bytes > UINT64_MAX - per_rec) {
+        return true;
+    }
+    const uint64_t per = per_rec + max_record_bytes;
+    if (max_records != 0 && per > (UINT64_MAX - framing) / max_records) {
+        return true; // the budget exceeds any file
+    }
+    return section_size <= framing + max_records * per;
+}
+
+bool stateos_checkpoints_fit(const std::vector<stateos_checkpoint_rec> & recs, uint64_t max_record_bytes, std::string * err) {
+    for (size_t i = 0; i < recs.size(); ++i) {
+        if ((uint64_t) recs[i].data.size() > max_record_bytes) {
+            set_err(err, "checkpoint " + std::to_string(i) + " holds " + std::to_string(recs[i].data.size()) +
+                         " bytes, more than a partial state of this context (" + std::to_string(max_record_bytes) + ")");
+            return false;
+        }
+    }
+    return true;
+}
+
 bool stateos_checkpoints_sane(const std::vector<stateos_checkpoint_rec> & recs, std::string * err) {
     for (size_t i = 0; i < recs.size(); ++i) {
         const auto & c = recs[i];

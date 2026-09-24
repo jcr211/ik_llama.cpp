@@ -3259,14 +3259,29 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
         return;
     }
 
+    // checkpoints: bounded by what this context can hold BEFORE the section is read. A checkpoint is a partial
+    // (recurrent + compacted window) state: its size is fixed unless the SWA window is compacted, where it can
+    // grow up to the full state.
     std::vector<stateos_checkpoint_rec> recs;
+    std::string ckpt_status = s_ckpt == nullptr ? "absent" : "restored";
     if (s_ckpt != nullptr) {
-        std::vector<uint8_t> ckpt_bytes;
-        if (!stateos_read_range(filepath, s_ckpt->offset, s_ckpt->size, ckpt_bytes, &err) ||
-            !stateos_decode_checkpoints(ckpt_bytes.data(), ckpt_bytes.size(), recs, &err) ||
-            !stateos_checkpoints_sane(recs, &err)) {
-            corrupt("section:CKPT", err);
-            return;
+        const bool compacted = stateos_layout_line(ctx, "kv").find(" compact=1") != std::string::npos;
+        const uint64_t max_record = compacted ? (uint64_t) s_main->size
+                                              : (uint64_t) llama_state_seq_get_size(ctx, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        const uint64_t max_records = (uint64_t) std::max(params_base.ctx_checkpoints_n, 1);
+        if (!stateos_ckpt_within_budget(s_ckpt->size, max_records, max_record)) {
+            // optional section: restore without checkpoints rather than allocate an oversized one
+            ckpt_status = string_format("skipped: %llu bytes exceed %llu checkpoints of at most %llu bytes",
+                    (unsigned long long) s_ckpt->size, (unsigned long long) max_records, (unsigned long long) max_record);
+        } else {
+            std::vector<uint8_t> ckpt_bytes;
+            if (!stateos_read_range(filepath, s_ckpt->offset, s_ckpt->size, ckpt_bytes, &err) ||
+                !stateos_decode_checkpoints(ckpt_bytes.data(), ckpt_bytes.size(), recs, &err) ||
+                !stateos_checkpoints_sane(recs, &err) ||
+                !stateos_checkpoints_fit(recs, max_record, &err)) {
+                corrupt("section:CKPT", err);
+                return;
+            }
         }
     }
 
@@ -3415,6 +3430,7 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
             { "warnings",                     stateos_mismatches_json(verdict.warnings) },
             { "companion",                    comp_status },
             { "checkpoints_restored",         n_ckpt_restored },
+            { "checkpoints",                  ckpt_status },
             { "checkpoints_dropped_in_memory", n_dropped_ckpt },
             { "prompt_cache_record_replaced", true },
             { "kv_pos_max",                   llama_kv_cache_seq_pos_max(ctx, slot.id) }, // report-only: KV <-> TOKS invariant
