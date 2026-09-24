@@ -3,9 +3,9 @@
 Lever: SL-1 tail-aware PER_STEP speculative checkpoints (`lane/sl1-spec-ckpt`, worktree
 `D:/AI/worktrees/sl1-spec-ckpt`). Plan: `docs/drafts/decode-throughput-merged-plan-20260924.md` §4. This file turns it
 into commands. AMEND 1 (probe length) and AMEND 2 (preflight config) are **ADOPTED** by the coordinator (2026-09-23);
-the fix round after the cross-family review (B2, S1, S2, S3, N1, N2) is folded in. **B1 is open**: the window must
-not start until `lane/ple-hist-rewind` is merged and its setter is called at the per-step direct restore and the
-crosscheck's gpu-fallback replay (§9).
+the fix round after the cross-family review (B1, B2, S1, S2, S3, N1, N2) is folded in. B1 is fixed by merging
+`lane/ple-hist-rewind` (b72eb38d + 424cbe84): every arm runs `LONGSPEAR_PLE_HIST_REWIND=1`, and the per-step direct
+restore and the crosscheck's replay both resume with the exact PLE n-gram history (§9).
 
 ## 0. Preconditions (no GPU yet)
 1. Cross-family review of the SL-1 diff (DeepSeek inline brief + fresh Opus repo-rooted seat, `cross-family-review`
@@ -27,12 +27,13 @@ crosscheck's gpu-fallback replay (§9).
    All four run the same exe with the standing args (`-ncmoe 37 -c 196608 -ub 512 -ctk/-ctv q8_0 -np 1 -t 24 -tb 32
    --temp 1.0 --top-p 0.95 --top-k 20 -rtr -muge`, `LONGSPEAR_VERIFY_TIMING=1`, `LONGSPEAR_CG_REVIVE=1`). The wrappers
    call `D:\AI\worktrees\sl1-spec-ckpt\launch-perstep-8099.ps1` by absolute path; they refuse a busy port.
-   B1's rewind flag (`LONGSPEAR_PLE_HIST_REWIND=1`, from the ple-hist lane) must be added to the A2 and crosscheck
-   arms when that branch merges; P0 keeps it off (production behaviour) unless the coordinator decides otherwise.
+   **Every arm (P0, A2, A0, crosscheck) sets `LONGSPEAR_PLE_HIST_REWIND=1` and `LONGSPEAR_PLE_HIST_LOG=1`**, so the
+   arms differ only in the lever; P0 is therefore production gpu-fallback *with* the ple-hist fix, not today's
+   standing server.
 6. The whole window is one command: `bash D:/AI/worktrees/sl1-spec-ckpt/.lane/w-sl1-chain.sh <stamp>` (§7). Its gates
-   are `.lane/sl1-gate.sh` (self-test `.lane/gate-selftest.sh`, 24/24) and its decision logic is tested on fixtures
-   by `.lane/w-sl1-chain-selftest.sh` (9/9). Gate exits: 0 PASS, 1 STOP, 2 no data, 3 blocks promotion (stepcost),
-   4 INCONCLUSIVE (probe).
+   are `.lane/sl1-gate.sh` (self-test `.lane/gate-selftest.sh`, 27/27) and its decision logic is tested on fixtures
+   by `.lane/w-sl1-chain-selftest.sh` (10/10). Gate exits: 0 PASS, 1 STOP, 2 no data, 3 blocks promotion
+   (stepcost), 4 INCONCLUSIVE (probe).
 
 ## 1. Telemetry the gates read (all written by the binary itself)
 - `[spec-host] slot mode K k_prop accepted restore_result redecode_n ckpt_init_us ckpt_save_us cells_copy_us
@@ -49,6 +50,9 @@ crosscheck's gpu-fallback replay (§9).
   gpu-fallback restore + replay state (oracle, kept), summed over layers, per rejected round.
 - `[vt] K n_kv mtp_op us build compute ...` (standing `LONGSPEAR_VERIFY_TIMING=1`) — `mtp_op=0` = main-model passes.
 - Server `eval time = X ms / N tokens` lines — aggregate decode tok/s = ΣN / ΣX.
+- `[ple-hist] reset seq pos next_pos` (`LONGSPEAR_PLE_HIST_LOG=1`) — a mid-sequence (pos > 0) PLE n-gram history
+  reset to EOS; `[ple-hist] set seq next_pos n_prev site={spec-per-step,spec-replay,server-resume}` — a rewind site
+  restored the history. With text-only prompts and the rewind flag on, a reset is a defect.
 - `pcie-telemetry.sh` column 2 = "Replays Since Reset". The gate's delta runs from the first numeric sample of the
   row's own log to the last; a log with no numeric sample (header only, or all `NA`) is a STOP (N1).
 - Startup: `per_step_alloc: CUDA0 per-step buffer = … MiB (max_tokens=5)`, `per_step_alloc: CUDA0 per-step PLE history
@@ -77,8 +81,10 @@ preflight therefore runs on `launch-perstep-xcheck-8099.ps1`; if it fits, A2 fit
    - `mode=per-step` on every `[spec-host]` round; no `restore_result=failed` (N2);
    - restore-required replays (`redecode_n > 0`) on ≤ 1 % of rejected rounds (expected 0);
    - PLE tail bit-equal on ≥ 99 % of crosscheck rows, else median relL2 ≤ 10 × the GDN-S median and max ≤ 0.05.
-     `gdn_s`/`gdn_conv` are reported, not gated (batch-shape noise, M5). **Without B1's fix this check STOPs**: the
-     replay resets the host PLE n-gram history, so the oracle's tail is wrong in 1-2 of 9 columns (relL2 ≈ 0.3);
+     `gdn_s`/`gdn_conv` are reported, not gated (batch-shape noise, M5). Before the B1 fix this check STOPped on every
+     run: the replay reset the host PLE n-gram history, so the oracle's tail was wrong in 1-2 of 9 columns (relL2
+     ≈ 0.3). With the rewind flag the crosscheck's replay resumes from the checkpoint's saved history;
+   - no `[ple-hist] reset` line, and at least one `[ple-hist] set` line (the log is live) — B1's mechanism check;
    - `mtp_skip` ≤ 10 % of rejected rounds (M7). Crosscheck rounds keep the replay-derived target state but commit the
      MTP companion from the verify pass's hidden rows, exactly as a direct restore does (S2), so this measures the
      per-step path;
@@ -96,6 +102,9 @@ Order (fixed now): **P0-1, A2-1, A0-1, A2-2, P0-2, A0-2**; each row under its ow
     failed restore; restore-required replay calls > 1 % of main passes; `mtp_skip` > 10 % of rejected rounds (S2);
   - **P0**: any round not `mode=gpu-fallback`; a failed restore;
   - **A0**: any verify round (speculation must be off);
+  - every arm: a `[ple-hist] reset` line (mid-sequence PLE history reset, pos > 0), or no `[ple-hist] set` line at
+    all (the history log is not live, so the reset count would be vacuous; the native-replay pre-warm requests alone
+    produce `server-resume` sets);
   - any CUDA error; a PCIe replay increment over the row, or no numeric PCIe sample (N1).
 - Pair gate after A2-1 (P0-1 vs A2-1) and after P0-2 (P0-2 vs A2-2), STOP on either miss (S1, the clamp confound):
   - **drafts per verify** compared on the **pre-clamp proposal**, Σ(`k_prop` − 1)/rounds in both arms; A2 must be
@@ -127,8 +136,8 @@ built) are independent, flag-off vs flag-on on the same binary, and not in the c
 ## 6. Step 4 — fidelity (manual, same window, offline-scored)
 v2 statistical gate (paired greedy first-divergence + per-step KL, ≥ 12 prompts × 64 tokens), A2 vs P0 on this binary
 (stock control = P0). The crosscheck in step 1 is the mechanism gate; this is the output gate. Greedy changes the
-workload, so it is not a throughput arm (M13). Note (B1): P0 itself replays with the host PLE history reset, so it is
-an imperfect oracle for this step until the ple-hist fix is on in P0 as well — the coordinator's call.
+workload, so it is not a throughput arm (M13). Both arms run `LONGSPEAR_PLE_HIST_REWIND=1`, so P0's replay keeps the
+exact PLE history and is a valid oracle here.
 
 ## 7. Auto-stop — `.lane/w-sl1-chain.sh <stamp>`
 Runs steps 0-3 in order with the gates above and stops at the first miss (exit 1, verdict KILLED / VOID /
@@ -146,14 +155,18 @@ out after a miss.
   equivalence (PLE per-step slots bit-equal to sequential single-token histories for K ∈ {2..5, 17}; slot j = after
   token j for delta-net, conv and PLE buffers; commit-0 guard bit-identical at 20/24/32 threads; lean sampler
   equivalence; clamped drafts do not trip ngram-mod's low-acceptance reset) — not throughput, and not the real
-  model's per-step path on CUDA. Reviewers' "not yet" (B1) is honoured: no launch before the ple-hist merge.
+  model's per-step path on CUDA. The reviewers' "not safe yet" (B1) was honoured: the launch waits for the ple-hist
+  merge and the re-review of that HEAD.
+- **Arms differ only in the lever:** P0, A2, A0 and the crosscheck probe all run `LONGSPEAR_PLE_HIST_REWIND=1` (and
+  `LONGSPEAR_PLE_HIST_LOG=1`), on the same binary with the standing args.
 - **Mechanism kill criteria (the lever's own lines):**
   - preflight: VRAM high-water ≤ 32,351 MiB on the crosscheck config (AMEND 2);
   - probe: per-step on every round, no failed restore, restore-required replays ≤ 1 % of rejected rounds, PLE tail
     bit-equal ≥ 99 % (or relL2 within 10× GDN-S and ≤ 0.05), `mtp_skip` ≤ 10 % of rejected rounds, every j ∈ 0..3
-    ≥ 20 rows within 600 rounds — else INCONCLUSIVE, no arms (AMEND 1);
+    ≥ 20 rows within 600 rounds — else INCONCLUSIVE, no arms (AMEND 1); zero `[ple-hist] reset` lines;
   - every row: the per-arm mode check, no failed restore, A2 replay calls ≤ 1 % of main passes, A2 `mtp_skip` ≤ 10 %
-    of rejected rounds, no CUDA error, no PCIe replay increment;
+    of rejected rounds, zero `[ple-hist] reset` lines (pos > 0; text-only prompts) with the history log live, no CUDA
+    error, no PCIe replay increment;
   - pairs: acceptance on `k_prop` ≤ 5 rounds ≥ P0 − 3 pts, pre-clamp drafts per verify ≥ 90 % of P0.
 - **Outcome rules:** both A2 pairs < +8 % → killed; opposite signs → one third rep, candidate only with ≥ 2 of 3
   pairs at +8 %; both ≥ +8 % → candidate (then step 3: a K=2..5 step-cost regression > 3 % blocks promotion);
@@ -166,10 +179,13 @@ out after a miss.
   with revert path = launcher `--spec-ckpt-mode gpu-fallback` and the SL-1 env flags unset).
 
 ## 9. Known limits and what to watch
-- **B1 (open, owned by `lane/ple-hist-rewind`):** the host-side PLE n-gram history (`lctx.ple_hist`) is not rewound by
-  any restore. After a direct restore the next batch starts below `next_pos`, the history resets to EOS, and the
-  bonus token and the one after it get wrong PLE rows; the crosscheck's replay has the same reset, so its oracle is
-  contaminated. This lane calls `llama_ple_history_set` at its two sites once that branch is merged.
+- **B1 (fixed by the ple-hist merge, flag `LONGSPEAR_PLE_HIST_REWIND=1`):** the host-side PLE n-gram history
+  (`lctx.ple_hist`) was not rewound by any restore, so after a direct restore the next batch reset it to EOS and the
+  crosscheck's replay did the same. Now `common_speculative_checkpoint_save` snapshots the history, and the restore
+  resumes it for the path the round actually takes (`path_result`, not the raw restore result): after a direct
+  restore, snapshot + sampled token + accepted drafts at `n_past + ids.size()`; before any replay (gpu-fallback, cpu,
+  and the crosscheck's diagnostic replay), the snapshot at `n_past`. The gate's `[ple-hist] reset` = 0 check is the
+  live evidence. Without the flag the base behaviour (EOS reset) is unchanged.
 - Per-step on qwen4exp without `LONGSPEAR_PER_STEP_PLE_TAIL=1` prints a one-time WARNING and keeps the old
   (contaminating) behaviour; flag-unset AUTO still resolves to per-step as before (M8b). The launchers always pass
   the mode explicitly.

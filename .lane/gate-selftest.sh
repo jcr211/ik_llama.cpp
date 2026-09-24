@@ -33,6 +33,7 @@ probe_log() {
         vt 5 60000 >> "$f"
     done
     evalt 40000.00 1400 >> "$f"
+    echo "[ple-hist] set seq=0 next_pos=4000 n_prev=2 site=spec-replay" >> "$f"
 }
 
 # arm row: 100 rounds. $2 arm kind (a2|p0|a0|a2-fallback), $3 mtp_skip rounds
@@ -49,6 +50,7 @@ row_log() {
         vt 5 60000 >> "$f"
     done
     evalt 40000.00 1400 >> "$f"
+    echo "[ple-hist] set seq=0 next_pos=4000 n_prev=2 site=server-resume" >> "$f"
 }
 
 pcie_log() { # $1 file, then counter samples
@@ -100,6 +102,14 @@ expect 0 "row P0: gpu-fallback rounds pass" bash "$GATE" row P0 "$DIR/p0.err.log
 expect 1 "row P0: an A2 log under the P0 label STOPs" bash "$GATE" row P0 "$DIR/a2.err.log" "$DIR/pcie-flat.log"
 row_log "$DIR/a0.err.log" a0
 expect 0 "row A0: no verify rounds" bash "$GATE" row A0 "$DIR/a0.err.log" "$DIR/pcie-flat.log"
+cp "$DIR/a2.err.log" "$DIR/a2reset.err.log"
+echo "[ple-hist] reset seq=0 pos=4012 next_pos=4015" >> "$DIR/a2reset.err.log"
+expect 1 "row A2: one mid-sequence [ple-hist] reset STOPs (B1)" bash "$GATE" row A2 "$DIR/a2reset.err.log" "$DIR/pcie-flat.log"
+grep -v "\[ple-hist\]" "$DIR/p0.err.log" > "$DIR/p0nolog.err.log"
+expect 1 "row P0: no [ple-hist] lines (log not live) STOPs" bash "$GATE" row P0 "$DIR/p0nolog.err.log" "$DIR/pcie-flat.log"
+cp "$DIR/pass.err.log" "$DIR/probereset.err.log"
+echo "[ple-hist] reset seq=0 pos=900 next_pos=903" >> "$DIR/probereset.err.log"
+expect 1 "probe: a mid-sequence [ple-hist] reset STOPs (B1)" bash "$GATE" probe "$DIR/probereset.err.log" 5
 expect 1 "row A0: verify rounds under A0 STOP" bash "$GATE" row A0 "$DIR/p0.err.log" "$DIR/pcie-flat.log"
 
 # ---- pair: the clamp confound (S1). P0 verifies 12% ngram drafts of 16 (K=17); A2 clamps them to 4 (K=5)

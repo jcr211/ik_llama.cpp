@@ -9,8 +9,10 @@
 #   bash sl1-gate.sh stepcost <p0 bench err logs, comma-separated> <a2 ...>   step 3: per-K step cost K=2..5
 #   bash sl1-gate.sh pcie     <pcie.log>                           replay-counter delta of one window step
 # Lines read: [spec-host] (LONGSPEAR_SPEC_HOST_TIMING), [ckpt-xcheck] (LONGSPEAR_SPEC_CKPT_CROSSCHECK),
-# [vt] (LONGSPEAR_VERIFY_TIMING, standing env), the server's "eval time" lines (err or out log), "CUDA error",
-# and pcie-telemetry.sh's replay counter (column 2).
+# [vt] (LONGSPEAR_VERIFY_TIMING, standing env), [ple-hist] (LONGSPEAR_PLE_HIST_LOG, every arm), the server's
+# "eval time" lines (err or out log), "CUDA error", and pcie-telemetry.sh's replay counter (column 2).
+# Probe and every row: no "[ple-hist] reset" (a mid-sequence PLE history reset, B1) and at least one
+# "[ple-hist] set" line as evidence the log is live.
 # redecode_n counts replays the restore itself required; a crosscheck round's diagnostic replay is marked
 # xcheck=1 and is not in redecode_n. K is the verified batch, k_prop the drafter's proposal before the
 # capacity clamp (k_prop = K + clamp).
@@ -69,6 +71,9 @@ row_metrics() { # $1 = err log, $2 = M; prints key=value metrics of one row
         }'
     echo "main_passes=$(grep -F "[vt]" "$err" | grep -c " mtp_op=0 ")"
     echo "cuda_errors=$(grep -c "CUDA error" "$err")"
+    # LONGSPEAR_PLE_HIST_LOG: "reset" = a mid-sequence (pos > 0) PLE n-gram history reset to EOS; "set" = a
+    # rewind site restored the history (its presence shows the logging, and so the reset count, is live)
+    echo "ple_resets=$(grep -cF "[ple-hist] reset" "$err") ple_sets=$(grep -cF "[ple-hist] set" "$err") ple_sites=$(grep -F "[ple-hist] set" "$err" | grep -oE "site=[a-z-]+" | sort | uniq -c | awk '{ printf "%s:%s,", $2, $1 }')"
     echo "decode_tps_tokens_ms=$(eval_tps "$err")"
 }
 
@@ -87,6 +92,14 @@ jcount() { # $1 = err log, $2 = M; prints "rounds=<[spec-host] lines> short=<j v
     hist=$(grep -F "[ckpt-xcheck]" "$err" | grep "comp=gdn_s" | field j | sort -n | uniq -c | awk '{ printf "j%s=%s,", $2, $1 }')
     short=$(grep -F "[ckpt-xcheck]" "$err" | grep "comp=gdn_s" | field j | sort -n | uniq -c | awk -v m="$m" '{ c[$2] = $1 } END { bad = 0; for (j = 0; j <= m - 2; j++) if (c[j] + 0 < 20) bad++; print bad }')
     echo "rounds=$rounds short=$short hist=${hist:-none}"
+}
+
+ple_hist_checks() { # $1 = metrics text; B1: no mid-sequence PLE history reset, and evidence the log is on
+    local resets sets
+    resets=$(echo "$1" | grep -oE "ple_resets=[0-9]+" | cut -d= -f2)
+    sets=$(echo "$1" | grep -oE "ple_sets=[0-9]+" | cut -d= -f2)
+    check "$(ok_if 's > 0' -v s="${sets:-0}")" "PLE history logging live ([ple-hist] set lines: ${sets:-0}; needs LONGSPEAR_PLE_HIST_LOG=1)"
+    check "$(ok_if 'r == 0' -v r="${resets:-0}")" "no mid-sequence PLE n-gram history reset ([ple-hist] reset, pos > 0: ${resets:-0}; text-only prompts)"
 }
 
 pass=1
@@ -123,6 +136,7 @@ probe)
     check "$(ok_if 'j > 0 && c <= 0.01*j' -v c="$RC" -v j="$REJ")" "required replays (redecode_n > 0) on <= 1% of rejected rounds ($RC of $REJ; direct=$DIR)"
     check "$(ok_if 's <= 0.10*j' -v s="$SKIP" -v j="$REJ")" "mtp_skip <= 10% of rejected rounds ($SKIP vs $REJ; crosscheck rounds commit the companion the per-step way)"
     check "$(ok_if 'c == 0' -v c="$(metric "$MET" cuda_errors)")" "no CUDA error"
+    ple_hist_checks "$MET"
     # crosscheck: PLE tail bit-equal on >= 99% of rows, else its median relL2 within 10x the GDN-S median and max <= 0.05
     XC=$(grep -F "[ckpt-xcheck]" "$ERR")
     NX=$(echo "$XC" | grep -c "comp=ple_tail")
@@ -171,6 +185,7 @@ row)
         ;;
     esac
     check "$(ok_if 'c == 0' -v c="$(metric "$MET" cuda_errors)")" "no CUDA error"
+    ple_hist_checks "$MET"
     if [ -n "$PCIE" ] && [ -f "$PCIE" ]; then
         D=$(pcie_delta "$PCIE")
         check "$(ok_if 'd != "NA" && d == 0' -v d="$D")" "no PCIe replay increment over the row (delta $D; NA = no numeric sample)"

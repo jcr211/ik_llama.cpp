@@ -22,6 +22,7 @@ probe_fixture() { # $1 file, $2 rows per j
         vt 5 60000 >> "$1"
     done
     evalt 40000.00 >> "$1"
+    echo "[ple-hist] set seq=0 next_pos=4000 n_prev=2 site=spec-replay" >> "$1"
 }
 arm_fixture() { # $1 file, $2 kind (P0|A2|A0|A2FB), $3 gain % (A2)
     : > "$1"
@@ -35,6 +36,9 @@ arm_fixture() { # $1 file, $2 kind (P0|A2|A0|A2FB), $3 gain % (A2)
         vt 5 60000 >> "$1"
     done
     case "$2" in P0|A0|A2FB) evalt 50000.00 >> "$1" ;; A2) evalt "$(ms_for_gain "$3")" >> "$1" ;; esac
+    echo "[ple-hist] set seq=0 next_pos=4000 n_prev=2 site=server-resume" >> "$1"
+    [ "${RESET_IN:-}" = "$2" ] && echo "[ple-hist] reset seq=0 pos=4012 next_pos=4015" >> "$1"
+    return 0
 }
 bench_fixture() { # $1 file, $2 compute
     : > "$1"
@@ -78,4 +82,5 @@ PROBE_ROWS=15 scenario probe-short      INCONCLUSIVE  "probe" "P0-1"
 HW=32500 scenario vram-over             KILLED        "" "probe P0-1"
 A2_1=A2FB scenario a2-without-per-step  KILLED        "P0-1 A2-1" "A0-1"
 BENCH_A2=52500 scenario stepcost-regression CANDIDATE-BLOCKED "A0-2" ""
+RESET_IN=P0 scenario p0-ple-hist-reset  KILLED        "P0-1" "A2-1"
 exit $fail
