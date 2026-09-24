@@ -1,0 +1,111 @@
+dry run: receipts in D:\AI\worktrees\stateos-lane1\build-stateos-l1\gpu-verify
+dry run against D:\AI\worktrees\stateos-lane1\build-stateos-l1\gpu-verify\specoff.log
+  recorded exchanges with a response: 72
+  ok    /props stateos: version=1
+  ok    tokenize #1: 266576 tokens
+  ok    tokenize #2: 18 tokens
+  ok    tokenize #3: 2365 tokens
+  ok    slots erase #1: n_erased=0
+  ok    completion #1: prompt_n=4096 predicted_n=1 content=7 chars draft=0/0
+  ok    slots save #1: n_saved=4096 n_written=538354121 checkpoints_saved=3
+  ok    completion #2: prompt_n=18 predicted_n=64 content=186 chars draft=0/0
+  ok    slots erase #2: n_erased=4177
+  ok    completion #3: prompt_n=2365 predicted_n=8 content=13 chars draft=0/0
+  skip  slots restore #1: pre-F11 recording (no stateos.checkpoints status; checkpoints_restored=3)
+  ok    completion #4: prompt_n=18 predicted_n=64 content=186 chars draft=0/0
+  ok    slots erase #3: n_erased=4177
+  ok    completion #5: prompt_n=2365 predicted_n=8 content=13 chars draft=0/0
+  skip  slots restore #2: pre-F11 recording (no stateos.checkpoints status; checkpoints_restored=3)
+  ok    completion #6: prompt_n=18 predicted_n=64 content=186 chars draft=0/0
+  ok    slots erase #4: n_erased=4177
+  ok    completion #7: prompt_n=4114 predicted_n=64 content=186 chars draft=0/0
+  ok    slots erase #5: n_erased=4177
+  ok    completion #8: prompt_n=32768 predicted_n=1 content=1 chars draft=0/0
+  ok    slots save #2: n_saved=32768 n_written=2656095650 checkpoints_saved=17
+  ok    completion #9: prompt_n=18 predicted_n=64 content=270 chars draft=0/0
+  ok    slots erase #6: n_erased=32849
+  ok    completion #10: prompt_n=2365 predicted_n=8 content=13 chars draft=0/0
+  skip  slots restore #3: pre-F11 recording (no stateos.checkpoints status; checkpoints_restored=17)
+  ok    completion #11: prompt_n=18 predicted_n=64 content=270 chars draft=0/0
+  ok    slots erase #7: n_erased=32849
+  ok    completion #12: prompt_n=2365 predicted_n=8 content=13 chars draft=0/0
+  skip  slots restore #4: pre-F11 recording (no stateos.checkpoints status; checkpoints_restored=17)
+  ok    completion #13: prompt_n=18 predicted_n=64 content=270 chars draft=0/0
+  ok    slots erase #8: n_erased=32849
+  ok    completion #14: prompt_n=32786 predicted_n=64 content=275 chars draft=0/0
+  skip  slots restore #5: pre-F11 recording (no stateos.checkpoints status; checkpoints_restored=3)
+  skip  slots restore #6: pre-F11 recording (no stateos.checkpoints status; checkpoints_restored=3)
+  ok    slots restore refusal #7: status=409 type=state_refused refused_field=model_fingerprint_v2 slot_untouched=True
+  ok    slots restore refusal #8: status=409 type=state_refused refused_field=n_ctx slot_untouched=True
+  ok    slots restore refusal #9: status=409 type=state_refused refused_field=cache_type_k slot_untouched=True
+  ok    slots restore refusal #10: status=409 type=state_refused refused_field=cache_type_v slot_untouched=True
+  ok    slots restore refusal #11: status=409 type=state_refused refused_field=rope slot_untouched=True
+  ok    slots restore refusal #12: status=409 type=state_refused refused_field=kv_layout_version slot_untouched=True
+  ok    slots restore refusal #13: status=409 type=state_refused refused_field=system_prompt_sha256 slot_untouched=True
+  ok    slots restore refusal #14: status=409 type=state_refused refused_field=kv_geometry slot_untouched=True
+  ok    slots restore refusal #15: status=409 type=state_refused refused_field=n_tokens slot_untouched=True
+  ok    slots restore refusal #16: status=409 type=state_refused refused_field=token_sha256 slot_untouched=True
+  ok    slots restore refusal #17: status=409 type=state_refused refused_field=future_field slot_untouched=True
+  ok    slots restore refusal #18: status=409 type=state_legacy_unkeyed refused_field=format slot_untouched=True
+  ok    slots restore refusal #19: status=409 type=state_legacy_unkeyed refused_field=format slot_untouched=True
+  ok    slots restore refusal #20: status=409 type=state_corrupt refused_field=container slot_untouched=True
+  ok    slots restore refusal #21: status=409 type=state_refused refused_field=format slot_untouched=True
+  ok    slots restore refusal #22: status=409 type=state_missing refused_field=file slot_untouched=True
+  ok    completion #15: prompt_n=18 predicted_n=64 content=186 chars draft=0/0
+  ok    slots erase #9: n_erased=4177
+  ok    slots save #3: n_saved=0 n_written=118041298 checkpoints_saved=0
+  ok    completion #16: prompt_n=2365 predicted_n=8 content=13 chars draft=0/0
+  ok    slots restore #23: n_restored=0 checkpoints=absent restored=0
+  ok    completion #17: prompt_n=4114 predicted_n=64 content=186 chars draft=0/0
+  skip  slots restore #24: pre-F11 recording (no stateos.checkpoints status; checkpoints_restored=3)
+  ok    slots restore refusal #25: status=500 type=server_error refused_field=<missing: error.refused_field> slot_untouched=False
+  ok    completion #18: prompt_n=4114 predicted_n=64 content=186 chars draft=0/0
+  ok    Ple-Counts over the recorded log pair: resets_pos_gt0=0 sets=7 server_resume=7
+  ok    draft acceptance from the recorded /completion responses: 0 of 18 completions drafted; accepted/generated over them = 0/0
+dry run against D:\AI\worktrees\stateos-lane1\build-stateos-l1\gpu-verify\specon.log
+  recorded exchanges with a response: 41
+  ok    /props stateos: version=1
+  ok    slots erase #1: n_erased=0
+  ok    completion #1: prompt_n=32768 predicted_n=1 content=1 chars draft=0/0
+  ok    slots save #1: n_saved=32768 n_written=2744440433 checkpoints_saved=17
+  ok    completion #2: prompt_n=18 predicted_n=128 content=443 chars draft=84/107
+  ok    slots erase #2: n_erased=32913
+  ok    completion #3: prompt_n=2365 predicted_n=8 content=13 chars draft=4/5
+  skip  slots restore #1: pre-F11 recording (no stateos.checkpoints status; checkpoints_restored=17)
+  ok    completion #4: prompt_n=18 predicted_n=128 content=435 chars draft=107/116
+  ok    slots erase #3: n_erased=32913
+  ok    completion #5: prompt_n=2365 predicted_n=8 content=13 chars draft=4/5
+  skip  slots restore #2: pre-F11 recording (no stateos.checkpoints status; checkpoints_restored=17)
+  ok    completion #6: prompt_n=18 predicted_n=128 content=425 chars draft=113/123
+  ok    slots erase #4: n_erased=32913
+  ok    completion #7: prompt_n=2365 predicted_n=8 content=13 chars draft=4/5
+  ok    slots restore refusal #3: status=409 type=state_refused refused_field=kv_geometry slot_untouched=True
+  ok    slots erase #5: n_erased=2372
+  ok    completion #8: prompt_n=2365 predicted_n=8 content=13 chars draft=4/5
+  skip  slots restore #4: pre-F11 recording (no stateos.checkpoints status; checkpoints_restored=17)
+  ok    slots erase #6: n_erased=32768
+  ok    completion #9: prompt_n=190000 predicted_n=1 content=1 chars draft=0/0
+  ok    slots save #2: n_saved=190000 n_written=7499830039 checkpoints_saved=32
+  ok    completion #10: prompt_n=18 predicted_n=16 content=50 chars draft=8/24
+  ok    slots erase #7: n_erased=190033
+  ok    completion #11: prompt_n=2365 predicted_n=8 content=13 chars draft=4/5
+  skip  slots restore #5: pre-F11 recording (no stateos.checkpoints status; checkpoints_restored=32)
+  ok    completion #12: prompt_n=18 predicted_n=16 content=50 chars draft=8/24
+  ok    slots erase #8: n_erased=190033
+  ok    completion #13: prompt_n=2365 predicted_n=8 content=13 chars draft=4/5
+  skip  slots restore #6: pre-F11 recording (no stateos.checkpoints status; checkpoints_restored=32)
+  ok    completion #14: prompt_n=18 predicted_n=16 content=50 chars draft=8/24
+  ok    Ple-Counts over the recorded log pair: resets_pos_gt0=0 sets=50 server_resume=6
+  ok    draft acceptance from the recorded /completion responses: 12 of 14 completions drafted; accepted/generated over them = 352/448
+  ok    missing field throws naming it: completion: response field 'timings.prompt_n' is missing (no 'prompt_n'; HTTP 200): {"content":"x","timings":{"prompt_ms":1}}
+  ok    Ple-Counts on known lines: resets=1 sets=2 resume=1
+  ok    Acceptance on known responses: 3/6 rate 0.5; undrafted 0/0 rate null
+  ok    Parse-Restore on the F11 shape: checkpoints=restored/3; without the status: throws
+  ok    identity verdict rule: 8 cases
+  ok    verdict legA.identity_4k: recorded=PASS now=PASS (ckpt: counts only); draft acceptance warm/r1/r2 = 0/0 0/0 0/0
+  ok    verdict legA.identity_32k: recorded=PASS now=PASS (ckpt: counts only); draft acceptance warm/r1/r2 = 0/0 0/0 0/0
+  ok    verdict legB.companion_32k: recorded=FAIL now=INCONCLUSIVE [restored != warm, and the two restored runs disagree with each other: engine run-to-run nondeterminism] (ckpt: counts only); draft acceptance warm/r1/r2 = 84/107 107/116 113/123
+  ok    verdict legB.bytes_190k: recorded=PASS now=PASS (ckpt: counts only); draft acceptance warm/r1/r2 = 8/24 8/24 8/24
+  ok    id4k.state header + MAIN section: fingerprint=93a38923f42f... MAIN at 17029, 184133668 B; effective_model=<absent: a pre-F11 file, which F11 refuses>
+dry run: 0 failure(s); 12 restore(s) recorded in the pre-F11 shape (skipped)
+exit=0

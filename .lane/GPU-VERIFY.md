@@ -1,19 +1,21 @@
-# GPU verification recipe — State-OS v1 engine lane 1 (keyed header, refusals, one-op restore, companion)
+# GPU verification recipe — State-OS v1 engine lane 1 F11 (keyed header, refusals, one-op restore, companion, F11)
 
 Coordinator-run only, in an approved GPU window, on a quiet box. The lane did NOT run any of this. Lane 0's recipe
 (MTP invalidate on `prompt_load` / `SLOT_RESTORE`) is the previous version of this file at commit `d583c220`.
 
 Everything is scripted in `.lane/gpu-verify-l1.ps1` (this worktree). It stops every `llama-server` (standing `:8099`
-included), runs the lane-1 build on **port 8101**, loopback only, **without `--api-key`**, and in a `finally` block
-always relaunches the standing server with `D:\AI\ik_llama-qwen4exp\launch-standing-8099.ps1` and polls
-`http://127.0.0.1:8099/health` (prints `production-restored:200` or `production-restored:FAILED`).
+included), runs the **F11 build** (`build-stateos-f11`) on **port 8101**, loopback only, **without `--api-key`**, and in
+a `finally` block always relaunches the standing server with `D:\AI\ik_llama-qwen4exp\launch-standing-8099.ps1` and
+polls `http://127.0.0.1:8099/health` (prints `production-restored:200` or `production-restored:FAILED`). Its receipts go
+to `build-stateos-f11\gpu-verify\`; lane 1's receipts (`D:\AI\worktrees\stateos-lane1\build-stateos-l1\gpu-verify\`,
+binary 7c77724b) are only read (dry run, and the real 7c77724b `id4k.state` for the effective_model refusal).
 
 ## Preconditions
 
-1. Build exists: `D:\AI\worktrees\stateos-lane1\build-stateos-l1\bin\llama-server.exe` (see `.lane/REPORT.md` for the
-   exact build commands and exit codes).
-2. `bench/gpu-justify/<YYYYMMDD>-stateos-lane1.md` committed in the Longspear repo (draft text at the end of this file),
-   and posted to James at launch.
+1. Build exists: `D:\AI\worktrees\stateos-lane1-f11\build-stateos-f11\bin\llama-server.exe`, newer than every tracked
+   source file (see `.lane/REPORT.md` and `.lane/REPORT-acceptance-harness.md` for the build and its exit codes).
+2. `bench/gpu-justify/<YYYYMMDD>-stateos-lane1-f11.md` committed in the Longspear repo in the TEMPLATE headings (draft
+   text at the end of this file), and posted to James at launch.
 3. Quiet box: no battery/campaign on the GPU; `nvidia-smi` shows nothing else resident; nobody else on `:8099`
    (a remote Tailscale client thrashes the single slot).
 4. At least 25 GB free on `D:` (the 190K-token state is ~4–5 GB; the script deletes it at the end).
@@ -53,20 +55,33 @@ restore round then used wrong PLE rows, and the identity legs would have failed 
 ## Run
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\AI\worktrees\stateos-lane1\.lane\gpu-verify-l1.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\AI\worktrees\stateos-lane1-f11\.lane\gpu-verify-l1.ps1
 # acceptance leg only (spec off):             ... -File ...\gpu-verify-l1.ps1 -SkipSpecOn
 # spec-on leg without the 190K measurement:   ... -File ...\gpu-verify-l1.ps1 -Skip192K
-# parsers only, NO server / GPU / process stop:  ... -File ...\gpu-verify-l1.ps1 -DryRun [-DryRunLog <server .log>]
+# parsers only, NO server / GPU / process stop:  ... -File ...\gpu-verify-l1.ps1 -DryRun [-DryRunDir <receipts dir>] [-DryRunLog <server .log>]
+# e.g. against lane 1's receipts:  ... -DryRun -DryRunDir D:\AI\worktrees\stateos-lane1\build-stateos-l1\gpu-verify
 ```
 
-**Dry run first.** `-DryRun` exits before the preflight: it stops nothing, starts nothing and does not write the
-receipts. It feeds every request/response pair recorded in a previous run's `--verbose` log (default `specoff.log`)
-through the same parsers the live run uses (tokenize, completion, save, restore, erase, /props). It also checks:
-- the `[ple-hist]` and draft-acceptance counters, on that log and on known synthetic lines;
-- that a missing response field throws an error naming the field;
-- the header readers, on a recorded `slots\id4k.state`.
+**Dry run first.** `-DryRun` exits before the preflight: it stops nothing, starts nothing, creates no directory and
+does not write the receipts. It reads the receipts in `-DryRunDir` (default this build's `gpu-verify\`): every
+request/response pair recorded in `specoff.log` and `specon.log` (or one `-DryRunLog`) goes through the same parsers the
+live run uses (tokenize, completion incl. draft acceptance, save, restore, erase, /props). It also checks:
+- the `[ple-hist]` counter on each recorded log pair and on known synthetic lines;
+- draft acceptance summed over the recorded completions, and on synthetic drafted/undrafted responses;
+- that a missing response field throws an error naming the field, and the F11 restore shape (`stateos.checkpoints`);
+- the identity verdict rule on all eight branches, then on every identity leg in the recorded `results.json`
+  (`recorded=… now=… [reason]`), with each leg's warm/round-1/round-2 draft acceptance read back from the recorded
+  responses (matched in order by text, `prompt_n` and `predicted_n`);
+- the header readers on a recorded `slots\id4k.state` (and whether it carries `effective_model`).
 
-It exits 0 only when all of it parses. It works in Windows PowerShell 5.1 and PowerShell 7.
+A restore recorded by a binary before `b29a940c` (lane 1's 7c77724b) has no `stateos.checkpoints` status, which the F11
+parser requires; the dry run prints those as `skip … pre-F11 recording` and counts them, and uses the checkpoint counts
+only (`ckpt: counts only`) for the recorded legs. It exits 0 only when everything else parses. It works in Windows
+PowerShell 5.1 and PowerShell 7.
+
+Note for the coordinator: `.claude/hooks/gpu-spend-guard.mjs` matches any command naming `gpu-verify` and has no
+`-DryRun` exemption for it (its entry has `dry: []`), so even a dry run is refused unless the command goes through a
+wrapper that hardcodes `-DryRun` (what this lane did) or the hook gains `dry: ["-DryRun"]`.
 
 This branch adds two things:
 - The dry run can read a log that a live server still holds open.
@@ -87,10 +102,11 @@ The fix:
 - The refusal and negative checks use `Field`, which records `<missing: path>` and fails that check.
 
 Expected wall time: 3 model loads (~1–2 min each: spec-off, spec-on, standing restore) + prefills (4K and 32K twice each
-with the cold control, 32K once more spec-on, 190K once ≈ 4–6 min) + restores. Roughly 20–30 min total; with
-`-SkipSpecOn` about 8–10 min.
+with the cold control, 32K twice more spec-on for the warm run and the warm-vs-warm control, 190K once, or twice when
+its restored output differs ≈ 5–8 min) + restores + the F11 steps (seconds, plus one 538 MB file copy). Roughly
+20–30 min total (lane 1's run: 17 min); with `-SkipSpecOn` about 8–10 min.
 
-Receipts (all under `D:\AI\worktrees\stateos-lane1\build-stateos-l1\gpu-verify\`): `verdict.txt` (human log),
+Receipts (all under `D:\AI\worktrees\stateos-lane1-f11\build-stateos-f11\gpu-verify\`): `verdict.txt` (human log),
 `results.json` (every number), `launch-args.txt` (exact argv), `specoff.log/.err.log`, `specon.log/.err.log`,
 `slots\` (the 4K/32K state files and the tampered copies).
 
@@ -132,8 +148,26 @@ harness relies on token-exact reuse.
 
 **Leg B — speculation ON = production flags (report-only).** Same round at 32K with `n_predict=128`: the save must say
 `companion: saved`, restores `companion: loaded`; the spec-off `id32k.state` (no COMP section) is restored too to read
-acceptance without the companion (or its 409 if the spec-on target geometry differs — also informative). Then the 190K
-round (`P` = 190000 ids, `n_predict=16`, no cold control) measures the state bytes at the production context.
+acceptance without the companion (or its 409 if the spec-on target geometry differs — also informative; lane 1 got 409
+`kv_geometry`). Then the 190K round (`P` = 190000 ids, `n_predict=16`, no cold control) measures the state bytes at the
+production context.
+
+- **Warm-vs-warm control (`companion_32k.warm_control`, always at 32K; at 190K only when a restored output differs
+  from warm).** After the two restore rounds: `erase` → `/completion P n_predict=1` → `/completion P+Z` — the same
+  prefill-built S0 and the same continuation as the warm run, with no restore anywhere. Why this and not two
+  completions from one cached prefix: a second `P+Z` request on a slot that already holds `P+Z+generated` would truncate
+  the generated tail, which on this hybrid model goes through the checkpoint/rollback machinery, i.e. state again, and
+  its `Z` would not be re-prefilled, so the batch shapes would differ from the warm run. Rebuilding S0 by prefill keeps
+  every computation of the warm run and removes only the restore. What still differs between the two warm runs is
+  decode-side: spec-decode draft/verify batch shapes and the server-wide ngram-mod table, which grew since the first warm
+  run (neither is slot state). `agrees_with_warm` records the outcome.
+- **Draft acceptance** comes from each `/completion` response: the server adds `timings.draft_n` and
+  `timings.draft_n_accepted` (plus `draft_by_depth`) whenever the request drafted (`n_draft_total > 0`); absent means 0
+  drafted. Recorded as `warm_acceptance`, `restored[].acceptance`, `warm_control.acceptance`,
+  `no_companion_32k.acceptance` (`accepted`, `generated`, `rate`). Lane 1's run recorded 0/0/null everywhere because
+  the old counter matched the `draft acceptance rate = …` line in `specon.log` (stdout), but the server prints that line
+  with `SLT_CNT` to stderr (`specon.err.log`); the responses had the numbers all along (e.g. on32k warm 84/107, restored
+  107/116 and 113/123, on190k 8/24 each — read back by the dry run).
 
 ## Pass criteria (Leg A) and kill criteria
 
@@ -144,6 +178,19 @@ round (`P` = 190000 ids, `n_predict=16`, no cold control) measures the state byt
 - `identity_4k.verdict` and `identity_32k.verdict` = `PASS`: restored output == in-memory (warm) output, byte-exact
   text, for both restores, and `prompt_n` equal to warm's and ≤ |Z|+1 (no re-prefill). `PASS-IDENTITY /
   REUSE-INCONCLUSIVE` means identity held but the warm run itself re-prefilled (read `prompt_n` in results.json).
+- **Identity verdict rule, every identity leg** (`Get-IdentityVerdict`, shared by the live run and the dry run; the
+  reason is in `verdict_reason`, and in `fail_reason` for a FAIL):
+  1. checkpoints not all restored (`ckpt_ok` false) → `FAIL`, whatever the outputs;
+  2. both restored outputs == warm → `PASS` (or `PASS-IDENTITY / REUSE-INCONCLUSIVE`, above);
+  3. restored ≠ warm and the warm-vs-warm control ran (Leg B): the two warm runs **also disagree** → `INCONCLUSIVE`
+     (attributed to decode nondeterminism); the two warm runs **agree** while restored differs → `FAIL` (a state-defect
+     signal: Leg B fails);
+  4. restored ≠ warm, no control (Leg A, and 190K when it was not needed): `restored_runs_agree` false →
+     `INCONCLUSIVE` (engine run-to-run nondeterminism); the two restored runs agree with each other → `FAIL`.
+
+  Only a 4K `FAIL` stops the run. Lane 1's `on32k` (restored ≠ warm, the two restored runs different from each other,
+  no control) was labelled `FAIL` by the old script; under this rule it is `INCONCLUSIVE` (the dry run shows
+  `recorded=FAIL now=INCONCLUSIVE`), and the F11 run's control decides between rule 3's two outcomes.
 - `identity_*.ckpt_ok` (hard: `false` makes the leg's `verdict` FAIL, and at 4K the run stops): every restore round reports `stateos.checkpoints == "restored"` and
   `checkpoints_restored == save.checkpoints_saved`. The rounds restore right after a short conversation (Q), which is
   where a bound measured on the slot's current length wrongly refused or dropped checkpoints.
@@ -156,7 +203,29 @@ round (`P` = 190000 ids, `n_predict=16`, no cold control) measures the state byt
   section, the step records `FAIL` with the reason and the run continues to the 190K measurement.
 - Report-only: `identity_cold_vs_warm_report_only` (a cold/warm difference is the known batch-shape arithmetic effect,
   not a state defect), everything in Leg B, `restored_runs_agree` (false = engine run-to-run nondeterminism: mark
-  INCONCLUSIVE, not FAIL).
+  INCONCLUSIVE, not FAIL — rule 4 above), `warm_control` (rule 3), the draft acceptance numbers.
+- F11 (hard expectations, no kill; see the next section): `tmp_cleanup.pass`, the F11 entries of `refusals`
+  (`<effective_model absent>`, `<7c77724b file>`, `<unreadable: directory>`, `<reserved name: save|restore|rename>`),
+  `list_redacted.pass`, `adapter_generation.pass`; `effective_model_header.value` is report-only (expect `none`).
+
+## F11 behaviours: what the script exercises on the real model, and what it leaves to the CPU tests
+
+| F11 change | On the GPU (Leg A unless noted) | Why not / where else |
+|---|---|---|
+| `effective_model` hard field (`0c1bebea`, `1e94d160`, `c5d66f76`) | tampered value → 409 `refused_field: effective_model` (in the hard-field loop); the field removed → 409 naming it; lane 1's real 7c77724b `id4k.state` → 409 naming it; the value in `id4k.state` recorded (`effective_model_header`, expect `none`) | — |
+| runtime adapter generation (`e2b76a3a`, `c5d66f76`) | `adapter_generation`: bad control-vector id → 400 and the slot still saves; empty `/control-vectors/apply` (200) → save 409 `state_adapters_changed` with `slot_untouched`; erase + re-prefill → save 200 with the same `effective_model`, and `id4k.state` still restores | no LoRA or control-vector file exists for this model, so an applied adapter/vector and a stamp change cannot be shown; `test-stateos-header` covers the stamp parts and `stateos_apply_scales` |
+| failed apply → `unknown` sentinel, `state_adapters_unknown` on save and restore (`c5d66f76`, `5eab5279`, `e3e4b7ab`) | not exercised | needs `apply_control_vectors_internal` to fail, i.e. a loaded vector file; CPU tests cover the predicates |
+| `--lora-init-without-apply` (`0acc6624`) | not exercised | needs a LoRA adapter for this model; `stateos_lora_parts` unit-tested |
+| stale legacy system prompt stamp (`9729d763`) | not exercised | the legacy `system_prompt` field releases and clears every slot and changes `system_prompt_sha256`, which would disturb the other steps; `stateos_slot_start_gen` unit-tested |
+| control-vector buffer sizing, upstream fix (`8347edf7`) | not exercised | needs vector files of different lengths; `stateos_cvec_accumulate` unit-tested |
+| CKPT section bound, independent of the target slot (`b29a940c`, `4d44c638`) | every identity round: `ckpt_ok` (hard) — 3 / 17 / 32 checkpoints restored after a short Q conversation, 32 = the full list at 190K | the over-budget skip and oversized-record paths need crafted files: `test-stateos-header` |
+| `.stateos.tmp` reserved names (`fea27876`, `91579f16`) | save `reserved.stateos.tmp` and restore `RESERVED.STATEOS.TMP` → 409 `state_name_reserved`; `/rename_prompt` onto `renamed.stateos.tmp` → 409 `state_name_reserved`, source kept | trailing-dot/space spellings are refused earlier by `fs_validate_filename` (400); normalisation unit-tested |
+| stale `*.stateos.tmp` cleanup at startup (`842e16f6`) | `tmp_cleanup`: a 2-hour-old temp planted before the spec-off start is gone, a fresh one is kept | — |
+| flush before the commit rename; temp exact-size check (`842e16f6`, `60f9c9a4`) | implicitly, every save | not observable without fault injection (power loss, a temp replaced mid-save); code review + unit test of `stateos_container_size` |
+| `state_unreadable` (`a3ff750d`) | a directory named `dir-not-file.state` → 409 `state_unreadable`, slot untouched | permission-denied files need an ACL change on the box; not done |
+| `/list` redaction and legacy range check (`4e1f27ca`) | `list_redacted`: the `id4k.state` entry is `stateos-v1`, `prompt: null`, `prompt_redacted`, `token_count` 4096, `token_sha256` = the save's | out-of-range legacy ids need a crafted legacy file; unit-tested |
+| layout-descriptor renderer (`14c84ffe`) | implicitly: `kv_geometry` matches on every same-binary restore | byte-identity with the 7c77724b text cannot show on the GPU (the 7c77724b file is refused earlier, on `effective_model`); goldens in `test-stateos-layout` |
+| N5/N6 nits (`9436d471`) | the empty-restore reply is recorded (`empty_roundtrip.restore`) | tokens > n_ctx and the post-commit reply need crafted files / faults: CPU tests |
 - **Kill (auto-stop in the script):** 4K identity FAIL stops the run before 32K (merged plan: "greedy identity fails at
   4K/32K → do not ship v1 beyond lane 0"); the first hard-field refusal that is not a 409 naming its field stops the run.
 
@@ -186,15 +255,18 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\AI\ik_llama-qwen4exp\
 Invoke-RestMethod http://127.0.0.1:8099/health   # expect status ok within ~2 min
 ```
 
-## Draft `bench/gpu-justify/<YYYYMMDD>-stateos-lane1.md`
+## Draft `bench/gpu-justify/<YYYYMMDD>-stateos-lane1-f11.md`
 
-1. **Decision it changes:** whether State-OS v1 (keyed save/restore) ships beyond lane 0 and the harness lane's
-   `--state-fork` may rely on it (merged-plan kill criterion: greedy identity at 4K/32K), and the per-state byte numbers
-   that set the harness byte budget.
-2. **Why offline cannot answer:** the header codec, refusal logic and container parser are covered by
-   `test-stateos-header` (CPU, passed in the lane); whether a restored qwen4exp slot (recomputed pooled indexer `kp_l`,
-   recurrent state, companion KV) continues byte-identically, and what the files weigh, needs the real model on the GPU.
-   No reviewer advised waiting.
+The committed file must use the TEMPLATE headings (`## Decision this run can change`, `## Why existing or offline data
+cannot answer`, `## Mechanism kill criteria`, `## Auto-stop`) or the guard refuses it. Content:
+
+1. **Decision it changes:** whether the F11 build replaces 7c77724b as the State-OS v1 engine (its restore path changed:
+   CKPT bound, `effective_model`, adapter stamp), and whether Leg B's spec-on restored ≠ warm is a state defect (warm-vs-
+   warm control) or decode nondeterminism — which decides if spec-on State-OS may ship.
+2. **Why offline cannot answer:** the header codec, refusal logic, container parser and the F11 predicates are covered
+   by `test-stateos-header` (291 checks) and `test-stateos-layout` (CPU); lane 1's receipts (7c77724b) cannot show the
+   F11 restore path, and they carry no warm-vs-warm control. Whether an F11-restored qwen4exp slot continues
+   byte-identically needs the real model on the GPU. No reviewer advised waiting.
 3. **Mechanism kill criteria:** (a) the first 4K identity round must show restored == in-memory output; a FAIL stops the
    run before 32K; (b) the first tampered-header restore must answer 409 naming its field; otherwise stop. Read after
    the probe and after every round from `verdict.txt`.
