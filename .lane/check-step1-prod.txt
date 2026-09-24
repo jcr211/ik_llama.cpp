@@ -1,7 +1,8 @@
 MISS ple-hist armed: [ple-hist] set lines=0
 PASS ple-hist reset at pos > 0 == 0: resets=0
 PASS CUDA errors == 0: lines=0
+VOID mislaunched? step-1 run flags: flags unknown (no [stateos-flags] record: no <LogStem>.flags sidecar and no header line)
 MISS divergence events > 0 (new-conversation resets excluded): events=0 (decisions=0, new-conversation resets=0)
 MISS last-token share >= 0.20: share=null
 MISS last-token after a drafted round with >= 1 accepted >= 0.50: share=null
-step1: STOP
+step1: VOID (the measurement cannot answer; not a C1 kill)

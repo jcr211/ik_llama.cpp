@@ -28,24 +28,29 @@
 //   A0 flag off (RUN FIRST: the other arms read its record), A1 flag-off repeat (determinism control),
 //   C = -Tail -DivLog, benign A5 (-ExtraArgs '-no-fmoe -no-fug') and A3 (-ExtraArgs '-fa 0') flag off.
 //
-// Scoring (needs every arm's record and server log, --arm-log ARM=path):
-//   - a prompt is dropped when its B prompt (sha) differs across arms, when C's or A1's request-A
-//     output differs from A0's, or when the request-B restore line of A0, A1 or C is missing or lacks
-//     tail_dist=1, or C's lacks chosen_origin=tail with outcome restored*. Benign arms reach the same B
-//     from their own cache, so their restore lines are not constrained. A restore line binds to a row
-//     by request order AND content: n_past == the forced index, the cache window's marked token ==
-//     g_A0[G-2] and the prompt window's marked token == X;
-//   - engagement: arm C must have >= --min-prompts tail restores on its request-B lines, else
+// Scoring (needs every arm's record and server log, --arm-log ARM=path; each log's <LogStem>.flags
+// sidecar, written by the launcher, records the arm's effective flags):
+//   - a prompt is dropped when its B prompt (sha) differs across arms, when C's request-A output
+//     differs from A0's, when C's response could not be parsed (e.g. a UTF-8-split id-count mismatch in
+//     a drifted continuation; counted and reported), or when the request-B restore line of A0, A1 or C
+//     is missing or lacks tail_dist=1, or C's is not a strict tail restore (chosen_origin=tail,
+//     outcome=restored, reason=tail). Benign arms reach the same B from their own cache, so their
+//     restore lines are not constrained. A restore line binds to a row by request order AND content:
+//     n_past == the forced index, the cache window's marked token == g_A0[G-2] and the prompt window's
+//     marked token == X;
+//   - engagement: arm C must have >= --min-prompts strict tail restores on its request-B lines, else
 //     `not-engaged`: VOID when tails were not available on enough B requests (no eligible prompts:
 //     final rounds without an accepted draft), STOP when they were and C did not restore from them;
-//   - before that: CUDA error lines in any arm's log = `cuda-errors` (STOP); arm C's log showing the
-//     crosscheck = `mislaunched:xcheck` (VOID); a C row failing where A0's succeeded = `shell-errors`
-//     (STOP). A tail restore counts only as chosen_origin=tail, outcome=restored, reason=tail;
-//   - A1's request A differing from A0's is spec-on nondeterminism: void-determinism, not a drop;
+//   - before that: CUDA error lines in any arm's log = `cuda-errors` (STOP: stops the window);
+//     an arm whose recorded flags differ from the required set (C: DIV_LOG + TAIL_SNAPSHOT; every other
+//     arm: DIV_LOG only; all: PLE_HIST_REWIND + PLE_HIST_LOG), or with no flags record, = `mislaunched`
+//     (VOID) - decided from the recorded flags only, never from the lever's own output; an HTTP or
+//     connection error on a C request where A0's row succeeded = `shell-errors` (STOP);
+//   - A1's request A differing from A0's is spec-on nondeterminism: void-determinism, counted before
+//     any drop;
 //   - verdicts: compatible-at-horizon = PASS (exit 0); shellWorse, not-engaged:tails-not-used,
-//     cuda-errors, shell-errors = STOP (exit 2); insufficient-sample, void-determinism,
-//     mislaunched:xcheck and not-engaged:no-eligible-prompts = VOID (exit 3): the gate did not answer,
-//     not a C1 kill.
+//     cuda-errors, shell-errors = STOP (exit 2); insufficient-sample, void-determinism, mislaunched and
+//     not-engaged:no-eligible-prompts = VOID (exit 3): the gate did not answer, not a C1 kill.
 //
 // Usage:
 //   node tools/stateos-tail-gate.mjs run --arm A0 --out <dir> [--url http://127.0.0.1:8099]
@@ -60,10 +65,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import readline from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { feed, newCensus } from "./stateos-div-census.mjs";
+import { REQUIRED_FLAGS, feedFiles, flagsMismatch } from "./stateos-div-census.mjs";
 
 export const DEFAULT_RECEIPT =
   "D:/AI/worktrees/starfighter-trace-validation/.lanes/noise-floor-v2-20260908T022117Z/receipt.json";
@@ -233,10 +237,27 @@ const GREEDY = {
   stream: false,
 };
 
+// error kinds recorded per failed row: "http" (HTTP status or connection error: the server failed) or
+// "parse" (the response could not be turned into ids, e.g. an id-count mismatch)
 async function complete(o, key, prompt, n) {
-  return tokensOf(
-    await post(o.url, key, "/v1/completions", { ...GREEDY, prompt, max_tokens: n, n_predict: n }),
-  );
+  let resp;
+  try {
+    resp = await post(o.url, key, "/v1/completions", {
+      ...GREEDY,
+      prompt,
+      max_tokens: n,
+      n_predict: n,
+    });
+  } catch (e) {
+    e.kind = "http";
+    throw e;
+  }
+  try {
+    return tokensOf(resp);
+  } catch (e) {
+    e.kind = "parse";
+    throw e;
+  }
 }
 
 async function runArm(o) {
@@ -306,6 +327,10 @@ async function runArm(o) {
       });
     } catch (e) {
       row.error = String(e.message ?? e).slice(0, 300);
+      // "http": the server failed (status or connection); "parse": a response we could not read;
+      // "input": no usable A0 row / no forced prompt. Plain errors come from post() -> "http".
+      row.errorKind =
+        e.kind ?? (/^A0 has no valid row|^request A generated/.test(row.error) ? "input" : "http");
     }
     record.prompts.push(row);
     process.stdout.write(
@@ -397,6 +422,11 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
     if (cRow?.ok && p.ok && !sameIds(cRow.generated, p.generated)) {
       note(id, `${shell}: request A output differs from A0's`);
     }
+    // a C response we could not read (e.g. a UTF-8-split id-count mismatch in a drifted continuation)
+    // is a drop, not a server failure (HTTP/connection errors are STOP in preScoreChecks)
+    if (cRow && !cRow.ok && cRow.errorKind === "parse" && p.ok) {
+      note(id, `${shell}: response not parsed`);
+    }
     const a1Row = rowOf("A1", id);
     const a1Diverged = Boolean(a1Row?.ok && p.ok && !sameIds(a1Row.generated, p.generated));
     for (const a of constrained) {
@@ -445,6 +475,20 @@ export function score(
   const dropped = [];
   let determinismFailures = 0;
   for (const id of promptIds) {
+    // determinism covers both requests, and is counted BEFORE any drop so it is never hidden (e.g. when
+    // A0 is the odd one out and C's request A differs too): A1's request A must reproduce A0's
+    const a0RowA = rowOf("A0", id);
+    const a1RowA = rowOf("A1", id);
+    if (
+      a0RowA?.ok &&
+      a1RowA?.ok &&
+      Array.isArray(a0RowA.generated) &&
+      !sameIds(a1RowA.generated, a0RowA.generated)
+    ) {
+      determinismFailures += 1;
+      dropped.push({ id, reason: "determinism: A1 request A != A0" });
+      continue;
+    }
     if (drop.has(id)) {
       dropped.push({ id, reason: drop.get(id) });
       continue;
@@ -464,14 +508,6 @@ export function score(
     const a1 = contOf("A1", id);
     if (!a0) {
       dropped.push({ id, reason: "A0 invalid" });
-      continue;
-    }
-    // determinism covers both requests: A1's request A must reproduce A0's too
-    const a0RowA = rowOf("A0", id);
-    const a1RowA = rowOf("A1", id);
-    if (a0RowA?.generated && a1RowA?.ok && !sameIds(a1RowA.generated, a0RowA.generated)) {
-      determinismFailures += 1;
-      dropped.push({ id, reason: "determinism: A1 request A != A0" });
       continue;
     }
     const identical = Boolean(a1 && a1.length === a0.length && a1.every((v, i) => v === a0[i]));
@@ -551,12 +587,14 @@ export function gateStatus(verdict) {
 
 /**
  * Checks on the arms' logs and records before any scoring. censusByArm: {arm: raw census state
- * (newCensus + feed)}. Returns a verdict object, or null to proceed to engagement and scoring.
- *   - any CUDA error line in any arm's log: `cuda-errors` (STOP);
- *   - arm C launched with the crosscheck (any [ckpt-xcheck] row or skip, or an *:xcheck-flag-off
- *     outcome): `mislaunched:xcheck` (VOID) - the crosscheck continues on the flag-off state, so C
- *     would be the flag-off arm;
- *   - a C row failed where A0's row is ok (server error on C only): `shell-errors` (STOP).
+ * (feedFiles: the <LogStem>.flags sidecar + the log)}. Returns a verdict object, or null to proceed to
+ * engagement and scoring.
+ *   - any CUDA error line in any arm's log: `cuda-errors` (STOP: stops the window);
+ *   - an arm whose RECORDED flags differ from its required set (C: REQUIRED_FLAGS.gateTail, others:
+ *     REQUIRED_FLAGS.gateOff), or with no flags record: `mislaunched` (VOID). Decided only from the
+ *     launcher's record, never from the lever's own output;
+ *   - an HTTP or connection error on a C request where A0's row is ok (the server failed on C only):
+ *     `shell-errors` (STOP). A C response that could not be parsed is a drop, not a STOP.
  */
 export function preScoreChecks(records, censusByArm, { shell }) {
   const errors = Object.entries(censusByArm)
@@ -568,25 +606,27 @@ export function preScoreChecks(records, censusByArm, { shell }) {
       voidReason: `CUDA error lines in arm logs: ${errors.join(", ")}`,
     };
   }
-  const c = censusByArm[shell];
-  if (c) {
-    const xRows = c.v2.xcheck.length;
-    const xSkips = Object.values(c.v2.xcheckSkips).reduce((a, b) => a + b, 0);
-    const xOutcomes = c.v2.restores.filter((r) =>
-      String(r.outcome).endsWith("xcheck-flag-off"),
-    ).length;
-    if (xRows + xSkips + xOutcomes > 0) {
-      return {
-        verdict: "mislaunched:xcheck",
-        voidReason: `arm ${shell}'s log shows the crosscheck (${xRows} [ckpt-xcheck] rows, ${xSkips} skips, ${xOutcomes} xcheck-flag-off outcomes): it continued on the flag-off state; relaunch ${shell} with -Tail -DivLog only`,
-      };
-    }
+  const mislaunched = records
+    .map((r) => {
+      const required = r.arm === shell ? REQUIRED_FLAGS.gateTail : REQUIRED_FLAGS.gateOff;
+      const why = flagsMismatch(censusByArm[r.arm]?.flags ?? null, required);
+      return why ? `${r.arm}: ${why}` : null;
+    })
+    .filter(Boolean);
+  if (mislaunched.length) {
+    return {
+      verdict: "mislaunched",
+      voidReason: `recorded launch flags do not match the step-4 arms: ${mislaunched.join("; ")}`,
+    };
   }
   const a0 = records.find((r) => r.arm === "A0");
   const cRec = records.find((r) => r.arm === shell);
   if (a0 && cRec) {
     const failed = a0.prompts
-      .filter((p) => p.ok && !cRec.prompts.find((q) => q.id === p.id)?.ok)
+      .filter((p) => {
+        const q = cRec.prompts.find((x) => x.id === p.id);
+        return p.ok && q && !q.ok && (q.errorKind ?? "http") === "http";
+      })
       .map((p) => p.id);
     if (failed.length) {
       return {
@@ -596,13 +636,6 @@ export function preScoreChecks(records, censusByArm, { shell }) {
     }
   }
   return null;
-}
-
-async function censusOfLog(file) {
-  const c = newCensus();
-  const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
-  for await (const line of rl) feed(c, line);
-  return c;
 }
 
 async function runScore(o) {
@@ -618,7 +651,8 @@ async function runScore(o) {
   const censusByArm = {};
   const restoresByArm = {};
   for (const r of records) {
-    censusByArm[r.arm] = await censusOfLog(o.armLogs[r.arm]);
+    // the log plus its <LogStem>.flags sidecar (the arm's recorded launch flags)
+    censusByArm[r.arm] = await feedFiles([o.armLogs[r.arm]]);
     restoresByArm[r.arm] = censusByArm[r.arm].v2.restores;
   }
   const pre = engagementAndDrops(records, restoresByArm, {

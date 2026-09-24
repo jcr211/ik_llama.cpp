@@ -38,6 +38,10 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
       VOID in steps 2/3, step-3 floor rule, CUDA errors STOP in every arm, A1 request-A = determinism,
       erase no-op documented; node tools 19/19 (tools only)
 
+- [x] fix round 5 (final check of 1f0389b7): launcher flags sidecar, mislaunch from recorded flags only,
+      A1 determinism before drops, hard tail-integrity misses, C parse errors drop, stale comments;
+      node tools 20/20 (tools + launcher only)
+
 ## GPU-window assumptions (W-SV2)
 - Every arm (P0, T1, A0, A1, C, A5, A3, probe) launches via launch-stateos-tail-8099.ps1, so all run
   with LONGSPEAR_PLE_HIST_REWIND=1 and LONGSPEAR_PLE_HIST_LOG=1; arms differ only in the tail lever
@@ -52,6 +56,17 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
 - Launcher: `-LogStem` is mandatory and must be new per arm (an existing .err.log is refused, never
   truncated). A BOX-LOCK.json refuses the launch unless its `owner` equals `-LockOwner`, default
   `W-SV2 chain`: the chain writes exactly that owner string into its own lock.
+- MISLAUNCH (coordinator ruling, round 5): decided ONLY from the launcher's recorded flags, never from the
+  lever's own output. Before starting the server the launcher writes `<LogStem>.flags` next to the log: one
+  `[stateos-flags]` line with the effective LONGSPEAR_STATEOS_DIV_LOG, _TAIL_SNAPSHOT, _TAIL_XCHECK and
+  LONGSPEAR_PLE_HIST_REWIND, _LOG (0/1). The census and the gate read it (a `[stateos-flags]` header line in
+  the log also counts). VOID ("mislaunched") = the recorded flags differ from the step's required set; no
+  record = VOID ("flags unknown"). Required sets (PLE_HIST_REWIND=1 and PLE_HIST_LOG=1 in all):
+  step 1 DIV_LOG only; step 2 DIV_LOG + TAIL_SNAPSHOT + TAIL_XCHECK; step 3 P0 DIV_LOG only, T1 DIV_LOG +
+  TAIL_SNAPSHOT; step 4 C DIV_LOG + TAIL_SNAPSHOT, all other arms DIV_LOG only. With the right flags
+  recorded, every tail failure (verify failure, tail never chosen, sha mismatch, writer refusal) is STOP.
+- Tail-integrity misses (restore-failed / verify-failed / rewind-refused after a tail choice, tail sha
+  mismatch) are hard: STOP even when a VOID check also fails (steps 2 and 3), like CUDA errors.
 - Step 1 denominator: restore-branch decisions MINUS new-conversation resets (outcome reset:no-checkpoint
   with common prefix < 64). Both counts are printed.
 - Steps 2 and 3: zero outcomes restore-failed / verify-failed / rewind-refused after a tail choice, and
@@ -68,9 +83,9 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
     shadow_pos <= last cached - 2 iff n_acc >= 1; the root position is n_past_pre_spec,
     server-context.cpp:5467-5468, recorded as root - 1 at llama.cpp:10144; spec_pos_base is root + 1.)
   - Traffic sanity, VOID when violated: each run has >= 5 eligible events, T1's eligible count is within
-    0.5x-2x P0's, P0 ran with the tail off, T1 with it on.
-  - Protocol, VOID ("mislaunched") when violated: T1 ran with the tail on and WITHOUT the crosscheck (no
-    [ckpt-xcheck] rows or skips, no *:xcheck-flag-off outcome); P0 ran with the tail off.
+    0.5x-2x P0's.
+  - Protocol, VOID ("mislaunched"): P0's or T1's recorded flags differ from their required sets (see
+    MISLAUNCH above), or are missing.
   - Mechanism, STOP when violated: in T1 a tail was written AND chosen (outcome restored, reason tail) on
     >= 90 % of eligible events.
   - Effect (coordinator protocol ruling on the step-3 floor), STOP when violated: a tail restore
@@ -87,25 +102,26 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
     (its cache, and C's tail, exist), then A0's B tokens (sha recorded per row).
   - Every arm launched with -DivLog (C with -Tail -DivLog). Token ids come from /v1/completions logprobs
     and their count must equal usage.completion_tokens (a UTF-8-split token has no logprobs entry).
-  - Drops: B sha differs across arms; C's or A1's request-A output differs from A0's; the request-B
-    restore line of A0, A1 or C is missing or lacks tail_dist=1, or C's lacks chosen_origin=tail +
-    outcome restored* (benign arms reach the same B from their own cache and are not constrained).
+  - Drops: B sha differs across arms; C's request-A output differs from A0's; C's response could not be
+    parsed (e.g. a UTF-8-split id-count mismatch in a drifted continuation; counted and reported); the
+    request-B restore line of A0, A1 or C is missing or lacks tail_dist=1, or C's is not a strict tail
+    restore (chosen_origin=tail, outcome=restored, reason=tail) (benign arms reach the same B from their
+    own cache and are not constrained).
     Restore lines bind by request order AND content (n_past == forced index, cache-window marked token ==
     g_A0[G-2], prompt-window marked token == X). Dropped counts in gate.json.
   - Engagement: C needs >= 20 tail restores on its request-B lines; a tail restore is exactly
     chosen_origin=tail, outcome=restored, reason=tail (restored:xcheck-flag-off does NOT count: that server
     continued on the flag-off state). Otherwise `not-engaged`: VOID when tails were available on < 20 B
     requests (no eligible prompts), STOP when they were available and not used.
-  - Pre-score refusals: CUDA error lines in ANY arm's log = cuda-errors (STOP); C's log shows the crosscheck
-    = mislaunched:xcheck (VOID; relaunch C with -Tail -DivLog only); a C row failing where A0's succeeded =
-    shell-errors (STOP).
-  - A1's request A differing from A0's is spec-on nondeterminism = void-determinism (not a drop).
+  - Pre-score refusals: CUDA error lines in ANY arm's log = cuda-errors (STOP: stops the window); an arm
+    whose recorded flags differ from its required set, or with no flags record, = mislaunched (VOID); an
+    HTTP or connection error on a C request where A0's row succeeded = shell-errors (STOP).
+  - A1's request A differing from A0's is spec-on nondeterminism = void-determinism, counted BEFORE any
+    drop (so it is not hidden when C's request A differs too).
   - Status: compatible-at-horizon PASS (exit 0); shellWorse, not-engaged:tails-not-used, cuda-errors,
-    shell-errors STOP (2); insufficient-sample, void-determinism, mislaunched:xcheck,
+    shell-errors STOP (2); insufficient-sample, void-determinism, mislaunched,
     not-engaged:no-eligible-prompts VOID (3) - the gate did not answer, not a C1 kill.
-  - Step 2 VOID ("mislaunched") when the probe ran with the tail off OR with the crosscheck off (the probe
-    is TAIL_SNAPSHOT=1 TAIL_XCHECK=1 DIV_LOG=1; crosscheck on = [ckpt-xcheck] rows/skips or
-    *:xcheck-flag-off outcomes in its log).
+  - Step 2 VOID ("mislaunched") when its recorded flags are not DIV_LOG + TAIL_SNAPSHOT + TAIL_XCHECK (+ PLE).
   - Step-3 floors (coordinator ruling): floor_T1 on the left, floor_P0 inside the bracket, each from its
     own run's lines.
   - The slot erase before each prompt is a NO-OP in W-SV2 (/slots/:id exists only with --slot-save-path,

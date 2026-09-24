@@ -54,6 +54,49 @@ export function parseFields(line) {
 
 const num = (v) => (v === undefined ? null : Number(v));
 
+// ---- launch flags (mislaunch is decided from these, never from the lever's own output) ----------
+
+export const FLAG_NAMES = [
+  "LONGSPEAR_STATEOS_DIV_LOG",
+  "LONGSPEAR_STATEOS_TAIL_SNAPSHOT",
+  "LONGSPEAR_STATEOS_TAIL_XCHECK",
+  "LONGSPEAR_PLE_HIST_REWIND",
+  "LONGSPEAR_PLE_HIST_LOG",
+];
+
+const flagSet = (div, tail, xcheck) => ({
+  LONGSPEAR_STATEOS_DIV_LOG: div,
+  LONGSPEAR_STATEOS_TAIL_SNAPSHOT: tail,
+  LONGSPEAR_STATEOS_TAIL_XCHECK: xcheck,
+  LONGSPEAR_PLE_HIST_REWIND: "1",
+  LONGSPEAR_PLE_HIST_LOG: "1",
+});
+
+/** The flags each W-SV2 run must have been launched with (merged plan section 4). */
+export const REQUIRED_FLAGS = {
+  step1: flagSet("1", "0", "0"), // telemetry read: DIV_LOG only
+  step2: flagSet("1", "1", "1"), // mechanism probe: TAIL_SNAPSHOT + TAIL_XCHECK + DIV_LOG
+  P0: flagSet("1", "0", "0"), // step 3 flag-off arm
+  T1: flagSet("1", "1", "0"), // step 3 tail arm
+  gateOff: flagSet("1", "0", "0"), // step 4 A0, A1, A5, A3
+  gateTail: flagSet("1", "1", "0"), // step 4 C
+};
+
+/** null when the recorded flags equal the required set, else why not ("flags unknown" when absent). */
+export function flagsMismatch(flags, required) {
+  if (!flags)
+    return "flags unknown (no [stateos-flags] record: no <LogStem>.flags sidecar and no header line)";
+  const bad = FLAG_NAMES.filter((k) => flags[k] !== required[k]).map(
+    (k) => `${k}=${flags[k]} (need ${required[k]})`,
+  );
+  return bad.length ? `wrong flags: ${bad.join(", ")}` : null;
+}
+
+/** <LogStem>.flags next to <LogStem>.err.log (the launcher writes it before the server starts). */
+export function flagsSidecarOf(logPath) {
+  return logPath.replace(/\.err\.log$/i, "").replace(/\.log$/i, "") + ".flags";
+}
+
 /**
  * Token ids of a cache_win / prompt_win field (`[id:"piece" *id:"piece" ...]`, '*' marks the token at
  * the divergence): {ids, center} with center = index of the marked token in ids, -1 when absent.
@@ -101,6 +144,9 @@ export function newCensus() {
       xcheckSkips: {},
     },
     ple: { sets: 0, setsBySite: {}, resetsAtPos0: 0, resetsAfterPos0: 0 },
+    // the launcher's recorded env flags ([stateos-flags] line, from the <LogStem>.flags sidecar or a
+    // header line in the log); null = flags unknown
+    flags: null,
     cudaErrors: 0,
     _last: null,
     _tailPending: new Map(),
@@ -109,6 +155,12 @@ export function newCensus() {
 
 /** Feed one log line. Pure apart from mutating `c`. */
 export function feed(c, line) {
+  if (line.startsWith("[stateos-flags]")) {
+    const f = parseFields(line);
+    c.flags = {};
+    for (const k of FLAG_NAMES) c.flags[k] = f[k] === "1" ? "1" : "0";
+    return;
+  }
   if (line.startsWith("[stateos-div]")) {
     const f = parseFields(line);
     if (f.event === "restore") {
@@ -369,7 +421,7 @@ export function summarize(c) {
       bitEqualRows: V.xcheck.filter((x) => x.n !== null && x.nBitequal === x.n).length,
     },
   };
-  return { legacy, v2, ple: c.ple, cudaErrors: c.cudaErrors };
+  return { legacy, v2, ple: c.ple, cudaErrors: c.cudaErrors, flags: c.flags };
 }
 
 const miss = (name, ok, detail) => ({ name, ok: Boolean(ok), detail });
@@ -388,7 +440,8 @@ const voidCheck = (name, ok, detail) => ({ name, ok: Boolean(ok), detail, void: 
 // - effect (MISS): >= 90 % of the ACHIEVABLE reduction: T1 mean gap <= floor_T1 + 0.10 x (P0 mean gap
 //   - floor_P0), floor = mean prev_n_acc of the class in that run (a tail-served event's gap is n_acc);
 //   VOID when P0's mean gap <= 1.5 x floor_P0 (gap too small to measure);
-// - protocol (VOID, "mislaunched"): P0 tail off; T1 tail on and crosscheck off.
+// - protocol (VOID, "mislaunched"): the launcher's RECORDED flags (<LogStem>.flags) differ from
+//   REQUIRED_FLAGS.P0 / .T1, or are missing ("flags unknown"). Never inferred from the lever's output.
 // The raw per-event ratio and the all-last-token-events ratio are report-only.
 export const STEP3_FLOOR_MARGIN = 1.5;
 export const STEP3_REDUCTION_SLACK = 0.1;
@@ -420,18 +473,29 @@ export function checkStep(step, s, p0 = null) {
     // a CUDA error is always a STOP, even when a traffic/protocol check would VOID the step
     { ...miss("CUDA errors == 0", s.cudaErrors === 0, `lines=${s.cudaErrors}`), hard: true },
   ];
-  // steps 2 and 3: a tail choice never ends in a failed restore, and no tail prefix mismatches
+  // steps 2 and 3: a tail choice never ends in a failed restore, and no tail prefix mismatches. These
+  // are C1 correctness failures on any traffic: hard, they STOP even when a VOID check also fails.
   const tailIntegrity = () => {
-    checks.push(
-      miss(
+    checks.push({
+      ...miss(
         "restore-failed/verify-failed/rewind-refused after a tail choice == 0",
         V.failedAfterTailChoice === 0,
         `n=${V.failedAfterTailChoice}`,
       ),
-    );
-    checks.push(miss("sha mismatches == 0", V.tailShaMismatch === 0, `n=${V.tailShaMismatch}`));
+      hard: true,
+    });
+    checks.push({
+      ...miss("sha mismatches == 0", V.tailShaMismatch === 0, `n=${V.tailShaMismatch}`),
+      hard: true,
+    });
+  };
+  // mislaunch (VOID) is decided ONLY from the launcher's recorded flags, never from the lever's output
+  const launched = (who, flags, required) => {
+    const why = flagsMismatch(flags, required);
+    checks.push(voidCheck(`mislaunched? ${who} flags`, why === null, why ?? "flags as required"));
   };
   if (step === "step1") {
+    launched("step-1 run", s.flags, REQUIRED_FLAGS.step1);
     checks.push(
       miss(
         "divergence events > 0 (new-conversation resets excluded)",
@@ -450,22 +514,8 @@ export function checkStep(step, s, p0 = null) {
       ),
     );
   } else if (step === "step2") {
-    // the probe is TAIL_SNAPSHOT=1 TAIL_XCHECK=1 DIV_LOG=1 (launch-stateos-tail-xcheck-8099.ps1); the
-    // tail off or the crosscheck off means it was mislaunched
-    checks.push(
-      voidCheck(
-        "mislaunched? the probe ran with the crosscheck on",
-        V.xcheckActive,
-        `[ckpt-xcheck] rows=${V.xcheck.rows} skips=${JSON.stringify(V.xcheck.skips)} outcomes=${JSON.stringify(V.byOutcome)}`,
-      ),
-    );
-    checks.push(
-      voidCheck(
-        "mislaunched? the probe ran with the tail on",
-        V.tailOn,
-        `creates=${JSON.stringify(V.creates)} tail_skips=${JSON.stringify(V.tailSkips)}`,
-      ),
-    );
+    // the probe is TAIL_SNAPSHOT=1 TAIL_XCHECK=1 DIV_LOG=1 (launch-stateos-tail-xcheck-8099.ps1)
+    launched("step-2 probe", s.flags, REQUIRED_FLAGS.step2);
     checks.push(
       miss(
         "tail available on >= 1 last-token divergence",
@@ -502,24 +552,9 @@ export function checkStep(step, s, p0 = null) {
     const P = p0.v2;
     const pe = P.lastToken.eligible;
     const te = T.eligible;
-    // protocol and traffic sanity: VOID, not a lever kill
-    checks.push(
-      voidCheck(
-        "P0 was run with the tail off",
-        !P.tailOn,
-        `P0 tail events=${JSON.stringify(P.creates)}`,
-      ),
-    );
-    checks.push(
-      voidCheck("T1 was run with the tail on", V.tailOn, `T1 creates=${JSON.stringify(V.creates)}`),
-    );
-    checks.push(
-      voidCheck(
-        "mislaunched? T1 ran without the crosscheck",
-        !V.xcheckActive,
-        `[ckpt-xcheck] rows=${V.xcheck.rows} skips=${JSON.stringify(V.xcheck.skips)} outcomes=${JSON.stringify(V.byOutcome)}`,
-      ),
-    );
+    // protocol (recorded flags) and traffic sanity: VOID, not a lever kill
+    launched("P0", p0.flags, REQUIRED_FLAGS.P0);
+    launched("T1", s.flags, REQUIRED_FLAGS.T1);
     checks.push(
       voidCheck(
         `P0 eligible events >= ${STEP3_MIN_EVENTS}`,
@@ -611,13 +646,22 @@ export function checkStep(step, s, p0 = null) {
   };
 }
 
-export async function censusOfFiles(files) {
+/** Raw census state of log files; each log's <LogStem>.flags sidecar (if present) is read first. */
+export async function feedFiles(files) {
   const c = newCensus();
   for (const f of files) {
+    const sidecar = flagsSidecarOf(f);
+    if (fs.existsSync(sidecar)) {
+      for (const line of fs.readFileSync(sidecar, "utf8").split(/\r?\n/)) feed(c, line);
+    }
     const rl = readline.createInterface({ input: fs.createReadStream(f), crlfDelay: Infinity });
     for await (const line of rl) feed(c, line);
   }
-  return summarize(c);
+  return c;
+}
+
+export async function censusOfFiles(files) {
+  return summarize(await feedFiles(files));
 }
 
 function fmt(x, digits = 0) {
@@ -639,6 +683,9 @@ export function renderText(files, s) {
   }
   out.push(
     `legacy forced full re-processing=${L.forced} (with a Cache line ${L.forcedWithPrefix}; common prefix < 64: ${L.forcedPrefixLt64}; max prefix ${fmt(L.forcedPrefixMax)}; prefix tokens ${L.forcedPrefixTokens})`,
+  );
+  out.push(
+    `launch flags: ${s.flags ? JSON.stringify(s.flags) : "unknown (no [stateos-flags] record)"}`,
   );
   out.push(
     `ple-hist: set lines=${s.ple.sets} ${JSON.stringify(s.ple.setsBySite)}; resets at pos > 0=${s.ple.resetsAfterPos0} (at pos 0: ${s.ple.resetsAtPos0}); CUDA error lines=${s.cudaErrors}`,

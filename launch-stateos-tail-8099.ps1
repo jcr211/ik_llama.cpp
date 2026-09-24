@@ -11,6 +11,9 @@
 # -ExtraArgs is appended last (later flags win), e.g. '-no-fmoe -no-fug' or '-fa 0' for the benign gate arms.
 # -LogStem is MANDATORY and must be new: every arm writes its own D:\AI\ik_llama-qwen4exp\<LogStem>.out.log /
 # .err.log (e.g. 'ik-serve-8099-wsv2-step3-P0'); an existing .err.log is refused, never truncated.
+# Before launching it writes <LogStem>.flags: one '[stateos-flags] NAME=0|1 ...' line with the effective
+# LONGSPEAR_STATEOS_{DIV_LOG,TAIL_SNAPSHOT,TAIL_XCHECK} and LONGSPEAR_PLE_HIST_{REWIND,LOG}; the census and
+# the gate read it to decide "mislaunched" (VOID). A missing .flags file is "flags unknown" (VOID).
 # BOX-LOCK: D:\AI\ik_llama-qwen4exp\BOX-LOCK.json refuses the launch unless its "owner" field equals
 # -LockOwner (default 'W-SV2 chain', the owner string the W-SV2 chain must write into its own lock).
 param(
@@ -63,6 +66,18 @@ foreach ($pair in @(
         Remove-Item -Path ("Env:" + $pair[0]) -ErrorAction SilentlyContinue
     }
 }
+
+# Record the EFFECTIVE flags before the server starts: tools/stateos-div-census.mjs and
+# tools/stateos-tail-gate.mjs decide "mislaunched" (VOID) from this <LogStem>.flags sidecar only.
+$flagsPath = 'D:\AI\ik_llama-qwen4exp\' + $LogStem + '.flags'
+if (Test-Path $flagsPath) { throw "$flagsPath exists: pick a new -LogStem per arm" }
+$flagNames = @('LONGSPEAR_STATEOS_DIV_LOG', 'LONGSPEAR_STATEOS_TAIL_SNAPSHOT', 'LONGSPEAR_STATEOS_TAIL_XCHECK', 'LONGSPEAR_PLE_HIST_REWIND', 'LONGSPEAR_PLE_HIST_LOG')
+$flagParts = foreach ($n in $flagNames) {
+    $v = [Environment]::GetEnvironmentVariable($n)
+    if ($v -eq '1') { $n + '=1' } else { $n + '=0' }
+}
+$flagsLine = '[stateos-flags] ' + ($flagParts -join ' ') + ' logstem=' + $LogStem + " extra='" + $ExtraArgs + "'"
+Set-Content -Path $flagsPath -Value $flagsLine -Encoding ascii
 
 $argsx = '-m "D:\AI\LLM Models\custom\Qwen3.8-Flash-Next-MXFP4moe-ngramQ8-MTP.gguf" --api-key "' + $key + '" -ngl 999 -ncmoe 37 -fa 1 -c 196608 -ub 512 -ctk q8_0 -ctv q8_0 -np 1 -t 24 -tb 32 --jinja --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --host 0.0.0.0 --port 8099 --spec-type ngram-mod:n_min=4 --spec-type mtp:n_max=4 --reasoning-budget 1024 --spec-ckpt-mode gpu-fallback -rtr -muge'
 if ($ExtraArgs -ne '') { $argsx = $argsx + ' ' + $ExtraArgs }
