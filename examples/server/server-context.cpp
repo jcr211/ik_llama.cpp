@@ -3997,13 +3997,13 @@ bool server_context::apply_control_vectors_internal() {
         }
 
         if (combined_cv.n_embd == -1) {
+            // upstream fix: size for every layer (the buffer starts at layer 1), zero-filled, so a vector with fewer
+            // layers cannot overflow it or leave an earlier apply's values in the layers it does not cover
             combined_cv.n_embd = cv.data.n_embd;
-            combined_cv.data.resize(cv.data.data.size(), 0.0f);
+            combined_cv.data.assign((size_t) cv.data.n_embd * (size_t) std::max(llama_n_layer(model) - 1, 0), 0.0f);
         }
 
-        for (size_t i = 0; i < cv.data.data.size(); i++) {
-            combined_cv.data[i] += cv.data.data[i] * cv.scale;
-        }
+        stateos_cvec_accumulate(combined_cv.data, cv.data.data, cv.scale);
         cv.applied = true;
     }
 

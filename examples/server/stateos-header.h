@@ -176,6 +176,10 @@ struct stateos_cvec_desc {
 std::vector<std::string> stateos_cvec_parts(bool startup_live, const std::vector<stateos_cvec_desc> & startup,
                                             const std::vector<stateos_cvec_desc> & runtime);
 
+// combined += data * scale over the common length only (upstream control-vector fix used by
+// apply_control_vectors_internal: the combined buffer is sized for every layer, a vector may cover fewer or more).
+void stateos_cvec_accumulate(std::vector<float> & combined, const std::vector<float> & data, float scale);
+
 // LoRA items of effective_model ({path, scale} per loaded adapter). `live` is false while the loaded scales were never
 // applied to the context (--lora-init-without-apply until the first /lora-adapters apply): no lines then.
 std::vector<std::string> stateos_lora_parts(bool live, const std::vector<std::pair<std::string, float>> & loras);

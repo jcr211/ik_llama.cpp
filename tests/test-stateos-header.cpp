@@ -511,6 +511,18 @@ static void test_effective_model() {
         CHECK(stateos_effective_model_value(stateos_cvec_parts(false, startup, none)) == "none");
     }
 
+    // the combined control vector is sized for every layer and zero-filled; a shorter vector cannot leave stale layers
+    // and a longer one cannot overflow it (review F11-3 P3-3, upstream code)
+    {
+        std::vector<float> combined(6, 0.0f);                                    // n_embd 2 x 3 layers
+        stateos_cvec_accumulate(combined, { 1, 1 }, 2.0f);                       // one layer only
+        stateos_cvec_accumulate(combined, { 1, 1, 1, 1, 1, 1, 9, 9 }, 0.5f);      // one layer more than the model
+        CHECK(combined == std::vector<float>({ 2.5f, 2.5f, 0.5f, 0.5f, 0.5f, 0.5f }));
+        std::vector<float> fresh(6, 0.0f);
+        stateos_cvec_accumulate(fresh, { 1, 1 }, 2.0f);
+        CHECK(fresh == std::vector<float>({ 2, 2, 0, 0, 0, 0 }));                // uncovered layers stay zero
+    }
+
     // --lora-init-without-apply: loaded at scale 1 but never applied, so no lora lines until SET_LORA (review F11-3 P2-1)
     {
         const std::vector<std::pair<std::string, float>> loras = { { "x.gguf", 1.0f }, { "off.gguf", 0.0f } };

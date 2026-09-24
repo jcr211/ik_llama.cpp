@@ -592,6 +592,13 @@ std::vector<std::string> stateos_cvec_parts(bool startup_live, const std::vector
     return parts;
 }
 
+void stateos_cvec_accumulate(std::vector<float> & combined, const std::vector<float> & data, float scale) {
+    const size_t n = std::min(combined.size(), data.size());
+    for (size_t i = 0; i < n; ++i) {
+        combined[i] += data[i] * scale;
+    }
+}
+
 std::vector<std::string> stateos_lora_parts(bool live, const std::vector<std::pair<std::string, float>> & loras) {
     std::vector<std::string> parts;
     if (!live) {
