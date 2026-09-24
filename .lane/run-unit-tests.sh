@@ -11,6 +11,6 @@ for t in test-partial-state test-stateos-tail test-ple-hist; do
 done
 node --test tools/stateos-tail-tools.test.mjs > .lane/node-test.txt 2>&1
 rc=$?
-echo "node tools tests rc=$rc :: $(grep -E '^. (pass|fail) ' .lane/node-test.txt | tr '\n' ' ')"
+echo "node tools tests rc=$rc :: $(grep -E ' (pass|fail) [0-9]+$' .lane/node-test.txt | tr '\n' ' ')"
 [ "$rc" -eq 0 ] || fail=1
 exit $fail

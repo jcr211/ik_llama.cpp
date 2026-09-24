@@ -121,7 +121,9 @@ export function feed(c, line) {
       c.v2.creates[f.origin] = (c.v2.creates[f.origin] ?? 0) + 1;
       if (f.origin === "tail") c._tailPending.set(f.slot ?? "0", true);
     } else if (f.event === "tail_skip") {
+      // a newer release produced no tail: an older pending tail no longer describes this slot
       c.v2.tailSkips[f.cause] = (c.v2.tailSkips[f.cause] ?? 0) + 1;
+      c._tailPending.set(f.slot ?? "0", false);
     } else if (f.event === "tail_sha_mismatch") {
       c.v2.tailShaMismatch += 1;
     }
@@ -229,14 +231,32 @@ export function summarize(c) {
 
   const V = c.v2;
   const rs = V.restores;
+  // new-conversation resets (no checkpoint and a common prefix < 64: a different conversation, the
+  // census's 491 "forced" class) are not divergences of the cached conversation
+  const isNewConversation = (r) => r.outcome === "reset:no-checkpoint" && r.nPast < 64;
+  const divergences = rs.filter((r) => !isNewConversation(r));
   const last = rs.filter((r) => r.tailDist === 1);
   const lastAfterDrafted = last.filter((r) => r.prevRound === "drafted" && r.prevNAcc >= 1);
   const eligibleLast = last.filter((r) => r.tailAvailable);
   // a tail restore = the search chose the tail and its restore succeeded; under the crosscheck the
-  // server then continues on the flag-off checkpoint (outcome restored:xcheck-flag-off)
-  const tailRestoredOfEligible = eligibleLast.filter(
-    (r) => r.chosenOrigin === "tail" && String(r.outcome).startsWith("restored"),
-  );
+  // server then continues on the flag-off checkpoint (outcome restored:xcheck-flag-off), or resets
+  // when the flag-off path has no checkpoint (reset:xcheck-flag-off): both are hits
+  const isTailHit = (r) =>
+    r.chosenOrigin === "tail" &&
+    (String(r.outcome).startsWith("restored") || r.outcome === "reset:xcheck-flag-off");
+  const tailRestoredOfEligible = eligibleLast.filter(isTailHit);
+  // tails that were eligible at release but not written (writer refusal, order, short cache, size)
+  const WRITER_SKIPS = ["refused", "order", "cache-short", "size-mismatch"];
+  const writerSkips = sum(WRITER_SKIPS.map((k) => V.tailSkips[k] ?? 0));
+  const TAIL_FAILURES = ["reset:restore-failed", "reset:verify-failed", "reset:rewind-refused"];
+  // step 3's comparison class: the TAIL-ELIGIBLE last-token divergences. With the tail on (T1) these are
+  // C1's own eligible events (a tail existed); with it off (P0) the events whose previous generation
+  // ended with a drafted round that accepted >= 1 draft, i.e. where the eligibility predicate's
+  // decisive conjunct (shadow_pos <= last cached - 2) holds.
+  const tailOn = (V.creates.tail ?? 0) > 0 || Object.keys(V.tailSkips).length > 0;
+  const eligibleClass = tailOn ? eligibleLast : lastAfterDrafted;
+  const eligibleGaps = eligibleClass.map((r) => r.gap ?? 0);
+  const lastDivergences = divergences.filter((r) => r.tailDist === 1);
   const v2ByBucket = {};
   for (const b of BUCKETS) v2ByBucket[b] = { n: 0, gapTokens: 0 };
   for (const r of rs) {
@@ -249,34 +269,58 @@ export function summarize(c) {
   const count = (xs, key) => xs.reduce((m, x) => ((m[x[key]] = (m[x[key]] ?? 0) + 1), m), {});
   const relL2 = V.xcheck.map((x) => x.relL2).filter(Number.isFinite);
   const v2 = {
-    divergenceEvents: rs.length,
+    // every restore-branch decision, including new-conversation resets
+    restoreDecisions: rs.length,
+    // the step-1 denominator: decisions minus new-conversation resets
+    divergenceEvents: divergences.length,
+    newConversationResets: rs.length - divergences.length,
+    tailOn,
     byBucket: v2ByBucket,
     byClass: count(rs, "cls"),
     byOutcome: count(rs, "outcome"),
     byReason: count(rs, "reason"),
     lastToken: {
       n: last.length,
-      shareOfEvents: rs.length ? last.length / rs.length : null,
+      shareOfEvents: divergences.length ? lastDivergences.length / divergences.length : null,
       afterDraftedRoundWithAccepted: lastAfterDrafted.length,
       shareAfterDraftedRoundWithAccepted: last.length
         ? lastAfterDrafted.length / last.length
         : null,
+      // all last-token events: REPORT-ONLY in step 3
       gapTokens: sum(last.map((r) => r.gap ?? 0)),
       byPrevStop: count(last, "prevStop"),
       byPrevRound: count(last, "prevRound"),
       withTailAvailable: eligibleLast.length,
+      writerSkips,
       restoredFromTail: tailRestoredOfEligible.length,
-      tailHitRate: eligibleLast.length ? tailRestoredOfEligible.length / eligibleLast.length : null,
+      // eligible-at-release tails the writer did not produce count as misses
+      tailHitRate:
+        eligibleLast.length + writerSkips
+          ? tailRestoredOfEligible.length / (eligibleLast.length + writerSkips)
+          : null,
+      // step 3's class (see above): count, gap tokens, gap per event
+      eligible: {
+        definition: tailOn
+          ? "tail available (C1's own eligible events)"
+          : "prev_round=drafted and prev_n_acc>=1",
+        n: eligibleClass.length,
+        gapTokens: sum(eligibleGaps),
+        gapPerEvent: eligibleClass.length ? sum(eligibleGaps) / eligibleClass.length : null,
+      },
     },
     creates: V.creates,
     tailSkips: V.tailSkips,
     tailShaMismatch: V.tailShaMismatch,
+    tailRestores: rs.filter(isTailHit).length,
     verifyFailedAfterTailChoice: rs.filter(
       (r) => r.chosenOrigin === "tail" && r.outcome === "reset:verify-failed",
     ).length,
-    restoreFailedAfterTailChoice: rs.filter(
-      (r) => r.chosenOrigin === "tail" && !String(r.outcome).startsWith("restored"),
+    // restore-failed / verify-failed / rewind-refused after the search chose a tail
+    failedAfterTailChoice: rs.filter(
+      (r) => r.chosenOrigin === "tail" && TAIL_FAILURES.includes(r.outcome),
     ).length,
+    restoreFailedAfterTailChoice: rs.filter((r) => r.chosenOrigin === "tail" && !isTailHit(r))
+      .length,
     xcheck: {
       rows: V.xcheck.length,
       skips: V.xcheckSkips,
@@ -289,6 +333,14 @@ export function summarize(c) {
 }
 
 const miss = (name, ok, detail) => ({ name, ok: Boolean(ok), detail });
+
+// step-3 thresholds (coordinator protocol ruling on Opus S2; stated in .lane/PROGRESS.md and the
+// gpu-justify file): the tail-eligible last-token subclass must hold at least STEP3_MIN_EVENTS events in
+// each run, T1 must keep at least STEP3_MIN_EVENT_RATIO of P0's divergence events and of P0's eligible
+// events (a vacuous or starved T1 never passes), and T1's gap tokens PER ELIGIBLE EVENT must be
+// >= 90 % below P0's. The all-last-token-events ratio is report-only.
+export const STEP3_MIN_EVENTS = 5;
+export const STEP3_MIN_EVENT_RATIO = 0.5;
 
 /**
  * W-SV2 mechanism checks (merged plan section 4) on one step's summary; step 3 compares P0 with T1.
@@ -308,9 +360,24 @@ export function checkStep(step, s, p0 = null) {
     ),
     miss("CUDA errors == 0", s.cudaErrors === 0, `lines=${s.cudaErrors}`),
   ];
+  // steps 2 and 3: a tail choice never ends in a failed restore, and no tail prefix mismatches
+  const tailIntegrity = () => {
+    checks.push(
+      miss(
+        "restore-failed/verify-failed/rewind-refused after a tail choice == 0",
+        V.failedAfterTailChoice === 0,
+        `n=${V.failedAfterTailChoice}`,
+      ),
+    );
+    checks.push(miss("sha mismatches == 0", V.tailShaMismatch === 0, `n=${V.tailShaMismatch}`));
+  };
   if (step === "step1") {
     checks.push(
-      miss("divergence events > 0", V.divergenceEvents > 0, `events=${V.divergenceEvents}`),
+      miss(
+        "divergence events > 0 (new-conversation resets excluded)",
+        V.divergenceEvents > 0,
+        `events=${V.divergenceEvents} (decisions=${V.restoreDecisions}, new-conversation resets=${V.newConversationResets})`,
+      ),
     );
     checks.push(
       miss("last-token share >= 0.20", (T.shareOfEvents ?? 0) >= 0.2, `share=${T.shareOfEvents}`),
@@ -332,9 +399,9 @@ export function checkStep(step, s, p0 = null) {
     );
     checks.push(
       miss(
-        "origin=tail restores >= 0.90 of eligible",
+        "origin=tail restores >= 0.90 of eligible (writer skips count as misses)",
         (T.tailHitRate ?? 0) >= 0.9,
-        `rate=${T.tailHitRate}`,
+        `rate=${T.tailHitRate} hits=${T.restoredFromTail} available=${T.withTailAvailable} writer-skips=${T.writerSkips}`,
       ),
     );
     checks.push(
@@ -344,7 +411,6 @@ export function checkStep(step, s, p0 = null) {
         JSON.stringify(V.tailSkips),
       ),
     );
-    checks.push(miss("sha mismatches == 0", V.tailShaMismatch === 0, `n=${V.tailShaMismatch}`));
     checks.push(
       miss(
         "verify failures == 0",
@@ -352,16 +418,60 @@ export function checkStep(step, s, p0 = null) {
         `legacy=${s.legacy.verifyFailures} v2=${V.byOutcome["reset:verify-failed"] ?? 0}`,
       ),
     );
+    tailIntegrity();
   } else if (step === "step3") {
     if (!p0) throw new Error("step3 needs the P0 summary");
-    const before = p0.v2.lastToken.gapTokens;
-    const after = T.gapTokens;
-    checks.push(miss("P0 has last-token gap tokens", before > 0, `P0=${before}`));
+    const P = p0.v2;
+    const pe = P.lastToken.eligible;
+    const te = T.eligible;
     checks.push(
       miss(
-        "T1 last-token gap tokens >= 90% below P0",
-        before > 0 && after <= 0.1 * before,
-        `P0=${before} T1=${after}`,
+        "P0 was run with the tail off",
+        !P.tailOn,
+        `P0 tail events=${JSON.stringify(P.creates)}`,
+      ),
+    );
+    checks.push(
+      miss("T1 was run with the tail on", V.tailOn, `T1 creates=${JSON.stringify(V.creates)}`),
+    );
+    checks.push(
+      miss(
+        `P0 eligible last-token events >= ${STEP3_MIN_EVENTS}`,
+        pe.n >= STEP3_MIN_EVENTS,
+        `n=${pe.n} (${pe.definition})`,
+      ),
+    );
+    checks.push(
+      miss(
+        `T1 eligible last-token events >= ${STEP3_MIN_EVENTS}`,
+        te.n >= STEP3_MIN_EVENTS,
+        `n=${te.n} (${te.definition})`,
+      ),
+    );
+    checks.push(
+      miss(
+        `T1 divergence events >= ${STEP3_MIN_EVENT_RATIO} x P0's`,
+        V.divergenceEvents > 0 && V.divergenceEvents >= STEP3_MIN_EVENT_RATIO * P.divergenceEvents,
+        `P0=${P.divergenceEvents} T1=${V.divergenceEvents}`,
+      ),
+    );
+    checks.push(
+      miss(
+        `T1 eligible events >= ${STEP3_MIN_EVENT_RATIO} x P0's`,
+        te.n >= STEP3_MIN_EVENT_RATIO * pe.n,
+        `P0=${pe.n} T1=${te.n}`,
+      ),
+    );
+    const ok =
+      pe.gapPerEvent !== null &&
+      pe.gapPerEvent > 0 &&
+      te.gapPerEvent !== null &&
+      te.gapPerEvent <= 0.1 * pe.gapPerEvent;
+    checks.push(
+      miss(
+        "eligible subclass: T1 gap tokens per event >= 90% below P0",
+        ok,
+        `P0=${pe.gapTokens}/${pe.n}=${pe.gapPerEvent} T1=${te.gapTokens}/${te.n}=${te.gapPerEvent}`,
       ),
     );
     checks.push(
@@ -371,6 +481,16 @@ export function checkStep(step, s, p0 = null) {
         `sets=${p0.ple.sets} resets=${p0.ple.resetsAfterPos0}`,
       ),
     );
+    tailIntegrity();
+    // report-only, never a miss
+    const allP = P.lastToken.gapTokens;
+    const allT = T.gapTokens;
+    checks.push({
+      name: "REPORT-ONLY all last-token events gap tokens",
+      ok: true,
+      reportOnly: true,
+      detail: `P0=${allP} T1=${allT} ratio=${allP > 0 ? allT / allP : null}`,
+    });
   } else {
     throw new Error(`unknown step ${step}`);
   }
@@ -458,7 +578,9 @@ async function main(argv) {
     const p0 = p0File ? await censusOfFiles([p0File]) : null;
     const r = checkStep(step, s, p0);
     for (const c of r.checks)
-      process.stdout.write(`${c.ok ? "PASS" : "MISS"} ${c.name}: ${c.detail}\n`);
+      process.stdout.write(
+        `${c.reportOnly ? "REPORT" : c.ok ? "PASS" : "MISS"} ${c.name}: ${c.detail}\n`,
+      );
     process.stdout.write(`${step}: ${r.pass ? "PASS" : "STOP"}\n`);
     process.exitCode = r.pass ? 0 : 2;
     return;

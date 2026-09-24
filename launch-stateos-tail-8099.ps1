@@ -9,19 +9,31 @@
 #   -Tail    LONGSPEAR_STATEOS_TAIL_SNAPSHOT=1  tail snapshot at release (C1)
 #   -Xcheck  LONGSPEAR_STATEOS_TAIL_XCHECK=1    diagnostic cross-check (use launch-stateos-tail-xcheck-8099.ps1)
 # -ExtraArgs is appended last (later flags win), e.g. '-no-fmoe -no-fug' or '-fa 0' for the benign gate arms.
-# Logs: D:\AI\ik_llama-qwen4exp\<LogStem>.out.log / .err.log (read them with tools/stateos-div-census.mjs).
+# -LogStem is MANDATORY and must be new: every arm writes its own D:\AI\ik_llama-qwen4exp\<LogStem>.out.log /
+# .err.log (e.g. 'ik-serve-8099-wsv2-step3-P0'); an existing .err.log is refused, never truncated.
+# BOX-LOCK: D:\AI\ik_llama-qwen4exp\BOX-LOCK.json refuses the launch unless its "owner" field equals
+# -LockOwner (default 'W-SV2 chain', the owner string the W-SV2 chain must write into its own lock).
 param(
     [switch]$DivLog,
     [switch]$Tail,
     [switch]$Xcheck,
     [string]$ExtraArgs = '',
-    [string]$LogStem = 'ik-serve-8099-stateos-tail'
+    [Parameter(Mandatory = $true)][string]$LogStem,
+    [string]$LockOwner = 'W-SV2 chain'
 )
 $ErrorActionPreference = 'Stop'
 
-if (Test-Path 'D:\AI\ik_llama-qwen4exp\BOX-LOCK.json') {
-    throw 'BOX-LOCK.json exists: a measurement owns the box; not launching'
+$lockPath = 'D:\AI\ik_llama-qwen4exp\BOX-LOCK.json'
+if (Test-Path $lockPath) {
+    $owner = $null
+    try { $owner = (Get-Content -Raw $lockPath | ConvertFrom-Json).owner } catch { $owner = $null }
+    if ($owner -ne $LockOwner) {
+        throw ("BOX-LOCK.json is owned by '" + $owner + "', not '" + $LockOwner + "'; not launching")
+    }
 }
+if ($LogStem -notmatch '^[A-Za-z0-9._-]+$') { throw "LogStem '$LogStem' must be a plain file stem" }
+$errLog = 'D:\AI\ik_llama-qwen4exp\' + $LogStem + '.err.log'
+if (Test-Path $errLog) { throw "$errLog exists: pick a new -LogStem per arm (logs are never overwritten)" }
 $exe = 'D:\AI\worktrees\ik-stateos-tail\build-stateos-tail\bin\llama-server.exe'
 if (-not (Test-Path $exe)) { throw "missing $exe (run build-stateos-tail.cmd)" }
 
@@ -57,5 +69,5 @@ if ($ExtraArgs -ne '') { $argsx = $argsx + ' ' + $ExtraArgs }
 
 Start-Process -FilePath $exe -ArgumentList $argsx -WindowStyle Hidden `
     -RedirectStandardOutput ("D:\AI\ik_llama-qwen4exp\" + $LogStem + ".out.log") `
-    -RedirectStandardError ("D:\AI\ik_llama-qwen4exp\" + $LogStem + ".err.log")
+    -RedirectStandardError $errLog
 Write-Output ("stateos-tail-8099-launched divlog=" + [int][bool]$DivLog + " tail=" + [int][bool]$Tail + " xcheck=" + [int][bool]$Xcheck + " ple_hist_rewind=1 ple_hist_log=1 extra='" + $ExtraArgs + "' log=" + $LogStem)

@@ -2716,10 +2716,18 @@ static size_t save_checkpoints_to_file(const std::string & filename, const std::
     file.write(reinterpret_cast<const char *>(&magic), sizeof(magic));
     uint32_t version = LLAMA_STATE_SEQ_VERSION;
     file.write(reinterpret_cast<const char *>(&version), sizeof(version));
-    size_t count = checkpoints.size();
+    // LONGSPEAR State-OS v2: tail snapshots are not persisted. The file format has no origin or token
+    // sha, so a reloaded tail could not be revalidated against the cache (M8); dropping it is exact.
+    size_t count = 0;
+    for (const auto & checkpoint : checkpoints) {
+        count += checkpoint.origin != STATEOS_ORIGIN_TAIL;
+    }
     file.write(reinterpret_cast<const char *>(&count), sizeof(count));
 
     for (const auto & checkpoint : checkpoints) {
+        if (checkpoint.origin == STATEOS_ORIGIN_TAIL) {
+            continue;
+        }
         file.write(reinterpret_cast<const char *>(&checkpoint.pos_min), sizeof(checkpoint.pos_min));
         file.write(reinterpret_cast<const char *>(&checkpoint.pos_max), sizeof(checkpoint.pos_max));
         file.write(reinterpret_cast<const char *>(&checkpoint.pos_min_prompt), sizeof(checkpoint.pos_min_prompt));

@@ -29,6 +29,9 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
 - [x] launchers set LONGSPEAR_PLE_HIST_REWIND=1 + LONGSPEAR_PLE_HIST_LOG=1 in every arm; census has
       `--check step1|step2|step3` (exit 2 = stop) incl. `[ple-hist] reset` at pos > 0 == 0 and "armed"
 
+- [x] fix round 1 (cross-family review of be896293: Grok SAFE w/ findings, Opus NOT SAFE): items 1-7
+      done; rebuilt (slot-file change); tests with CUDA_VISIBLE_DEVICES=-1 green; node tools 12/12
+
 ## GPU-window assumptions (W-SV2)
 - Every arm (P0, T1, A0, A1, C, A5, A3, probe) launches via launch-stateos-tail-8099.ps1, so all run
   with LONGSPEAR_PLE_HIST_REWIND=1 and LONGSPEAR_PLE_HIST_LOG=1; arms differ only in the tail lever
@@ -40,6 +43,32 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
 - The xcheck relL2 is only meaningful with the repair on in both paths (it is: the tail replay, the ref
   replay and the final resume all set the history).
 - PCIe replay counter before/after stays the coordinator's (not in the log).
+- Launcher: `-LogStem` is mandatory and must be new per arm (an existing .err.log is refused, never
+  truncated). A BOX-LOCK.json refuses the launch unless its `owner` equals `-LockOwner`, default
+  `W-SV2 chain`: the chain writes exactly that owner string into its own lock.
+- Step 1 denominator: restore-branch decisions MINUS new-conversation resets (outcome reset:no-checkpoint
+  with common prefix < 64). Both counts are printed.
+- Steps 2 and 3: zero outcomes restore-failed / verify-failed / rewind-refused after a tail choice, and
+  zero tail sha mismatches. `reset:xcheck-flag-off` after a tail choice is a hit, not a miss. Step 2's
+  hit-rate denominator = last-token divergences with a tail available + tails eligible at release that the
+  writer did not produce (tail_skip cause refused / order / cache-short / size-mismatch).
+- Step 3 rule (coordinator ruling on Opus S2): compare PER EVENT on the TAIL-ELIGIBLE last-token subclass.
+  Eligible in T1 = C1's own eligible events (a tail existed at the divergence); in P0 = last-token events
+  whose previous generation ended with a drafted round that accepted >= 1 draft (the decisive conjunct of
+  the eligibility predicate, shadow_pos <= last cached - 2). Pass = T1 gap tokens per eligible event
+  <= 10 % of P0's (>= 90 % reduction). Guards against a vacuous pass: each run has >= 5 eligible events,
+  T1 has >= 0.5 x P0's divergence events and >= 0.5 x P0's eligible events, P0 ran with the tail off and
+  T1 with it on. The all-last-token-events ratio is REPORT-ONLY.
+- Step 4 (gate driver): every arm launched with -DivLog (C with -Tail -DivLog); token ids come from
+  /v1/completions logprobs (the fork's /completion has none). Scoring needs every arm's log
+  (--arm-log ARM=path): verdict `not-engaged` (exit 2) unless arm C has >= 20 (min-prompts) restores that
+  chose the tail and restored; a prompt is dropped when any arm's request-B restore line is missing or
+  lacks tail_dist=1, or C's lacks chosen_origin=tail + outcome restored*. Dropped counts are reported in
+  gate.json. Forced token X differs from the original by id and by text (no prefix relation).
+- Report-only: with the tail flag on, the tail buffer (~113 MiB) is allocated before the eviction loop,
+  so the process transiently holds 33 checkpoints (+113 MiB host peak) during release.
+- Slot files (--slot-save-path, not used by W-SV2): tail snapshots are not persisted (no origin/sha in the
+  format, so a reloaded tail could not be revalidated).
 - REPORT.md: blocked by a hook for subagents; the report is returned as text to the coordinator
 
 ## Commit 0 — code-reading note (base d583c220; line numbers are the base file's)
