@@ -705,6 +705,9 @@ static void test_stale_tmp_cleanup() {
     CHECK(!stateos_reserved_name("notes.stateos.tmp.bak"));
     CHECK(!stateos_reserved_name("stateos.tmp"));
     CHECK(!stateos_reserved_name(""));
+    CHECK(stateos_reserved_name("notes.stateos.tmp."));   // Win32 strips the trailing dot
+    CHECK(stateos_reserved_name("notes.stateos.tmp . ")); // and trailing spaces
+    CHECK(!stateos_reserved_name("notes.stateos.tmpx."));
 
     std::vector<std::string> removed;
     const size_t n = stateos_cleanup_stale_tmp(stateos_path_utf8(dir), 3600, &removed);

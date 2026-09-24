@@ -626,7 +626,12 @@ bool stateos_kv_consistent(size_t n_tokens, int32_t kv_pos_max) {
     return n_tokens == 0 || kv_pos_max >= 0;
 }
 
-bool stateos_reserved_name(const std::string & filename) {
+bool stateos_reserved_name(const std::string & filename_in) {
+    // Win32 strips trailing dots and spaces from a name ("x.stateos.tmp. " lands as "x.stateos.tmp")
+    std::string filename = filename_in;
+    while (!filename.empty() && (filename.back() == '.' || filename.back() == ' ')) {
+        filename.pop_back();
+    }
     const std::string suffix = STATEOS_TMP_SUFFIX;
     if (filename.size() < suffix.size()) {
         return false;

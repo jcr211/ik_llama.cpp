@@ -1949,10 +1949,19 @@ int main(int argc, char ** argv) {
                 return;
             }
 
-            // a state renamed onto our temp suffix would be deleted by the startup cleanup
-            if (stateos_reserved_name(new_filename_str)) {
+            // the same name rules as /slots save and restore (fs_validate_filename rejects trailing dots/spaces, control
+            // characters, reserved device names...)
+            if (!fs_validate_filename(old_filename_str) || !fs_validate_filename(new_filename_str)) {
+                res.status = 400;
+                response = {{"error", "Invalid filename format."}};
+                res.set_content(response.dump(), "application/json; charset=utf-8");
+                return;
+            }
+            // a state renamed onto our temp suffix would be deleted by the startup cleanup, and renaming a temp would
+            // publish a half-written save under a real name
+            if (stateos_reserved_name(new_filename_str) || stateos_reserved_name(old_filename_str)) {
                 res.status = 409;
-                response = {{"error", std::string("Destination names ending in ") + STATEOS_TMP_SUFFIX + " are reserved."},
+                response = {{"error", std::string("Names ending in ") + STATEOS_TMP_SUFFIX + " are reserved for in-progress saves."},
                             {"type", "state_name_reserved"}};
                 res.set_content(response.dump(), "application/json; charset=utf-8");
                 return;
