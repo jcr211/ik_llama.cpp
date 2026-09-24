@@ -56,7 +56,35 @@ restore round then used wrong PLE rows, and the identity legs would have failed 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\AI\worktrees\stateos-lane1\.lane\gpu-verify-l1.ps1
 # acceptance leg only (spec off):             ... -File ...\gpu-verify-l1.ps1 -SkipSpecOn
 # spec-on leg without the 190K measurement:   ... -File ...\gpu-verify-l1.ps1 -Skip192K
+# parsers only, NO server / GPU / process stop:  ... -File ...\gpu-verify-l1.ps1 -DryRun [-DryRunLog <server .log>]
 ```
+
+**Dry run first.** `-DryRun` exits before the preflight: it stops nothing, starts nothing and does not write the
+receipts. It feeds every request/response pair recorded in a previous run's `--verbose` log (default `specoff.log`)
+through the same parsers the live run uses (tokenize, completion, save, restore, erase, /props). It also checks:
+- the `[ple-hist]` and draft-acceptance counters, on that log and on known synthetic lines;
+- that a missing response field throws an error naming the field;
+- the header readers, on a recorded `slots\id4k.state`.
+
+It exits 0 only when all of it parses. It works in Windows PowerShell 5.1 and PowerShell 7.
+
+This branch adds two things:
+- The dry run can read a log that a live server still holds open.
+- The restore parser requires `stateos.checkpoints` and `stateos.checkpoints_restored`, so the `ckpt_ok` hard check
+  cannot read a missing field as "0 restored". An empty-slot restore counts as `absent`.
+
+**2026-09-24 abort ("Cannot index into a null array", 10 s into `Test-Identity 'id4k'`).** Root cause is a script bug,
+not the server:
+- The abort came after the warm continuation, when `Ple-Counts` counted the first `[ple-hist] set ...
+  site=server-resume` line in `specoff.err.log`.
+- `Ple-Counts` wrapped `Read-LogSince`'s single `string[]` in `@(...)`, so each log became one array element.
+- `-match` on an array filters and does not set `$Matches`, so `$Matches[1]` indexed null.
+- Every response the server returned matched what the script expects; the recorded `specoff.log` shows it.
+
+The fix:
+- The counters read with `[regex]::Match` and assert that every line is a string.
+- Every response field the run depends on goes through `Need`, which throws naming the missing field.
+- The refusal and negative checks use `Field`, which records `<missing: path>` and fails that check.
 
 Expected wall time: 3 model loads (~1–2 min each: spec-off, spec-on, standing restore) + prefills (4K and 32K twice each
 with the cold control, 32K once more spec-on, 190K once ≈ 4–6 min) + restores. Roughly 20–30 min total; with
