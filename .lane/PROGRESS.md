@@ -18,8 +18,10 @@ Order: `D:/Projects/longspear/docs/drafts/decode-throughput-merged-plan-20260924
   refused by a hook)
 
 ## Fix round 1 (cross-family review of c4c50b2b: sessions/.council-tmp/sf-merge/opus-sl1-review.md et al.)
-- [ ] B1 host PLE n-gram history rewind — WAITS for `lane/ple-hist-rewind` (D:/AI/worktrees/ik-ple-hist); then merge
-  it and call `llama_ple_history_set` at the per-step direct restore and the crosscheck's gpu-fallback replay
+- [x] B1 host PLE n-gram history rewind — merged `lane/ple-hist-rewind` (e3cf8bf5); the resume keys on `path_result`
+  so the crosscheck replay resumes at the checkpoint and the direct restore after the accepted drafts (8d4489a9);
+  every launcher arm sets `LONGSPEAR_PLE_HIST_REWIND=1` + `LONGSPEAR_PLE_HIST_LOG=1`; gate `[ple-hist] reset` = 0 with
+  the log live (ab8ce58e). Rebuilt (no other compile running), five tests exit 0 with CUDA_VISIBLE_DEVICES=-1.
 - [x] B2 clamp reaches ngram-mod/suffix bookkeeping (`common_speculative_truncate_draft`) + test-spec-ckpt-clamp (4d127fd6)
 - [x] S1 `k_prop` in [spec-host]; gate compares pre-clamp drafts and fit-round acceptance (4d127fd6, c5491063)
 - [x] S2 crosscheck commits the MTP companion the per-step way; row A2 gates mtp_skip (4d127fd6, c5491063)
