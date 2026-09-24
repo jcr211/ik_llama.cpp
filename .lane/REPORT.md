@@ -236,15 +236,50 @@ tampers `effective_model` among the hard fields.
   - otherwise `-1` (unknown), and the save is refused with `state_adapters_changed`. Unit-tested.
 - **P3-3, recovery for "unsaveable after an adapter change".** A slot whose KV predates the current adapter set answers
   409 `state_adapters_changed`. The same happens for a RAM prompt-cache load after any adapter change, and for a start
-  from a stale system prompt (see P3-4). To recover:
+  from a stale system prompt (see P3-4, and its own recovery below). To recover (not the stale-system-prompt case):
   1. Erase the slot: `POST /slots/{id}?action=erase`. This clears the KV and stamps the current generation.
   2. Re-prefill the conversation with a normal request, then save again.
   - A request whose prompt diverges at token 0 also re-prefills from empty and has the same effect.
   - If the stamp itself is `unknown` (failed control-vector apply), first make it known with a successful
     `/control-vectors/apply` (an empty array, which disables steering, also counts). A `/lora-adapters` call does not
     clear `unknown`.
+  - **Stale legacy system prompt (F11-3 P3-4).** Erase and re-prefill do not help here: the next fresh start still
+    copies the system KV computed under the old adapter set, so it is stamped unknown again. On transformer models,
+    erase also drops the slot's copy of the system KV, and the trim path does not copy it back (an upstream legacy
+    bug). The recovery is to set the system prompt again: send a completion request that carries the legacy
+    `"system_prompt"` field (the same text is fine). That runs `system_prompt_update`, which recomputes the system KV
+    under the current adapter set, and it releases and clears every slot. Then re-prefill the conversation and save.
 - Build: before every build a process check showed no nvcc, cl, cmake or ninja from another lane.
   `.lane/build-f11.cmd` exit 0.
 - Tests: `.lane/test-f11.cmd` exit 0 with `CUDA_VISIBLE_DEVICES=-1`: `test-stateos-header` 285 checks, 0 failures;
   ctest 4/4.
 - Not verified on GPU: the handler forwarding, the failed-apply sentinel, and the system-prompt stamp.
+
+### F11-3 review round (REVIEW-F11-3 = FIX-FIRST)
+
+- `0acc6624` **P2-1:** `--lora-init-without-apply` loads the adapters at their scales but never applies them.
+  `stateos_lora_live` (false at load under that flag, set by SET_LORA after `llama_lora_adapters_apply`) now gates the
+  `lora` lines, built by the pure `stateos_lora_parts` (same text as before, so existing stamps are unchanged).
+  Unit-tested.
+- `5eab5279` **P3-1:** SET_LORA refreshes with `apply_ok = (stamp != unknown)`, so a `/lora-adapters` call keeps the
+  `unknown` a failed control-vector apply left. Only a successful `/control-vectors/apply` clears it. The save refusal
+  text and the recovery note above say so.
+- `e3e4b7ab` **P3-2:** restore answers 409 `state_adapters_unknown` with `slot_untouched` while the stamp is `unknown`,
+  before any identity comparison, whatever the file's header says.
+- `8347edf7` **P3-3, UPSTREAM-CODE FIX** (upstream 17d101863, not State-OS logic, its own commit):
+  - `apply_control_vectors_internal` now sizes the combined vector to n_embd × (n_layer − 1), zero-filled, and
+    accumulates each vector over the common length only (`stateos_cvec_accumulate`, unit-tested).
+  - This removes the heap overflow (a shorter vector loaded first, then a full one). It also removes the stale layers
+    a shorter vector left from an earlier apply, so the applied steering no longer depends on history.
+  - No change for the usual all-layer files.
+- **P3-4:** the recovery for a stale legacy system prompt is to set the system prompt again, not erase + re-prefill
+  (see the recovery note above).
+- **P3-5, left as follow-ups:**
+  - `/delete_prompt` has no `fs_validate_filename` or reserved-name check. It fails closed.
+  - 8.3 short names can alias a `*.stateos.tmp` as rename's old name. This fails closed too.
+  - `GET /lora-adapters` and `GET /control-vectors` read on HTTP threads. This is older code, out of scope.
+- Build: before every build a process check showed no nvcc, cl, cmake or ninja from another lane.
+  `.lane/build-f11.cmd` exit 0.
+- Tests: `.lane/test-f11.cmd` exit 0 with `CUDA_VISIBLE_DEVICES=-1`: `test-stateos-header` 291 checks, 0 failures;
+  ctest 4/4.
+- Not verified on GPU: none of this round (no GPU).

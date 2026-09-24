@@ -41,3 +41,6 @@ Log (ET, approximate):
 - 01:50 F11-2 review round: P2-A/B cached effective_model + handlers forward to the task (c5d66f76), P3-1 rename
   validation + trailing dot/space (91579f16), P3-2 ckpt_ok hard gate (82c7b1b1), P3-4 system-prompt generation
   (9729d763), P3-3 recovery documented in REPORT.md; build-f11 exit 0; test-f11 exit 0 (285 / 0, ctest 4/4)
+- 01:58 F11-3 review round: P2-1 lora_live for --lora-init-without-apply (0acc6624), P3-1 SET_LORA keeps unknown
+  (5eab5279), P3-2 restore refuses on unknown (e3e4b7ab), P3-3 UPSTREAM-CODE FIX combined cvec sizing (8347edf7), P3-4
+  system-prompt recovery documented; P3-5 left as follow-ups; build-f11 exit 0; test-f11 exit 0 (291 / 0, ctest 4/4)
