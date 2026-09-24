@@ -280,7 +280,9 @@ function Test-Identity([string] $Tag, [int[]] $P, [int[]] $Z, [int[]] $Q, [int] 
     $res.no_reprefill = $reuse
     $res.restored_runs_agree = ($runs[0].out.content -ceq $runs[1].out.content)
     if (-not $NoCold) { $res.identity_cold_vs_warm_report_only = ($res.cold.content -ceq $w.content) }
-    $res.verdict = if ($same1 -and $same2 -and $reuse) { 'PASS' } elseif ($same1 -and $same2) { 'PASS-IDENTITY / REUSE-INCONCLUSIVE' } else { 'FAIL' }
+    # a dropped checkpoint fails the leg outright (hard check, review F11-2 P3-2), whatever the outputs say
+    $res.verdict = if (-not $res.ckpt_ok) { 'FAIL' } elseif ($same1 -and $same2 -and $reuse) { 'PASS' } elseif ($same1 -and $same2) { 'PASS-IDENTITY / REUSE-INCONCLUSIVE' } else { 'FAIL' }
+    if (-not $res.ckpt_ok) { $res.fail_reason = 'checkpoints not all restored' }
     Log ("$Tag identity: {0} (warm prompt_n={1}, restored prompt_n={2}/{3}, restore_ms={4:N1}, file={5} B)" -f $res.verdict, $w.prompt_n, $runs[0].out.prompt_n, $runs[1].out.prompt_n, $runs[0].restore.restore_ms, $res.save.n_written)
     return $res
 }
@@ -314,7 +316,7 @@ try {
 
     $Results.legA.identity_4k = Test-Identity 'id4k' (Head $all 4096) $Z $Q 64 -LogPath $logA
     Save-Results
-    if ($Results.legA.identity_4k.verdict -eq 'FAIL') { throw 'KILL: greedy identity failed at 4K (restored != in-memory continuation); stopping before 32K' }
+    if ($Results.legA.identity_4k.verdict -eq 'FAIL') { throw "KILL: 4K identity leg failed ($(if ($Results.legA.identity_4k.fail_reason) { $Results.legA.identity_4k.fail_reason } else { 'restored != in-memory continuation' })); stopping before 32K" }
     $Results.legA.identity_32k = Test-Identity 'id32k' (Head $all 32768) $Z $Q 64 -LogPath $logA
     Save-Results
 

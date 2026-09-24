@@ -116,7 +116,7 @@ round (`P` = 190000 ids, `n_predict=16`, no cold control) measures the state byt
 - `identity_4k.verdict` and `identity_32k.verdict` = `PASS`: restored output == in-memory (warm) output, byte-exact
   text, for both restores, and `prompt_n` equal to warm's and ≤ |Z|+1 (no re-prefill). `PASS-IDENTITY /
   REUSE-INCONCLUSIVE` means identity held but the warm run itself re-prefilled (read `prompt_n` in results.json).
-- `identity_*.ckpt_ok`: every restore round reports `stateos.checkpoints == "restored"` and
+- `identity_*.ckpt_ok` (hard: `false` makes the leg's `verdict` FAIL, and at 4K the run stops): every restore round reports `stateos.checkpoints == "restored"` and
   `checkpoints_restored == save.checkpoints_saved`. The rounds restore right after a short conversation (Q), which is
   where a bound measured on the slot's current length wrongly refused or dropped checkpoints.
 - `refusals`: every entry `pass: true`; `soft_build.pass: true`; `slot_untouched_after_refusals.pass: true`.
