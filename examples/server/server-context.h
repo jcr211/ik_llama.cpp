@@ -355,6 +355,14 @@ struct server_context {
     // entirely under the current generation (server_slot::stateos_kv_gen)
     int64_t stateos_adapter_gen = 0;
 
+    // effective_model of what is APPLIED, written only on the main loop: at load, after SET_LORA, at the end of
+    // apply_control_vectors_internal ("unknown" after a failed apply). Save/restore read this, never the live scales
+    // (HTTP threads may hold requests in flight).
+    std::string stateos_effective_cur = "none";
+    bool stateos_startup_cvec_live = false; // --control-vector* still applied (cleared by any runtime cvec change)
+
+    void stateos_refresh_effective(bool apply_ok);
+
     void stateos_init_identity();
 
     stateos_fields stateos_identity_fields(std::string* err);

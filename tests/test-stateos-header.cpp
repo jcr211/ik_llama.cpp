@@ -497,6 +497,46 @@ static void test_effective_model() {
     const std::string sv = stateos_effective_model_value({ "cvec-startup path=steer.gguf scale=1 layers=-1..-1" });
     CHECK(sv != "none" && sv != stateos_effective_model_value({ "cvec path=steer.gguf scale=1 layers=-1..-1" }));
 
+    // startup control vectors describe the applied state only until a runtime control-vector change (review F11-2 P2-B)
+    {
+        const std::vector<stateos_cvec_desc> startup = { { "x.gguf", 1.0f, -1, -1, true } };
+        const std::vector<stateos_cvec_desc> none;
+        const std::vector<stateos_cvec_desc> runtime = { { "r.gguf", 0.5f, 1, 20, true }, { "off.gguf", 0.0f, 1, 20, false } };
+        CHECK(stateos_cvec_parts(true, startup, none) == std::vector<std::string>({ "cvec-startup path=x.gguf scale=1 layers=-1..-1" }));
+        CHECK(stateos_cvec_parts(false, startup, none).empty());                   // replaced/cleared by a runtime apply
+        CHECK(stateos_cvec_parts(false, startup, runtime) == std::vector<std::string>({ "cvec path=r.gguf scale=0.5 layers=1..20" }));
+        std::vector<stateos_cvec_desc> unapplied = runtime;
+        unapplied[0].applied = false;                                               // loaded but not applied
+        CHECK(stateos_cvec_parts(false, startup, unapplied).empty());
+        CHECK(stateos_effective_model_value(stateos_cvec_parts(false, startup, none)) == "none");
+    }
+
+    // a scale request is all-or-nothing: a bad id changes nothing, so the cached stamp (computed from what was applied)
+    // stays true (review F11-2 P2-A)
+    {
+        std::vector<float> scales = { 1.0f, 0.0f, 0.25f };
+        auto stamp_of = [](const std::vector<float> & s) {
+            std::vector<std::string> parts;
+            for (size_t i = 0; i < s.size(); ++i) {
+                if (s[i] != 0.0f) {
+                    parts.push_back("lora path=a" + std::to_string(i) + " scale=" + std::to_string(s[i]));
+                }
+            }
+            return stateos_effective_model_value(parts);
+        };
+        const std::string cached = stamp_of(scales);
+        std::string e2;
+        CHECK(!stateos_apply_scales(scales, { { 0, 0.0f }, { 7, 1.0f } }, &e2)); // id 7 does not exist
+        CHECK(scales == std::vector<float>({ 1.0f, 0.0f, 0.25f }));
+        CHECK(stamp_of(scales) == cached);
+        CHECK(!stateos_apply_scales(scales, { { -1, 1.0f } }, &e2));
+        CHECK(stateos_apply_scales(scales, { { 1, 2.0f } }, &e2));               // valid: zero all, set requested
+        CHECK(scales == std::vector<float>({ 0.0f, 2.0f, 0.0f }));
+        CHECK(stamp_of(scales) != cached);
+        CHECK(stateos_apply_scales(scales, {}, &e2) && scales == std::vector<float>({ 0.0f, 0.0f, 0.0f }));
+        CHECK(std::string(STATEOS_EFFECTIVE_UNKNOWN) != "none" && std::string(STATEOS_EFFECTIVE_UNKNOWN).size() != 64);
+    }
+
     // save honesty: the stamp is today's set, so the KV must have been built under it (review F11 P2-2)
     CHECK(stateos_kv_built_under_current(0, -1, 7));    // empty slot: nothing to misdescribe
     CHECK(stateos_kv_built_under_current(4096, 0, 0));  // no adapter change since startup

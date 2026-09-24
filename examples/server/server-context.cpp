@@ -274,6 +274,8 @@ bool server_context::load_model(const gpt_params& params_) {
     }
 
     stateos_init_identity();
+    stateos_startup_cvec_live = !params_base.control_vectors.empty();
+    stateos_refresh_effective(true);
 
     return true;
 }
@@ -2791,25 +2793,27 @@ void server_context::stateos_init_identity() {
 
 // runtime changes to the computed weights that the GGUF fingerprint cannot see (a KV computed under one adapter set
 // is not the KV of another)
+// computed only on the main loop, from what was actually applied (see stateos_refresh_effective)
 static std::string stateos_effective_model(const gpt_params & params, const std::vector<llama_lora_adapter_container> & loras,
-                                           const std::vector<control_vector_container> & cvs) {
+                                           const std::vector<control_vector_container> & cvs, bool startup_cvec_live) {
     std::vector<std::string> parts;
     for (const auto & la : loras) {
         if (la.scale != 0.0f) {
             parts.push_back(string_format("lora path=%s scale=%.9g", la.path.c_str(), la.scale));
         }
     }
-    // --control-vector / --control-vector-scaled / --control-vector-layer-range: applied at load, never in `cvs`
+    // --control-vector / --control-vector-scaled / --control-vector-layer-range are applied at load (never in `cvs`)
+    // and stay applied only until the first runtime control-vector change replaces the context's vector
+    std::vector<stateos_cvec_desc> startup;
     for (const auto & cv : params.control_vectors) {
-        if (cv.strength != 0.0f) {
-            parts.push_back(string_format("cvec-startup path=%s scale=%.9g layers=%d..%d", cv.fname.c_str(), cv.strength,
-                    params.control_vector_layer_start, params.control_vector_layer_end));
-        }
+        startup.push_back({ cv.fname, cv.strength, params.control_vector_layer_start, params.control_vector_layer_end, true });
     }
+    std::vector<stateos_cvec_desc> runtime;
     for (const auto & cv : cvs) {
-        if (cv.applied && cv.scale != 0.0f) {
-            parts.push_back(string_format("cvec path=%s scale=%.9g layers=%d..%d", cv.path.c_str(), cv.scale, cv.layer_start, cv.layer_end));
-        }
+        runtime.push_back({ cv.path, cv.scale, cv.layer_start, cv.layer_end, cv.applied });
+    }
+    for (auto & p : stateos_cvec_parts(startup_cvec_live, startup, runtime)) {
+        parts.push_back(std::move(p));
     }
     for (const auto & ov : params.kv_overrides) {
         if (ov.key[0] == '\0') {
@@ -2831,6 +2835,12 @@ static std::string stateos_effective_model(const gpt_params & params, const std:
     return stateos_effective_model_value(parts);
 }
 
+void server_context::stateos_refresh_effective(bool apply_ok) {
+    stateos_effective_cur = apply_ok
+        ? stateos_effective_model(params_base, lora_adapters, control_vectors, stateos_startup_cvec_live)
+        : std::string(STATEOS_EFFECTIVE_UNKNOWN);
+}
+
 stateos_fields server_context::stateos_identity_fields(std::string * err) {
     if (stateos_model_fp.empty()) {
         *err = "the model identity was not computed at startup (see the startup log)";
@@ -2843,7 +2853,7 @@ stateos_fields server_context::stateos_identity_fields(std::string * err) {
     // the catch-all geometry digest
     stateos_fields fields = {
         { STATEOS_HARD, "model_fingerprint_v2", stateos_model_fp },
-        { STATEOS_HARD, "effective_model",   stateos_effective_model(params_base, lora_adapters, control_vectors) },
+        { STATEOS_HARD, "effective_model",   stateos_effective_cur },
         { STATEOS_HARD, "n_ctx",             std::to_string(llama_n_ctx(ctx)) },
         { STATEOS_HARD, "cache_type_k",      params_base.cache_type_k },
         { STATEOS_HARD, "cache_type_v",      params_base.cache_type_v },
@@ -3024,6 +3034,14 @@ void server_context::stateos_slot_save_impl(const server_task & task, server_slo
     fields.push_back({ STATEOS_INFO, "saved_unix",   std::to_string((long long) time(nullptr)) });
     fields.push_back({ STATEOS_INFO, "slot_id",      std::to_string(slot.id) });
 
+    // after a failed runtime adapter apply nobody knows what the context computes with: never stamp that
+    if (stateos_effective_cur == STATEOS_EFFECTIVE_UNKNOWN) {
+        send_slot_error(task, 409, "state_adapters_unknown",
+                "the last runtime LoRA/control-vector apply failed, so the applied adapter set is unknown; nothing was "
+                "saved (a successful apply makes it known again)",
+                { {"slot_untouched", true} });
+        return;
+    }
     // the header's effective_model is today's adapter set: honest only if the whole KV was built under it
     if (!stateos_kv_built_under_current(n_tokens, slot.stateos_kv_gen, stateos_adapter_gen)) {
         send_slot_error(task, 409, "state_adapters_changed",
@@ -3733,8 +3751,32 @@ void server_context::process_single_task(server_task&& task) {
     } break;
     case SERVER_TASK_TYPE_SET_LORA:
     {
+        // the requested scales are applied here, on the main loop, all-or-nothing (the HTTP handler mutates nothing)
+        if (task.data.contains("scales")) {
+            std::vector<std::pair<int64_t, float>> request;
+            for (const auto & e : task.data.at("scales")) {
+                request.emplace_back(e.at("id").get<int64_t>(), e.at("scale").get<float>());
+            }
+            std::vector<float> scales;
+            for (const auto & la : lora_adapters) {
+                scales.push_back(la.scale);
+            }
+            std::string err;
+            if (!stateos_apply_scales(scales, request, &err)) {
+                server_task_result result;
+                result.id = task.id;
+                result.error = true;
+                result.data = json{ { "success", false }, { "error", "invalid adapter id: " + err } };
+                queue_results.send(result);
+                break;
+            }
+            for (size_t i = 0; i < lora_adapters.size(); ++i) {
+                lora_adapters[i].scale = scales[i];
+            }
+        }
         ++stateos_adapter_gen; // KV built before this point was computed under another adapter set
         llama_lora_adapters_apply(ctx, lora_adapters);
+        stateos_refresh_effective(true);
         server_task_result result;
         result.id = task.id;
         result.error = false;
@@ -3862,6 +3904,38 @@ void server_context::process_single_task(server_task&& task) {
     } break;
     case SERVER_TASK_TYPE_SET_CONTROL_VECTOR:
     {
+        // the requested scales/layer ranges are applied here, on the main loop, all-or-nothing
+        if (task.data.contains("entries")) {
+            std::vector<std::pair<int64_t, float>> request;
+            for (const auto & e : task.data.at("entries")) {
+                request.emplace_back(e.at("id").get<int64_t>(), e.at("scale").get<float>());
+            }
+            std::vector<float> scales;
+            for (const auto & cv : control_vectors) {
+                scales.push_back(cv.scale);
+            }
+            std::string err;
+            if (!stateos_apply_scales(scales, request, &err)) {
+                server_task_result result;
+                result.id = task.id;
+                result.error = true;
+                result.data = json{ { "success", false }, { "error", "Invalid control vector id: " + err } };
+                queue_results.send(result);
+                break;
+            }
+            for (size_t i = 0; i < control_vectors.size(); ++i) {
+                control_vectors[i].scale = scales[i];
+            }
+            for (const auto & e : task.data.at("entries")) {
+                auto & cv = control_vectors[(size_t) e.at("id").get<int64_t>()];
+                if (e.contains("layer_start")) {
+                    cv.layer_start = e.at("layer_start");
+                }
+                if (e.contains("layer_end")) {
+                    cv.layer_end = e.at("layer_end");
+                }
+            }
+        }
         if (!apply_control_vectors_internal()) {
             server_task_result result;
             result.id = task.id;
@@ -3882,6 +3956,8 @@ void server_context::process_single_task(server_task&& task) {
 
 bool server_context::apply_control_vectors_internal() {
     ++stateos_adapter_gen; // every load/unload/apply path comes through here; KV built before was steered differently
+    // the context holds one steering vector: whatever follows replaces (or clears) the --control-vector* one
+    stateos_startup_cvec_live = false;
     llama_control_vector_data combined_cv = { -1, {} };
 
     // Check if we have anything to apply
@@ -3896,6 +3972,7 @@ bool server_context::apply_control_vectors_internal() {
     if (!any_active) {
         // Clear control vectors if nothing is active
         llama_control_vector_apply(ctx, nullptr, 0, 0, 0, 0);
+        stateos_refresh_effective(true);
         return true;
     }
 
@@ -3935,9 +4012,11 @@ bool server_context::apply_control_vectors_internal() {
                                             combined_cv.n_embd,
                                             min_layer_start,
                                             max_layer_end);
+        stateos_refresh_effective(err == 0); // a failed apply: "unknown", never saved, never matched
         return (err == 0);
     }
 
+    stateos_refresh_effective(true);
     return true;
 }
 

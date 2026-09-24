@@ -163,6 +163,26 @@ stateos_section_check stateos_check_sections(const stateos_scan_result & scan, s
 // the descriptor lines (one per active item, in load order: application order is part of the identity).
 std::string stateos_effective_model_value(const std::vector<std::string> & parts);
 
+// Control-vector items of effective_model. The startup vectors (--control-vector*) describe the applied state only while
+// no runtime control-vector change has run: every runtime apply replaces the context's single steering vector with the
+// runtime sum (or disables it), so startup_live is cleared there and their lines disappear.
+struct stateos_cvec_desc {
+    std::string path;
+    float       scale       = 0.0f;
+    int32_t     layer_start = 0;
+    int32_t     layer_end   = 0;
+    bool        applied     = true; // runtime vectors: whether apply_control_vectors_internal applied it
+};
+std::vector<std::string> stateos_cvec_parts(bool startup_live, const std::vector<stateos_cvec_desc> & startup,
+                                            const std::vector<stateos_cvec_desc> & runtime);
+
+// Apply a runtime scale request ({id, scale} pairs) all-or-nothing: every id is validated first; on a bad id nothing
+// changes and false is returned. Otherwise every scale is zeroed and the requested ones set (the endpoints' semantics).
+bool stateos_apply_scales(std::vector<float> & scales, const std::vector<std::pair<int64_t, float>> & request, std::string * err);
+
+// Sentinel effective_model after a failed runtime adapter apply: never equal to a saved value, never saved.
+constexpr const char * STATEOS_EFFECTIVE_UNKNOWN = "unknown";
+
 // A non-empty KV is saved (stamped with the current effective_model) only when it was built entirely under the
 // current runtime adapter generation; kv_gen -1 means unknown and never qualifies.
 bool stateos_kv_built_under_current(size_t n_tokens, int64_t kv_gen, int64_t current_gen);

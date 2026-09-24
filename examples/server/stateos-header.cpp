@@ -566,6 +566,46 @@ std::string stateos_effective_model_value(const std::vector<std::string> & parts
     return h.final_hex();
 }
 
+static std::string stateos_fmt_g(float v) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.9g", (double) v);
+    return buf;
+}
+
+std::vector<std::string> stateos_cvec_parts(bool startup_live, const std::vector<stateos_cvec_desc> & startup,
+                                            const std::vector<stateos_cvec_desc> & runtime) {
+    std::vector<std::string> parts;
+    if (startup_live) {
+        for (const auto & cv : startup) {
+            if (cv.scale != 0.0f) {
+                parts.push_back("cvec-startup path=" + cv.path + " scale=" + stateos_fmt_g(cv.scale) + " layers=" +
+                                std::to_string(cv.layer_start) + ".." + std::to_string(cv.layer_end));
+            }
+        }
+    }
+    for (const auto & cv : runtime) {
+        if (cv.applied && cv.scale != 0.0f) {
+            parts.push_back("cvec path=" + cv.path + " scale=" + stateos_fmt_g(cv.scale) + " layers=" +
+                            std::to_string(cv.layer_start) + ".." + std::to_string(cv.layer_end));
+        }
+    }
+    return parts;
+}
+
+bool stateos_apply_scales(std::vector<float> & scales, const std::vector<std::pair<int64_t, float>> & request, std::string * err) {
+    for (const auto & r : request) {
+        if (r.first < 0 || r.first >= (int64_t) scales.size()) {
+            set_err(err, "invalid id " + std::to_string(r.first));
+            return false;
+        }
+    }
+    std::fill(scales.begin(), scales.end(), 0.0f);
+    for (const auto & r : request) {
+        scales[(size_t) r.first] = r.second;
+    }
+    return true;
+}
+
 bool stateos_kv_built_under_current(size_t n_tokens, int64_t kv_gen, int64_t current_gen) {
     return n_tokens == 0 || (kv_gen >= 0 && kv_gen == current_gen);
 }

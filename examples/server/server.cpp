@@ -1673,34 +1673,27 @@ int main(int argc, char ** argv) {
     const auto handle_lora_adapters_apply = [&](const httplib::Request & req, httplib::Response & res) {
         log_prompt(ctx_server.params_base, json::parse(req.body));
         const std::vector<json> body = json::parse(req.body);
-        int max_idx = ctx_server.lora_adapters.size();
 
-        // clear existing value
-        for (auto & la : ctx_server.lora_adapters) {
-            la.scale = 0.0f;
-        }
-
-        // set value
-        for (auto entry : body) {
-            int id      = entry.at("id");
-            float scale = entry.at("scale");
-            if (0 <= id && id < max_idx) {
-                ctx_server.lora_adapters[id].scale = scale;
-            } else {
-                throw std::runtime_error("invalid adapter id");
-            }
+        // the scales are changed by the SET_LORA task on the main loop, all-or-nothing: this thread only forwards
+        // the request (it never writes lora_adapters, which the main loop reads)
+        json scales = json::array();
+        for (const auto & entry : body) {
+            scales.push_back({ { "id", entry.at("id").get<int64_t>() }, { "scale", entry.at("scale").get<float>() } });
         }
 
         server_task task;
         task.type = SERVER_TASK_TYPE_SET_LORA;
-        const int id_task = ctx_server.queue_tasks.post(std::move(task));
+        task.data = { { "scales", scales } };
+        task.id = ctx_server.queue_tasks.get_new_id();
+        const int id_task = task.id;
         ctx_server.queue_results.add_waiting_task_id(id_task);
+        ctx_server.queue_tasks.post(std::move(task));
 
         server_task_result result = ctx_server.queue_results.recv(id_task);
         ctx_server.queue_results.remove_waiting_task_id(id_task);
 
         res.set_content(result.data.dump(), "application/json");
-        res.status = 200; // HTTP OK
+        res.status = result.error ? 400 : 200;
     };
 
     // Control vector handlers
@@ -1757,39 +1750,28 @@ int main(int argc, char ** argv) {
 
     const auto handle_control_vectors_apply = [&](const httplib::Request & req, httplib::Response & res) {
         const std::vector<json> body = json::parse(req.body);
-        int max_idx = ctx_server.control_vectors.size();
 
-        // Update scales for existing control vectors
-        for (auto & cv : ctx_server.control_vectors) {
-            cv.scale = 0.0f;  // Reset all scales first
-        }
-
-        // Set new scales
-        for (auto entry : body) {
-            int id = entry.at("id");
-            float scale = entry.at("scale");
-            if (0 <= id && id < max_idx) {
-                ctx_server.control_vectors[id].scale = scale;
-
-                // Optionally update layer range
-                if (entry.contains("layer_start")) {
-                    ctx_server.control_vectors[id].layer_start = entry.at("layer_start");
-                }
-                if (entry.contains("layer_end")) {
-                    ctx_server.control_vectors[id].layer_end = entry.at("layer_end");
-                }
-            } else {
-                res.set_content(json{{ "success", false }, { "error", "Invalid control vector id" }}.dump(), "application/json");
-                res.status = 400;
-                return;
+        // scales and layer ranges are changed by the SET_CONTROL_VECTOR task on the main loop, all-or-nothing (a bad
+        // id changes nothing); this thread only forwards the request
+        json entries = json::array();
+        for (const auto & entry : body) {
+            json e = { { "id", entry.at("id").get<int64_t>() }, { "scale", entry.at("scale").get<float>() } };
+            if (entry.contains("layer_start")) {
+                e["layer_start"] = entry.at("layer_start").get<int32_t>();
             }
+            if (entry.contains("layer_end")) {
+                e["layer_end"] = entry.at("layer_end").get<int32_t>();
+            }
+            entries.push_back(e);
         }
 
         server_task task;
         task.type = SERVER_TASK_TYPE_SET_CONTROL_VECTOR;
-
-        const int id_task = ctx_server.queue_tasks.post(std::move(task));
+        task.data = { { "entries", entries } };
+        task.id = ctx_server.queue_tasks.get_new_id();
+        const int id_task = task.id;
         ctx_server.queue_results.add_waiting_task_id(id_task);
+        ctx_server.queue_tasks.post(std::move(task));
 
         server_task_result result = ctx_server.queue_results.recv(id_task);
         ctx_server.queue_results.remove_waiting_task_id(id_task);
