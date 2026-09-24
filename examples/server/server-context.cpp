@@ -3168,6 +3168,11 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
             send_slot_error(task, 409, "state_missing", scan.error + ": '" + filename + "'",
                     { {"refused_field", "file"}, {"slot_untouched", true} });
             return;
+        case STATEOS_SCAN_UNREADABLE:
+            // the file is there but this process cannot read it: say so (not "missing")
+            send_slot_error(task, 409, "state_unreadable", scan.error + ": '" + filename + "'",
+                    { {"refused_field", "file"}, {"slot_untouched", true} });
+            return;
         case STATEOS_SCAN_LEGACY:
             send_slot_error(task, 409, "state_legacy_unkeyed", scan.error,
                     { {"refused_field", "format"}, {"slot_untouched", true} });

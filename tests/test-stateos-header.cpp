@@ -7,6 +7,13 @@
 
 #include "ggml.h"
 
+#if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
+#include <share.h>
+#include <sys/stat.h>
+#endif
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -278,8 +285,25 @@ static void test_container() {
     const stateos_section * t = r.find(STATEOS_TAG_TOKS);
     CHECK(t != nullptr && t->offset == 12 + header.size() + 16 && t->size == toks.size());
 
-    // not found
+    // not found vs present-but-unreadable (a directory; a file another process holds with no read sharing)
     CHECK(stateos_scan_file(tmp_file("missing.state")).status == STATEOS_SCAN_NOT_FOUND);
+    std::filesystem::create_directories(stateos_path(tmp_file("a-directory.state")));
+    CHECK(stateos_scan_file(tmp_file("a-directory.state")).status == STATEOS_SCAN_UNREADABLE);
+#if defined(_WIN32)
+    {
+        int fd = -1;
+        const std::wstring wpath = stateos_path(good).wstring();
+        if (_wsopen_s(&fd, wpath.c_str(), _O_RDONLY | _O_BINARY, _SH_DENYRW, 0) == 0) {
+            const stateos_scan_result locked = stateos_scan_file(good);
+            CHECK(locked.status == STATEOS_SCAN_UNREADABLE);
+            CHECK(locked.error.find("cannot open") != std::string::npos);
+            _close(fd);
+        } else {
+            CHECK(false); // could not take the exclusive handle the test needs
+        }
+        CHECK(stateos_scan_file(good).status == STATEOS_SCAN_OK); // readable again once released
+    }
+#endif
 
     // a headerless llama state-seq file (magic 'ggsq', version 4, token count ...) is legacy/unkeyed
     const std::string legacy = tmp_file("legacy.state");

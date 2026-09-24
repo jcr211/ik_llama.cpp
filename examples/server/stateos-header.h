@@ -121,7 +121,8 @@ struct stateos_section {
 
 enum stateos_scan_status {
     STATEOS_SCAN_OK,
-    STATEOS_SCAN_NOT_FOUND,
+    STATEOS_SCAN_NOT_FOUND,    // no such file
+    STATEOS_SCAN_UNREADABLE,   // it exists but cannot be stat'ed/opened/read (permission, sharing lock, not a file)
     STATEOS_SCAN_LEGACY,       // a headerless llama state-seq file: refused, fail closed
     STATEOS_SCAN_UNRECOGNIZED, // neither a State-OS container nor a llama state file
     STATEOS_SCAN_UNSUPPORTED,  // a State-OS container of another container version

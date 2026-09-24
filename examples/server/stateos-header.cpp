@@ -376,21 +376,32 @@ stateos_scan_result stateos_scan_file(const std::string & path) {
     stateos_scan_result r;
     std::error_code ec;
     const std::filesystem::path p = stateos_path(path);
-    if (!std::filesystem::is_regular_file(p, ec) || ec) {
+    const std::filesystem::file_status st = std::filesystem::status(p, ec);
+    if (st.type() == std::filesystem::file_type::not_found) {
         r.status = STATEOS_SCAN_NOT_FOUND;
         r.error  = "state file not found";
         return r;
     }
+    if (ec) {
+        r.status = STATEOS_SCAN_UNREADABLE;
+        r.error  = "cannot stat state file (" + ec.message() + ")";
+        return r;
+    }
+    if (st.type() != std::filesystem::file_type::regular) {
+        r.status = STATEOS_SCAN_UNREADABLE;
+        r.error  = "state path is not a regular file";
+        return r;
+    }
     r.file_size = (uint64_t) std::filesystem::file_size(p, ec);
     if (ec) {
-        r.status = STATEOS_SCAN_NOT_FOUND;
-        r.error  = "cannot stat state file";
+        r.status = STATEOS_SCAN_UNREADABLE;
+        r.error  = "cannot stat state file (" + ec.message() + ")";
         return r;
     }
     std::ifstream f(p, std::ios::binary);
     if (!f.is_open()) {
-        r.status = STATEOS_SCAN_NOT_FOUND;
-        r.error  = "cannot open state file";
+        r.status = STATEOS_SCAN_UNREADABLE;
+        r.error  = "cannot open state file (permission or sharing lock)";
         return r;
     }
     uint8_t pre[12];
