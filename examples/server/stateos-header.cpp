@@ -610,6 +610,10 @@ bool stateos_kv_built_under_current(size_t n_tokens, int64_t kv_gen, int64_t cur
     return n_tokens == 0 || (kv_gen >= 0 && kv_gen == current_gen);
 }
 
+int64_t stateos_slot_start_gen(size_t n_system_tokens, int64_t system_gen, int64_t current_gen) {
+    return (n_system_tokens == 0 || system_gen == current_gen) ? current_gen : -1;
+}
+
 bool stateos_tokens_in_vocab(const int32_t * ids, size_t n, int32_t n_vocab, size_t * bad_index) {
     for (size_t i = 0; i < n; ++i) {
         if (ids[i] < 0 || ids[i] >= n_vocab) {

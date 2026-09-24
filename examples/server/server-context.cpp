@@ -2097,6 +2097,7 @@ void server_context::system_prompt_update() {
 
     kv_cache_clear();
     system_tokens.clear();
+    stateos_system_gen = stateos_adapter_gen; // the system KV below is computed under the current adapter set
 
     if (!system_prompt.empty()) {
         system_tokens = ::common_tokenize(ctx, system_prompt, true);
@@ -4851,7 +4852,8 @@ void server_context::batch_pending_prompt(const int32_t n_ubatch, const int32_t 
                 // State-OS: a slot whose KV starts over (nothing reused) is built entirely under the current adapter
                 // set; one that reuses a prefix keeps the generation of that prefix (a save then refuses a mixed KV)
                 if (slot.n_prompt_tokens_processed == 0 && slot.n_past == 0) {
-                    slot.stateos_kv_gen = stateos_adapter_gen;
+                    // a legacy system prompt is copied in from seq 0: its KV keeps the generation it was built under
+                    slot.stateos_kv_gen = stateos_slot_start_gen(system_tokens.size(), stateos_system_gen, stateos_adapter_gen);
                 }
 
                 // LONGSPEAR_PLE_HIST_REWIND: every rewind before this point (checkpoint restore,

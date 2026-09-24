@@ -354,6 +354,7 @@ struct server_context {
     // bumped on every runtime LoRA / control-vector change: a slot's KV is honest to save only if it was built
     // entirely under the current generation (server_slot::stateos_kv_gen)
     int64_t stateos_adapter_gen = 0;
+    int64_t stateos_system_gen  = 0; // stateos_adapter_gen when the legacy system prompt's KV was last computed
 
     // effective_model of what is APPLIED, written only on the main loop: at load, after SET_LORA, at the end of
     // apply_control_vectors_internal ("unknown" after a failed apply). Save/restore read this, never the live scales

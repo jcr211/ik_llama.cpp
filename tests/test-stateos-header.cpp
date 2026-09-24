@@ -543,6 +543,11 @@ static void test_effective_model() {
     CHECK(stateos_kv_built_under_current(4096, 3, 3));  // rebuilt after the last change
     CHECK(!stateos_kv_built_under_current(4096, 2, 3)); // prefilled under LoRA A, then the scale changed: refused
     CHECK(!stateos_kv_built_under_current(4096, -1, 3)); // RAM prompt-cache state of unknown generation: refused
+    // a fresh start copies a legacy system prompt from seq 0: it counts only if computed under the current set
+    CHECK(stateos_slot_start_gen(0, 0, 3) == 3);  // no system prompt
+    CHECK(stateos_slot_start_gen(12, 3, 3) == 3); // system KV recomputed after the last change
+    CHECK(stateos_slot_start_gen(12, 1, 3) == -1); // system KV from an older adapter set: unknown, never saved
+    CHECK(!stateos_kv_built_under_current(4096, stateos_slot_start_gen(12, 1, 3), 3));
 
     // the verify path refuses a different adapter set by name
     stateos_fields saved   = server_like_fields();

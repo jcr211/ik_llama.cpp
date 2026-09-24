@@ -187,6 +187,10 @@ constexpr const char * STATEOS_EFFECTIVE_UNKNOWN = "unknown";
 // current runtime adapter generation; kv_gen -1 means unknown and never qualifies.
 bool stateos_kv_built_under_current(size_t n_tokens, int64_t kv_gen, int64_t current_gen);
 
+// Generation a slot's KV gets when it starts over from empty: the current one, unless a legacy system prompt (copied
+// in from seq 0) was computed under an older generation, which leaves the KV mixed: -1 (unknown, never saved).
+int64_t stateos_slot_start_gen(size_t n_system_tokens, int64_t system_gen, int64_t current_gen);
+
 // every id inside [0, n_vocab); on failure *bad_index (if not null) is the first offending position
 bool stateos_tokens_in_vocab(const int32_t * ids, size_t n, int32_t n_vocab, size_t * bad_index);
 
