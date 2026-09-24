@@ -6,33 +6,40 @@
 // Per prompt (the 24 v2 prompts, read from the v2 campaign receipt and sha-checked):
 //   1. erase slot 0 (best effort: needs --slot-save-path), tokenize the prompt;
 //   2. request A: greedy, max_tokens = --n-first, cache_prompt: true -> generated ids g[0..G-1].
-//      After A the slot normally caches prompt + g[0..G-2] (the last sampled token is never decoded);
-//   3. request B: prompt + g[0..G-3] + [X], X != g[G-2] and textually unrelated to it: the prompt
-//      diverges at the last cached token (tail distance 1, the class C1 targets); greedy
-//      continuation of --horizon tokens.
+//      After A the slot caches prompt + g[0..G-2] (the last sampled token is never decoded);
+//   3. request B: the forced prompt, built ONCE from arm A0's request-A output:
+//      prompt + g_A0[0..G-3] + [X], X != g_A0[G-2] by id and by text (also after deleting ' ', '\n',
+//      '\r', which the server's text-level prefix match ignores). Every arm sends its OWN request A
+//      (so its cache, and in arm C its tail, exist) and then A0's request B. On A0 and on any arm whose
+//      request A matched A0's, B diverges at the last cached token (tail distance 1, the class C1
+//      targets). Greedy continuation of --horizon tokens; the arm's record is B's continuation ids.
 //   Token ids come from POST /v1/completions with logprobs: 1 (choices[0].logprobs.content[i].id,
-//   examples/server/server-task.cpp to_json_oaicompat_final -> probs_vector_to_json). The fork's
-//   /completion carries no ids (its completion_probabilities entries are {content, probs}).
-//   The arm's record is B's continuation ids.
+//   examples/server/server-task.cpp to_json_oaicompat_final -> probs_vector_to_json); the id count
+//   must equal usage.completion_tokens (a token that splits a UTF-8 character gets no logprobs entry).
 //
-// Arms (one server launch each, speculation config identical, flags per arm; ALL with -DivLog so
-// every arm's log shows where the forced divergence landed):
-//   A0 flag off, A1 flag-off repeat (fresh process, determinism control), C = -Tail -DivLog,
-//   benign A5 (-ExtraArgs '-no-fmoe -no-fug') and A3 (-ExtraArgs '-fa 0') flag off.
-//   Launch every arm through launch-stateos-tail-8099.ps1 with its own -LogStem: it sets
-//   LONGSPEAR_PLE_HIST_REWIND=1 and LONGSPEAR_PLE_HIST_LOG=1 in all of them, so the arms differ only
-//   in the tail lever.
+// Arms (one server launch each through launch-stateos-tail-8099.ps1 with its own -LogStem; all with
+// -DivLog; the launcher sets LONGSPEAR_PLE_HIST_REWIND=1 + LONGSPEAR_PLE_HIST_LOG=1 in every arm):
+//   A0 flag off (RUN FIRST: the other arms read its record), A1 flag-off repeat (determinism control),
+//   C = -Tail -DivLog, benign A5 (-ExtraArgs '-no-fmoe -no-fug') and A3 (-ExtraArgs '-fa 0') flag off.
 //
-// Scoring needs every arm's server log (--arm-log ARM=path). Before scoring:
-//   - engagement: arm C's census must show >= --min-prompts restores that chose the tail and restored
-//     (chosen_origin=tail, outcome restored*); otherwise the verdict is `not-engaged`;
-//   - per prompt, request B's [stateos-div] restore line is found in each arm's log (n_past == the
-//     forced index). A prompt is dropped when any arm's line is missing or lacks tail_dist=1, or when
-//     arm C's line lacks chosen_origin=tail with outcome restored*. Dropped counts are reported.
+// Scoring (needs every arm's record and server log, --arm-log ARM=path):
+//   - a prompt is dropped when its B prompt (sha) differs across arms, when C's or A1's request-A
+//     output differs from A0's, or when the request-B restore line of A0, A1 or C is missing or lacks
+//     tail_dist=1, or C's lacks chosen_origin=tail with outcome restored*. Benign arms reach the same B
+//     from their own cache, so their restore lines are not constrained. A restore line binds to a row
+//     by request order AND content: n_past == the forced index, the cache window's marked token ==
+//     g_A0[G-2] and the prompt window's marked token == X;
+//   - engagement: arm C must have >= --min-prompts tail restores on its request-B lines, else
+//     `not-engaged`: VOID when tails were not available on enough B requests (no eligible prompts:
+//     final rounds without an accepted draft), STOP when they were and C did not restore from them;
+//   - verdicts: compatible-at-horizon = PASS (exit 0); shellWorse = STOP (exit 2); insufficient-sample,
+//     void-determinism and an ineligible not-engaged = VOID (exit 3): the gate did not answer, not a
+//     C1 kill.
 //
 // Usage:
 //   node tools/stateos-tail-gate.mjs run --arm A0 --out <dir> [--url http://127.0.0.1:8099]
 //        [--receipt <v2 receipt.json>] [--n-first 64] [--horizon 256] [--limit N]
+//   node tools/stateos-tail-gate.mjs run --arm C --out <dir> [--reference <dir>/arm-A0.json] ...
 //   node tools/stateos-tail-gate.mjs score --out <dir> --arm-log A0=<log> --arm-log A1=<log>
 //        --arm-log C=<log> --arm-log A5=<log> --arm-log A3=<log> [--lib <noise-floor-lib.mjs>]
 //        [--shell C] [--benign A5,A3] [--min-prompts 20] [--n-min 6]
@@ -53,7 +60,8 @@ export const DEFAULT_LIB =
   "D:/AI/worktrees/starfighter-trace-validation/.lanes/noise-floor/noise-floor-lib.mjs";
 export const KEY_CONFIG = "D:/AI/llama-swap/config.yaml";
 // single-token texts for the forced token X, tried in order
-export const CANDIDATE_TEXTS = ["\n", " the", "0", "Z", "."];
+// (no whitespace-only text: the server's prefix match ignores ' ', '\n', '\r')
+export const CANDIDATE_TEXTS = [" the", "0", "Z", ".", "X"];
 
 export function parseArgs(argv) {
   const o = {
@@ -62,6 +70,7 @@ export function parseArgs(argv) {
     out: undefined,
     url: "http://127.0.0.1:8099",
     receipt: DEFAULT_RECEIPT,
+    reference: undefined,
     lib: DEFAULT_LIB,
     nFirst: 64,
     horizon: 256,
@@ -83,6 +92,7 @@ export function parseArgs(argv) {
     else if (flag === "--out") o.out = path.resolve(value());
     else if (flag === "--url") o.url = value();
     else if (flag === "--receipt") o.receipt = value();
+    else if (flag === "--reference") o.reference = path.resolve(value());
     else if (flag === "--lib") o.lib = value();
     else if (flag === "--n-first") o.nFirst = Number(value());
     else if (flag === "--horizon") o.horizon = Number(value());
@@ -102,6 +112,8 @@ export function parseArgs(argv) {
   if (!o.out) throw new Error("--out is required");
   if (o.cmd === "run" && !/^[A-Za-z][A-Za-z0-9_-]*$/.test(o.arm ?? ""))
     throw new Error("--arm is required");
+  if (o.cmd === "run" && o.arm !== "A0" && o.reference === undefined)
+    o.reference = path.join(o.out, "arm-A0.json");
   if (!(o.nFirst >= 4) || !(o.horizon >= 1))
     throw new Error("--n-first must be >= 4 and --horizon >= 1");
   return o;
@@ -127,43 +139,57 @@ export function loadPrompts(receiptPath) {
   });
 }
 
+export const tokensSha = (tokens) =>
+  crypto.createHash("sha256").update(JSON.stringify(tokens)).digest("hex");
+
 /**
  * Generated token ids and texts from a /v1/completions response (non-streamed, logprobs >= 1):
  * choices[0].logprobs.content[i] = {id, token, bytes, logprob, top_logprobs}. Throws unless every
- * id is an integer. A completion with no generated token has logprobs null and text "".
+ * id is an integer and the id count equals usage.completion_tokens. A completion with no generated
+ * token has logprobs null and text "".
  */
 export function tokensOf(resp) {
   const choice = resp?.choices?.[0];
   if (!choice) throw new Error("response has no choices[0]");
+  const n = resp?.usage?.completion_tokens;
+  if (!Number.isInteger(n)) throw new Error("response has no integer usage.completion_tokens");
   const content = choice.logprobs?.content;
   if (content == null) {
-    if (choice.text === "") return { ids: [], texts: [] };
+    if (choice.text === "" && n === 0) return { ids: [], texts: [] };
     throw new Error("choices[0].logprobs.content missing (logprobs must be requested)");
   }
   if (!Array.isArray(content)) throw new Error("choices[0].logprobs.content is not an array");
   const ids = content.map((e) => e?.id);
   if (!ids.every((id) => Number.isInteger(id)))
     throw new Error("a logprobs entry has no integer id");
+  if (ids.length !== n) {
+    throw new Error(
+      `${ids.length} logprobs ids for ${n} completion tokens (a UTF-8-split token has no entry)`,
+    );
+  }
   return { ids, texts: content.map((e) => (typeof e?.token === "string" ? e.token : "")) };
 }
 
+// the server's non-exact prefix match ignores these characters (server-common.cpp text prefix)
+const normalize = (s) => s.replace(/[ \n\r]/g, "");
+const related = (a, b) => a.length > 0 && b.length > 0 && (a.startsWith(b) || b.startsWith(a));
+
 /**
- * The forced prompt for request B: prompt + g[0..G-3] + [X]. X differs from g[G-2] by id and by text
- * (neither text a prefix of the other), so the server's text-level prefix match cannot absorb it.
+ * The forced prompt for request B: prompt + g[0..G-3] + [X]. X differs from g[G-2] by id and by text,
+ * and neither text is a prefix of the other, raw or with ' ', '\n', '\r' deleted; X must also keep
+ * some text after that deletion. So the server's text-level prefix match cannot absorb it.
  * candidates: [{id, text}] single-token candidates; originalText: the text of g[G-2].
  */
 export function forcedPrompt(promptTokens, generated, candidates, originalText = "") {
   const G = generated.length;
   if (G < 2) return null;
   const original = generated[G - 2];
-  const unrelated = (t) =>
+  const ok = (t) =>
     t.id !== original &&
-    t.text.length > 0 &&
-    !(
-      originalText.length > 0 &&
-      (originalText.startsWith(t.text) || t.text.startsWith(originalText))
-    );
-  const x = candidates.find(unrelated);
+    normalize(t.text).length > 0 &&
+    !related(t.text, originalText) &&
+    !related(normalize(t.text), normalize(originalText));
+  const x = candidates.find(ok);
   if (x === undefined) return null;
   return {
     tokens: [...promptTokens, ...generated.slice(0, G - 2), x.id],
@@ -206,16 +232,21 @@ async function runArm(o) {
   const key = apiKey();
   let prompts = loadPrompts(o.receipt);
   if (Number.isInteger(o.limit)) prompts = prompts.slice(0, o.limit);
+  const reference = o.arm === "A0" ? null : JSON.parse(fs.readFileSync(o.reference, "utf8"));
+  if (reference && reference.arm !== "A0") throw new Error(`${o.reference} is not arm A0's record`);
   const candidates = [];
-  for (const text of CANDIDATE_TEXTS) {
-    const t = (await post(o.url, key, "/tokenize", { content: text })).tokens ?? [];
-    if (t.length === 1 && Number.isInteger(t[0])) candidates.push({ id: t[0], text });
+  if (!reference) {
+    for (const text of CANDIDATE_TEXTS) {
+      const t = (await post(o.url, key, "/tokenize", { content: text })).tokens ?? [];
+      if (t.length === 1 && Number.isInteger(t[0])) candidates.push({ id: t[0], text });
+    }
   }
   const record = {
     arm: o.arm,
     url: o.url,
     startedAt: new Date().toISOString(),
     receipt: o.receipt,
+    reference: reference ? o.reference : null,
     nFirst: o.nFirst,
     horizon: o.horizon,
     candidates,
@@ -233,9 +264,23 @@ async function runArm(o) {
       }
       const promptTokens = (await post(o.url, key, "/tokenize", { content: p.text })).tokens;
       const a = await complete(o, key, promptTokens, o.nFirst);
-      const forced = forcedPrompt(promptTokens, a.ids, candidates, a.texts[a.ids.length - 2] ?? "");
-      if (!forced)
-        throw new Error(`request A generated ${a.ids.length} tokens or no unrelated X; need >= 2`);
+      let forced;
+      if (reference) {
+        const ref = reference.prompts.find((r) => r.id === p.id);
+        if (!ref || !ref.ok) throw new Error("A0 has no valid row for this prompt");
+        forced = {
+          tokens: ref.bTokens,
+          forcedIndex: ref.forcedIndex,
+          forcedToken: ref.forcedToken,
+          originalToken: ref.originalToken,
+        };
+      } else {
+        forced = forcedPrompt(promptTokens, a.ids, candidates, a.texts[a.ids.length - 2] ?? "");
+        if (!forced)
+          throw new Error(
+            `request A generated ${a.ids.length} tokens or no unrelated X; need >= 2`,
+          );
+      }
       const b = await complete(o, key, forced.tokens, o.horizon);
       Object.assign(row, {
         ok: true,
@@ -244,6 +289,8 @@ async function runArm(o) {
         forcedIndex: forced.forcedIndex,
         forcedToken: forced.forcedToken,
         originalToken: forced.originalToken,
+        bSha: tokensSha(forced.tokens),
+        ...(reference ? {} : { bTokens: forced.tokens }),
         continuation: b.ids,
       });
     } catch (e) {
@@ -263,9 +310,20 @@ async function runArm(o) {
 
 const isTailRestore = (r) => r.chosenOrigin === "tail" && String(r.outcome).startsWith("restored");
 
+const centerOf = (w) => (w && w.center >= 0 ? w.ids[w.center] : undefined);
+
+/** Does this restore line belong to the row's request B? Position AND content. */
+export function bindsTo(row, r) {
+  return (
+    r.nPast === row.forcedIndex &&
+    centerOf(r.cacheWin) === row.originalToken &&
+    centerOf(r.promptWin) === row.forcedToken
+  );
+}
+
 /**
- * Match each ok row of an arm record to its request-B restore line (in log order, n_past == the
- * forced index). Returns {promptId: restore | null}.
+ * Match each ok row of an arm record to its request-B restore line, in request order (the search
+ * resumes after the previous match) and by content (bindsTo). Returns {promptId: restore | null}.
  */
 export function matchRestores(record, restores) {
   const out = {};
@@ -276,7 +334,7 @@ export function matchRestores(record, restores) {
       continue;
     }
     let k = j;
-    while (k < restores.length && restores[k].nPast !== row.forcedIndex) k += 1;
+    while (k < restores.length && !bindsTo(row, restores[k])) k += 1;
     if (k < restores.length) {
       out[row.id] = restores[k];
       j = k + 1;
@@ -287,33 +345,65 @@ export function matchRestores(record, restores) {
   return out;
 }
 
+const sameIds = (a, b) =>
+  Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => v === b[i]);
+
 /**
  * Pre-scoring filter: engagement of the shell arm and per-prompt drops.
  * restoresByArm: {arm: census restore rows (in log order)}.
  */
 export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }) {
-  const shellRestores = restoresByArm[shell] ?? [];
-  const tailRestores = shellRestores.filter(isTailRestore).length;
-  const engaged = tailRestores >= minPrompts;
+  const byArm = new Map(records.map((r) => [r.arm, r]));
+  const a0 = byArm.get("A0");
+  if (!a0) throw new Error("missing arm record arm-A0.json");
+  const constrained = ["A0", "A1", shell].filter((a) => byArm.has(a));
   const matched = {};
-  for (const r of records) matched[r.arm] = matchRestores(r, restoresByArm[r.arm] ?? []);
-  const promptIds = (records.find((r) => r.arm === "A0") ?? records[0]).prompts.map((p) => p.id);
+  for (const a of constrained) matched[a] = matchRestores(byArm.get(a), restoresByArm[a] ?? []);
   const drop = new Map();
   const droppedCounts = {};
   const note = (id, reason) => {
     if (!drop.has(id)) drop.set(id, reason);
     droppedCounts[reason] = (droppedCounts[reason] ?? 0) + 1;
   };
-  for (const id of promptIds) {
+  const rowOf = (arm, id) => byArm.get(arm)?.prompts.find((p) => p.id === id);
+  let tailRestores = 0;
+  let tailAvailableAtB = 0;
+  for (const p of a0.prompts) {
+    const id = p.id;
+    // one B prompt for every arm
     for (const r of records) {
-      const m = matched[r.arm][id];
-      if (!m) note(id, `${r.arm}: no restore line`);
-      else if (m.tailDist !== 1) note(id, `${r.arm}: tail_dist=${m.tailDist}`);
-      else if (r.arm === shell && !isTailRestore(m))
+      const row = rowOf(r.arm, id);
+      if (row?.ok && p.ok && row.bSha !== p.bSha) note(id, `${r.arm}: request B differs from A0's`);
+    }
+    // arms whose cache must equal A0's
+    for (const a of ["A1", shell]) {
+      const row = rowOf(a, id);
+      if (row?.ok && p.ok && !sameIds(row.generated, p.generated))
+        note(id, `${a}: request A output differs from A0's`);
+    }
+    for (const a of constrained) {
+      const m = matched[a][id];
+      if (!m) note(id, `${a}: no request-B restore line`);
+      else if (m.tailDist !== 1) note(id, `${a}: tail_dist=${m.tailDist}`);
+      else if (a === shell && !isTailRestore(m))
         note(id, `${shell}: not restored from the tail (${m.chosenOrigin}/${m.outcome})`);
     }
+    const mc = matched[shell]?.[id];
+    if (mc) {
+      tailAvailableAtB += mc.tailAvailable ? 1 : 0;
+      tailRestores += isTailRestore(mc) ? 1 : 0;
+    }
   }
-  return { engaged, tailRestores, drop, droppedCounts, droppedPrompts: drop.size };
+  const engaged = tailRestores >= minPrompts;
+  return {
+    engaged,
+    tailRestores,
+    tailAvailableAtB,
+    eligibleExisted: tailAvailableAtB >= minPrompts,
+    drop,
+    droppedCounts,
+    droppedPrompts: drop.size,
+  };
 }
 
 /** Pure scoring over arm records, mirroring the v2 campaign's per-prompt pairing. */
@@ -326,8 +416,9 @@ export function score(
   for (const id of ["A0", "A1", shell, ...benign]) {
     if (!byArm.has(id)) throw new Error(`missing arm record arm-${id}.json`);
   }
+  const rowOf = (arm, promptId) => byArm.get(arm).prompts.find((p) => p.id === promptId);
   const contOf = (arm, promptId) => {
-    const row = byArm.get(arm).prompts.find((p) => p.id === promptId);
+    const row = rowOf(arm, promptId);
     return row && row.ok ? row.continuation : null;
   };
   const promptIds = byArm.get("A0").prompts.map((p) => p.id);
@@ -337,6 +428,17 @@ export function score(
   for (const id of promptIds) {
     if (drop.has(id)) {
       dropped.push({ id, reason: drop.get(id) });
+      continue;
+    }
+    // every arm must have answered the same B prompt
+    const shas = new Set(
+      ["A0", "A1", shell, ...benign]
+        .map((a) => rowOf(a, id))
+        .filter((r) => r?.ok)
+        .map((r) => r.bSha ?? null),
+    );
+    if (shas.size > 1 || shas.has(null)) {
+      dropped.push({ id, reason: "request B differs across arms" });
       continue;
     }
     const a0 = contOf("A0", id);
@@ -406,6 +508,13 @@ export function score(
   };
 }
 
+/** PASS | STOP | VOID for a gate verdict (VOID: the gate did not answer; not a C1 kill). */
+export function gateStatus(verdict) {
+  if (verdict === "compatible-at-horizon") return "PASS";
+  if (verdict === "shellWorse" || verdict === "not-engaged:tails-not-used") return "STOP";
+  return "VOID";
+}
+
 async function restoresOfLog(file) {
   const c = newCensus();
   const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
@@ -430,33 +539,49 @@ async function runScore(o) {
     minPrompts: o.minPrompts,
   });
   const horizon = records[0]?.horizon ?? o.horizon;
-  const result = pre.engaged
-    ? score(records, lib, {
-        shell: o.shell,
-        benign: o.benign,
-        horizon,
-        minPrompts: o.minPrompts,
-        nMin: o.nMin,
-        drop: pre.drop,
-      })
-    : {
-        verdict: "not-engaged",
-        voidReason: `arm ${o.shell} restored from a tail on ${pre.tailRestores} requests (< ${o.minPrompts}): the lever did not engage; not scored`,
-        rule: { outcome: "not-scored", reason: "" },
-      };
+  let result;
+  if (pre.engaged) {
+    result = score(records, lib, {
+      shell: o.shell,
+      benign: o.benign,
+      horizon,
+      minPrompts: o.minPrompts,
+      nMin: o.nMin,
+      drop: pre.drop,
+    });
+  } else if (pre.eligibleExisted) {
+    result = {
+      verdict: "not-engaged:tails-not-used",
+      voidReason: `tails were available on ${pre.tailAvailableAtB} request-B divergences in ${o.shell} but restored on only ${pre.tailRestores} (< ${o.minPrompts}): the lever failed where it could act`,
+      rule: { outcome: "not-scored", reason: "" },
+    };
+  } else {
+    result = {
+      verdict: "not-engaged:no-eligible-prompts",
+      voidReason: `tails were available on only ${pre.tailAvailableAtB} request-B divergences in ${o.shell} (< ${o.minPrompts}; final rounds without an accepted draft leave no tail): no eligible prompts, the gate did not answer`,
+      rule: { outcome: "not-scored", reason: "" },
+    };
+  }
+  const status = gateStatus(result.verdict);
   const file = path.join(o.out, "gate.json");
   const report = {
     scoredAt: new Date().toISOString(),
     lib: o.lib,
     armLogs: o.armLogs,
-    engagement: { tailRestores: pre.tailRestores, required: o.minPrompts, engaged: pre.engaged },
+    status,
+    engagement: {
+      tailRestores: pre.tailRestores,
+      tailAvailableAtB: pre.tailAvailableAtB,
+      required: o.minPrompts,
+      engaged: pre.engaged,
+    },
     droppedPrompts: pre.droppedPrompts,
     droppedCounts: pre.droppedCounts,
     ...result,
   };
   fs.writeFileSync(file, `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(
-    `engagement: ${pre.tailRestores} tail restores in ${o.shell} (need ${o.minPrompts})\n`,
+    `engagement: ${pre.tailRestores} tail restores, tails available on ${pre.tailAvailableAtB} request-B divergences in ${o.shell} (need ${o.minPrompts})\n`,
   );
   process.stdout.write(
     `dropped prompts: ${pre.droppedPrompts} ${JSON.stringify(pre.droppedCounts)}\n`,
@@ -465,8 +590,11 @@ async function runScore(o) {
     `verdict: ${result.verdict}${result.voidReason ? ` (${result.voidReason})` : ""}\n`,
   );
   process.stdout.write(`rule: ${result.rule.outcome} - ${result.rule.reason ?? ""}\n`);
+  process.stdout.write(
+    `status: ${status}${status === "VOID" ? " (the gate did not answer; not a C1 kill)" : ""}\n`,
+  );
   process.stdout.write(`wrote ${file}\n`);
-  if (result.verdict !== "compatible-at-horizon") process.exitCode = 2;
+  process.exitCode = status === "PASS" ? 0 : status === "VOID" ? 3 : 2;
 }
 
 const isEntryPoint =

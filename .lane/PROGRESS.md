@@ -31,6 +31,9 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
 
 - [x] fix round 1 (cross-family review of be896293: Grok SAFE w/ findings, Opus NOT SAFE): items 1-7
       done; rebuilt (slot-file change); tests with CUDA_VISIBLE_DEVICES=-1 green; node tools 12/12
+- [x] fix round 3 (re-review of cd34defb): gate B built once from A0, one traffic-defined step-3 class +
+      T1 mechanism check, VOID on traffic mismatch / insufficient-sample, id count == usage, restore
+      binding by order + content; node tools 14/14 (tools only, no engine change, no rebuild)
 
 ## GPU-window assumptions (W-SV2)
 - Every arm (P0, T1, A0, A1, C, A5, A3, probe) launches via launch-stateos-tail-8099.ps1, so all run
@@ -51,20 +54,37 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
 - Steps 2 and 3: zero outcomes restore-failed / verify-failed / rewind-refused after a tail choice, and
   zero tail sha mismatches. `reset:xcheck-flag-off` after a tail choice is a hit, not a miss. Step 2's
   hit-rate denominator = last-token divergences with a tail available + tails eligible at release that the
-  writer did not produce (tail_skip cause refused / order / cache-short / size-mismatch).
-- Step 3 rule (coordinator ruling on Opus S2): compare PER EVENT on the TAIL-ELIGIBLE last-token subclass.
-  Eligible in T1 = C1's own eligible events (a tail existed at the divergence); in P0 = last-token events
-  whose previous generation ended with a drafted round that accepted >= 1 draft (the decisive conjunct of
-  the eligibility predicate, shadow_pos <= last cached - 2). Pass = T1 gap tokens per eligible event
-  <= 10 % of P0's (>= 90 % reduction). Guards against a vacuous pass: each run has >= 5 eligible events,
-  T1 has >= 0.5 x P0's divergence events and >= 0.5 x P0's eligible events, P0 ran with the tail off and
-  T1 with it on. The all-last-token-events ratio is REPORT-ONLY.
-- Step 4 (gate driver): every arm launched with -DivLog (C with -Tail -DivLog); token ids come from
-  /v1/completions logprobs (the fork's /completion has none). Scoring needs every arm's log
-  (--arm-log ARM=path): verdict `not-engaged` (exit 2) unless arm C has >= 20 (min-prompts) restores that
-  chose the tail and restored; a prompt is dropped when any arm's request-B restore line is missing or
-  lacks tail_dist=1, or C's lacks chosen_origin=tail + outcome restored*. Dropped counts are reported in
-  gate.json. Forced token X differs from the original by id and by text (no prefix relation).
+  writer did not produce, and step 2 also requires tail_skip cause refused / order / cache-short /
+  size-mismatch == 0 each.
+- Census `--check` exit codes: 0 PASS, 2 STOP (a miss: the lever's kill), 3 VOID (traffic mismatch or
+  protocol error: the measurement did not answer; NOT a C1 kill).
+- Step 3 rule (coordinator rulings on Opus S2/N3 and the Grok re-review):
+  - ONE eligibility class in both runs, a property of the TRAFFIC: last-token divergences whose previous
+    generation ended with a drafted round that accepted >= 1 draft, computed identically from each run's
+    own [stateos-div] lines. (n_acc >= 1 is exact: shadow_pos = root - 1, last cached = root + n_acc, so
+    shadow_pos <= last cached - 2 iff n_acc >= 1; the root position is n_past_pre_spec,
+    server-context.cpp:5467-5468, recorded as root - 1 at llama.cpp:10144; spec_pos_base is root + 1.)
+  - Traffic sanity, VOID when violated: each run has >= 5 eligible events, T1's eligible count is within
+    0.5x-2x P0's, P0 ran with the tail off, T1 with it on.
+  - Mechanism, STOP when violated: in T1 a tail was written AND chosen on >= 90 % of eligible events.
+  - Effect, STOP when violated: T1 gap tokens per eligible event <= 10 % of P0's (>= 90 % reduction).
+  - The all-last-token-events ratio is REPORT-ONLY.
+- Step 4 (gate driver):
+  - Run A0 FIRST. Request B is built ONCE from A0's request-A output; every arm sends its own request A
+    (its cache, and C's tail, exist), then A0's B tokens (sha recorded per row).
+  - Every arm launched with -DivLog (C with -Tail -DivLog). Token ids come from /v1/completions logprobs
+    and their count must equal usage.completion_tokens (a UTF-8-split token has no logprobs entry).
+  - Drops: B sha differs across arms; C's or A1's request-A output differs from A0's; the request-B
+    restore line of A0, A1 or C is missing or lacks tail_dist=1, or C's lacks chosen_origin=tail +
+    outcome restored* (benign arms reach the same B from their own cache and are not constrained).
+    Restore lines bind by request order AND content (n_past == forced index, cache-window marked token ==
+    g_A0[G-2], prompt-window marked token == X). Dropped counts in gate.json.
+  - Engagement: C needs >= 20 tail restores on its request-B lines. Otherwise `not-engaged`: VOID when tails
+    were available on < 20 B requests (no eligible prompts), STOP when they were available and not used.
+  - Status: compatible-at-horizon PASS (exit 0); shellWorse STOP (2); insufficient-sample, void-determinism,
+    not-engaged:no-eligible-prompts VOID (3) - the gate did not answer, not a C1 kill.
+  - Forced token X differs from the original by id and by text, raw and with ' ', '\n', '\r' deleted, and
+    keeps text after that deletion.
 - Report-only: with the tail flag on, the tail buffer (~113 MiB) is allocated before the eviction loop,
   so the process transiently holds 33 checkpoints (+113 MiB host peak) during release.
 - Slot files (--slot-save-path, not used by W-SV2): tail snapshots are not persisted (no origin/sha in the

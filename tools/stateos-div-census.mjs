@@ -40,7 +40,8 @@ const RE_FORCED =
 const RE_PROMPT_EVAL = /prompt eval time =\s+([\d.]+) ms \/\s+(\d+) tokens/;
 const RE_EVAL = /^\s+eval time =\s+([\d.]+) ms \/\s+(\d+) tokens/;
 const RE_VERIFY_FAIL = /restore position mismatch/;
-const RE_KV = /([A-Za-z_][A-Za-z0-9_]*)=("(?:[^"\\]|\\.)*"|\[[^\]]*\]|\S+)/g;
+// bracketed token windows may hold quoted pieces containing ']' or spaces
+const RE_KV = /([A-Za-z_][A-Za-z0-9_]*)=("(?:[^"\\]|\\.)*"|\[(?:"(?:[^"\\]|\\.)*"|[^\]"])*\]|\S+)/g;
 
 /** key=value fields of a [stateos-div] / [ckpt-xcheck] line; bracketed windows kept verbatim. */
 export function parseFields(line) {
@@ -52,6 +53,20 @@ export function parseFields(line) {
 }
 
 const num = (v) => (v === undefined ? null : Number(v));
+
+/**
+ * Token ids of a cache_win / prompt_win field (`[id:"piece" *id:"piece" ...]`, '*' marks the token at
+ * the divergence): {ids, center} with center = index of the marked token in ids, -1 when absent.
+ */
+export function parseWindow(field) {
+  const out = { ids: [], center: -1 };
+  if (typeof field !== "string") return out;
+  for (const m of field.matchAll(/(\*?)(-?\d+):"(?:[^"\\]|\\.)*"/g)) {
+    if (m[1] === "*") out.center = out.ids.length;
+    out.ids.push(Number(m[2]));
+  }
+  return out;
+}
 
 function sum(xs) {
   return xs.reduce((a, b) => a + b, 0);
@@ -114,6 +129,8 @@ export function feed(c, line) {
         reason: f.reason,
         outcome: f.outcome,
         tailAvailable: c._tailPending.get(slot) === true,
+        cacheWin: parseWindow(f.cache_win),
+        promptWin: parseWindow(f.prompt_win),
       };
       c._tailPending.set(slot, false);
       c.v2.restores.push(r);
@@ -249,13 +266,15 @@ export function summarize(c) {
   const WRITER_SKIPS = ["refused", "order", "cache-short", "size-mismatch"];
   const writerSkips = sum(WRITER_SKIPS.map((k) => V.tailSkips[k] ?? 0));
   const TAIL_FAILURES = ["reset:restore-failed", "reset:verify-failed", "reset:rewind-refused"];
-  // step 3's comparison class: the TAIL-ELIGIBLE last-token divergences. With the tail on (T1) these are
-  // C1's own eligible events (a tail existed); with it off (P0) the events whose previous generation
-  // ended with a drafted round that accepted >= 1 draft, i.e. where the eligibility predicate's
-  // decisive conjunct (shadow_pos <= last cached - 2) holds.
+  // step 3's comparison class, ONE definition for both runs, a property of the TRAFFIC not the lever:
+  // last-token divergences whose previous generation ended with a drafted round that accepted >= 1
+  // draft (shadow_pos = root - 1 <= last cached - 2 = root + n_acc - 2 iff n_acc >= 1). Computed the
+  // same way from each run's own [stateos-div] lines.
   const tailOn = (V.creates.tail ?? 0) > 0 || Object.keys(V.tailSkips).length > 0;
-  const eligibleClass = tailOn ? eligibleLast : lastAfterDrafted;
+  const eligibleClass = lastAfterDrafted;
   const eligibleGaps = eligibleClass.map((r) => r.gap ?? 0);
+  // mechanism on that class (tail-on runs): a tail was written for the event and the search chose it
+  const eligibleServed = eligibleClass.filter((r) => r.tailAvailable && isTailHit(r));
   const lastDivergences = divergences.filter((r) => r.tailDist === 1);
   const v2ByBucket = {};
   for (const b of BUCKETS) v2ByBucket[b] = { n: 0, gapTokens: 0 };
@@ -300,12 +319,13 @@ export function summarize(c) {
           : null,
       // step 3's class (see above): count, gap tokens, gap per event
       eligible: {
-        definition: tailOn
-          ? "tail available (C1's own eligible events)"
-          : "prev_round=drafted and prev_n_acc>=1",
+        definition: "last-token, prev_round=drafted, prev_n_acc>=1 (same in every run)",
         n: eligibleClass.length,
         gapTokens: sum(eligibleGaps),
         gapPerEvent: eligibleClass.length ? sum(eligibleGaps) / eligibleClass.length : null,
+        // tail written for the event AND chosen by the search (meaningful for tail-on runs)
+        served: eligibleServed.length,
+        servedRate: eligibleClass.length ? eligibleServed.length / eligibleClass.length : null,
       },
     },
     creates: V.creates,
@@ -334,19 +354,33 @@ export function summarize(c) {
 
 const miss = (name, ok, detail) => ({ name, ok: Boolean(ok), detail });
 
-// step-3 thresholds (coordinator protocol ruling on Opus S2; stated in .lane/PROGRESS.md and the
-// gpu-justify file): the tail-eligible last-token subclass must hold at least STEP3_MIN_EVENTS events in
-// each run, T1 must keep at least STEP3_MIN_EVENT_RATIO of P0's divergence events and of P0's eligible
-// events (a vacuous or starved T1 never passes), and T1's gap tokens PER ELIGIBLE EVENT must be
-// >= 90 % below P0's. The all-last-token-events ratio is report-only.
+// A check that fails with `void: true` makes the step VOID (the measurement cannot answer: traffic
+// mismatch or a protocol error), not a lever kill. Any other failed check is a MISS (stop).
+const voidCheck = (name, ok, detail) => ({ name, ok: Boolean(ok), detail, void: true });
+
+// step-3 rules (coordinator rulings on Opus S2 / N3 and the Grok re-review; stated in .lane/PROGRESS.md
+// and the gpu-justify file):
+// - ONE eligibility class in both runs, from the traffic: last-token divergences whose previous
+//   generation ended with a drafted round that accepted >= 1 draft;
+// - traffic sanity (VOID when violated): each run has >= STEP3_MIN_EVENTS eligible events and T1's
+//   eligible count is within [STEP3_COUNT_LO, STEP3_COUNT_HI] x P0's;
+// - mechanism (MISS): in T1 a tail was written and chosen on >= STEP3_MIN_SERVED of the eligible events;
+// - effect (MISS): T1 gap tokens per eligible event <= 10 % of P0's (>= 90 % reduction).
+// The all-last-token-events ratio is report-only.
 export const STEP3_MIN_EVENTS = 5;
-export const STEP3_MIN_EVENT_RATIO = 0.5;
+export const STEP3_COUNT_LO = 0.5;
+export const STEP3_COUNT_HI = 2;
+export const STEP3_MIN_SERVED = 0.9;
+
+// writer outcomes that must never happen for an eligible tail (step 2)
+const WRITER_FAILURE_SKIPS = ["refused", "order", "cache-short", "size-mismatch"];
 
 /**
  * W-SV2 mechanism checks (merged plan section 4) on one step's summary; step 3 compares P0 with T1.
  * Every step also requires the PLE history repair to be armed and complete: at least one
  * "[ple-hist] set" line (LONGSPEAR_PLE_HIST_REWIND=1 + LONGSPEAR_PLE_HIST_LOG=1) and zero
  * "[ple-hist] reset" at pos > 0, and zero CUDA error lines.
+ * Returns {verdict: PASS | STOP | VOID, pass, checks}.
  */
 export function checkStep(step, s, p0 = null) {
   const V = s.v2;
@@ -404,13 +438,15 @@ export function checkStep(step, s, p0 = null) {
         `rate=${T.tailHitRate} hits=${T.restoredFromTail} available=${T.withTailAvailable} writer-skips=${T.writerSkips}`,
       ),
     );
-    checks.push(
-      miss(
-        "size mismatches == 0",
-        (V.tailSkips["size-mismatch"] ?? 0) === 0,
-        JSON.stringify(V.tailSkips),
-      ),
-    );
+    for (const cause of WRITER_FAILURE_SKIPS) {
+      checks.push(
+        miss(
+          `tail_skip cause=${cause} == 0`,
+          (V.tailSkips[cause] ?? 0) === 0,
+          JSON.stringify(V.tailSkips),
+        ),
+      );
+    }
     checks.push(
       miss(
         "verify failures == 0",
@@ -424,54 +460,36 @@ export function checkStep(step, s, p0 = null) {
     const P = p0.v2;
     const pe = P.lastToken.eligible;
     const te = T.eligible;
+    // protocol and traffic sanity: VOID, not a lever kill
     checks.push(
-      miss(
+      voidCheck(
         "P0 was run with the tail off",
         !P.tailOn,
         `P0 tail events=${JSON.stringify(P.creates)}`,
       ),
     );
     checks.push(
-      miss("T1 was run with the tail on", V.tailOn, `T1 creates=${JSON.stringify(V.creates)}`),
+      voidCheck("T1 was run with the tail on", V.tailOn, `T1 creates=${JSON.stringify(V.creates)}`),
     );
     checks.push(
-      miss(
-        `P0 eligible last-token events >= ${STEP3_MIN_EVENTS}`,
+      voidCheck(
+        `P0 eligible events >= ${STEP3_MIN_EVENTS}`,
         pe.n >= STEP3_MIN_EVENTS,
         `n=${pe.n} (${pe.definition})`,
       ),
     );
     checks.push(
-      miss(
-        `T1 eligible last-token events >= ${STEP3_MIN_EVENTS}`,
+      voidCheck(
+        `T1 eligible events >= ${STEP3_MIN_EVENTS}`,
         te.n >= STEP3_MIN_EVENTS,
         `n=${te.n} (${te.definition})`,
       ),
     );
     checks.push(
-      miss(
-        `T1 divergence events >= ${STEP3_MIN_EVENT_RATIO} x P0's`,
-        V.divergenceEvents > 0 && V.divergenceEvents >= STEP3_MIN_EVENT_RATIO * P.divergenceEvents,
-        `P0=${P.divergenceEvents} T1=${V.divergenceEvents}`,
-      ),
-    );
-    checks.push(
-      miss(
-        `T1 eligible events >= ${STEP3_MIN_EVENT_RATIO} x P0's`,
-        te.n >= STEP3_MIN_EVENT_RATIO * pe.n,
+      voidCheck(
+        `T1 eligible count within ${STEP3_COUNT_LO}x-${STEP3_COUNT_HI}x P0's`,
+        pe.n > 0 && te.n >= STEP3_COUNT_LO * pe.n && te.n <= STEP3_COUNT_HI * pe.n,
         `P0=${pe.n} T1=${te.n}`,
-      ),
-    );
-    const ok =
-      pe.gapPerEvent !== null &&
-      pe.gapPerEvent > 0 &&
-      te.gapPerEvent !== null &&
-      te.gapPerEvent <= 0.1 * pe.gapPerEvent;
-    checks.push(
-      miss(
-        "eligible subclass: T1 gap tokens per event >= 90% below P0",
-        ok,
-        `P0=${pe.gapTokens}/${pe.n}=${pe.gapPerEvent} T1=${te.gapTokens}/${te.n}=${te.gapPerEvent}`,
       ),
     );
     checks.push(
@@ -479,6 +497,27 @@ export function checkStep(step, s, p0 = null) {
         "P0 ple-hist armed and clean",
         p0.ple.sets > 0 && p0.ple.resetsAfterPos0 === 0,
         `sets=${p0.ple.sets} resets=${p0.ple.resetsAfterPos0}`,
+      ),
+    );
+    // mechanism on T1
+    checks.push(
+      miss(
+        `T1: a tail was written and chosen on >= ${STEP3_MIN_SERVED} of eligible events`,
+        (te.servedRate ?? 0) >= STEP3_MIN_SERVED,
+        `served=${te.served}/${te.n} rate=${te.servedRate}`,
+      ),
+    );
+    // effect, per event on the one class
+    const ok =
+      pe.gapPerEvent !== null &&
+      pe.gapPerEvent > 0 &&
+      te.gapPerEvent !== null &&
+      te.gapPerEvent <= 0.1 * pe.gapPerEvent;
+    checks.push(
+      miss(
+        "eligible class: T1 gap tokens per event >= 90% below P0",
+        ok,
+        `P0=${pe.gapTokens}/${pe.n}=${pe.gapPerEvent} T1=${te.gapTokens}/${te.n}=${te.gapPerEvent}`,
       ),
     );
     tailIntegrity();
@@ -494,7 +533,9 @@ export function checkStep(step, s, p0 = null) {
   } else {
     throw new Error(`unknown step ${step}`);
   }
-  return { step, pass: checks.every((c) => c.ok), checks };
+  const voided = checks.some((c) => c.void && !c.ok);
+  const pass = checks.every((c) => c.ok);
+  return { step, verdict: voided ? "VOID" : pass ? "PASS" : "STOP", pass, checks };
 }
 
 export async function censusOfFiles(files) {
@@ -563,7 +604,8 @@ export function renderText(files, s) {
 }
 
 // Usage: [--json] [log ...] | --check step1|step2 <log> | --check step3 --p0 <P0 log> <T1 log>
-// --check exits 2 on any miss (the chain script's auto-stop), 0 when every check passes.
+// --check exits 0 on PASS, 2 on STOP (a miss: the chain script's auto-stop, the lever's kill), and
+// 3 on VOID (traffic mismatch or protocol error: the measurement did not answer; not a C1 kill).
 async function main(argv) {
   const json = argv.includes("--json");
   const ci = argv.indexOf("--check");
@@ -579,10 +621,12 @@ async function main(argv) {
     const r = checkStep(step, s, p0);
     for (const c of r.checks)
       process.stdout.write(
-        `${c.reportOnly ? "REPORT" : c.ok ? "PASS" : "MISS"} ${c.name}: ${c.detail}\n`,
+        `${c.reportOnly ? "REPORT" : c.ok ? "PASS" : c.void ? "VOID" : "MISS"} ${c.name}: ${c.detail}\n`,
       );
-    process.stdout.write(`${step}: ${r.pass ? "PASS" : "STOP"}\n`);
-    process.exitCode = r.pass ? 0 : 2;
+    process.stdout.write(
+      `${step}: ${r.verdict}${r.verdict === "VOID" ? " (the measurement cannot answer; not a C1 kill)" : ""}\n`,
+    );
+    process.exitCode = r.verdict === "PASS" ? 0 : r.verdict === "VOID" ? 3 : 2;
     return;
   }
   if (json) {

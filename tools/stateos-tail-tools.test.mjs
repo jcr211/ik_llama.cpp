@@ -18,8 +18,11 @@ import {
   DEFAULT_LIB,
   engagementAndDrops,
   forcedPrompt,
+  gateStatus,
+  matchRestores,
   score,
   tokensOf,
+  tokensSha,
 } from "./stateos-tail-gate.mjs";
 
 test("bucketOf matches the C++ buckets", () => {
@@ -231,50 +234,81 @@ test("step 2: tail failures, sha mismatches and writer skips are misses; xcheck-
   assert.equal(cleared.v2.lastToken.withTailAvailable, 0);
 });
 
-test("step 3: eligible subclass per event, report-only all-events ratio, no vacuous pass", () => {
-  const p0Lines = [...ARMED];
-  const t1Lines = [...ARMED];
+test("step 3: one traffic-defined class, T1 mechanism check, VOID on traffic mismatch, no vacuous pass", () => {
   const ineligible = (fields) =>
     restore(fields).replace("prev_round=drafted", "prev_round=root-only");
-  for (let i = 0; i < 6; i += 1) {
-    p0Lines.push(restore(FLAG_OFF)); // eligible in P0 (drafted, n_acc >= 1)
-    t1Lines.push(TAIL_CREATE, restore(TAIL_HIT)); // C1's own eligible events
-  }
-  // ineligible events: large gaps in both runs (no tail possible)
-  for (let i = 0; i < 6; i += 1) {
-    p0Lines.push(ineligible(FLAG_OFF));
-    t1Lines.push(
-      "[stateos-div] event=tail_skip slot=0 task=1 cause=no-accepted-draft",
-      ineligible(FLAG_OFF),
-    );
-  }
-  const p0 = census(p0Lines);
-  const t1 = census(t1Lines);
+  const run = (nElig, eligLine, withTail) => {
+    const lines = [...ARMED];
+    for (let i = 0; i < nElig; i += 1) {
+      if (withTail) lines.push(TAIL_CREATE);
+      lines.push(restore(eligLine));
+    }
+    for (let i = 0; i < 6; i += 1) {
+      if (withTail)
+        lines.push("[stateos-div] event=tail_skip slot=0 task=1 cause=no-accepted-draft");
+      lines.push(ineligible(FLAG_OFF));
+    }
+    return census(lines);
+  };
+  const p0 = run(6, FLAG_OFF, false);
+  const t1 = run(6, TAIL_HIT, true);
   assert.equal(p0.v2.lastToken.eligible.n, 6);
   assert.equal(t1.v2.lastToken.eligible.n, 6);
+  assert.equal(p0.v2.lastToken.eligible.definition, t1.v2.lastToken.eligible.definition);
+  assert.equal(t1.v2.lastToken.eligible.servedRate, 1);
   const r = checkStep("step3", t1, p0);
-  assert.equal(r.pass, true, JSON.stringify(r.checks.filter((c) => !c.ok)));
+  assert.equal(r.verdict, "PASS", JSON.stringify(r.checks.filter((c) => !c.ok)));
   // the all-events ratio (~0.5 here) would have failed a 90 % test: it is report-only
   const report = r.checks.find((c) => c.reportOnly);
   assert.ok(report && /ratio=0\.5/.test(report.detail));
 
-  // T1 with no restore lines (flag not set / server died) never passes
+  // mechanism: eligible events where the tail was not written or not chosen -> STOP
+  const lines = [...ARMED];
+  for (let i = 0; i < 6; i += 1) lines.push(TAIL_CREATE, restore(TAIL_HIT));
+  for (let i = 0; i < 2; i += 1)
+    lines.push("[stateos-div] event=tail_skip slot=0 task=1 cause=not-newer", restore(FLAG_OFF));
+  const partial = census(lines);
+  assert.equal(partial.v2.lastToken.eligible.n, 8);
+  assert.equal(partial.v2.lastToken.eligible.servedRate, 0.75);
+  assert.equal(checkStep("step3", partial, p0).verdict, "STOP");
+
+  // traffic mismatch -> VOID, not a kill: too few eligible events, or T1's count outside 0.5x-2x
+  assert.equal(checkStep("step3", run(3, TAIL_HIT, true), p0).verdict, "VOID");
+  assert.equal(checkStep("step3", run(13, TAIL_HIT, true), p0).verdict, "VOID");
+  assert.equal(checkStep("step3", run(12, TAIL_HIT, true), p0).verdict, "PASS");
+  // T1 with no restore lines never passes (VOID)
   const empty = census([...ARMED, TAIL_CREATE]);
-  assert.equal(checkStep("step3", empty, p0).pass, false);
-  // T1 with far fewer events than P0 never passes
-  const starved = census([...ARMED, TAIL_CREATE, restore(TAIL_HIT)]);
-  assert.equal(checkStep("step3", starved, p0).pass, false);
-  // P0 compared with itself: no reduction, and P0 is not a tail-on run
-  assert.equal(checkStep("step3", p0, p0).pass, false);
-  // a failed tail restore in T1 is a miss even when the gap numbers pass
+  assert.equal(checkStep("step3", empty, p0).verdict, "VOID");
+  // P0 compared with itself: protocol error (T1 tail off) -> VOID
+  assert.equal(checkStep("step3", p0, p0).verdict, "VOID");
+  // an inert lever (tails written but gaps unchanged) -> STOP
+  const inert = run(
+    6,
+    "chosen_origin=tail chosen_pos_max=1700 gap=298 restore_ms=12 reason=tail outcome=restored",
+    true,
+  );
+  assert.equal(checkStep("step3", inert, p0).verdict, "STOP");
+  // a failed tail restore in T1 is a miss
   const withFail = census([
-    ...t1Lines,
+    ...ARMED,
+    ...Array.from({ length: 6 }, () => [TAIL_CREATE, restore(TAIL_HIT)]).flat(),
     TAIL_CREATE,
     restore(
       "chosen_origin=tail chosen_pos_max=1995 gap=3 restore_ms=0 reason=none outcome=reset:verify-failed",
     ),
   ]);
-  assert.equal(checkStep("step3", withFail, p0).pass, false);
+  assert.equal(checkStep("step3", withFail, p0).verdict, "STOP");
+});
+
+test("census parses the token windows for restore-line binding", () => {
+  const s = newCensus();
+  feed(
+    s,
+    '[stateos-div] event=restore slot=0 task=3 cache_n=6 n_past=5 n_past_prompt=5 tail_dist=1 bucket=1 class=last-token:other prev_stop=n_predict prev_round=drafted prev_n_draft=4 prev_n_acc=2 prev_cached_after_stop=-1 prev_n_decoded=64 chosen_origin=tail chosen_pos_max=3 gap=1 restore_ms=10 reason=tail outcome=restored cache_win=[10:"a" 11:"]b" *7:" the"] prompt_win=[10:"a" 11:"]b" *99:"Z"]',
+  );
+  const r = s.v2.restores[0];
+  assert.deepEqual(r.cacheWin, { ids: [10, 11, 7], center: 2 });
+  assert.deepEqual(r.promptWin, { ids: [10, 11, 99], center: 2 });
 });
 
 // Shape of POST /v1/completions (non-streamed, logprobs: 1), built from this fork's
@@ -327,8 +361,21 @@ test("tokensOf reads ids from /v1/completions logprobs and refuses anything else
   const noLogprobs = structuredClone(V1_RESPONSE);
   noLogprobs.choices[0].logprobs = null;
   assert.throws(() => tokensOf(noLogprobs), /logprobs/);
-  // zero generated tokens: logprobs null and empty text
-  assert.deepEqual(tokensOf({ choices: [{ text: "", logprobs: null }] }), { ids: [], texts: [] });
+  // a UTF-8-split token gets no logprobs entry: 2 ids for 3 completion tokens is refused
+  const split = structuredClone(V1_RESPONSE);
+  split.usage.completion_tokens = 3;
+  assert.throws(() => tokensOf(split), /completion tokens/);
+  const noUsage = structuredClone(V1_RESPONSE);
+  delete noUsage.usage;
+  assert.throws(() => tokensOf(noUsage), /usage/);
+  // zero generated tokens: logprobs null, empty text, usage 0
+  assert.deepEqual(
+    tokensOf({ choices: [{ text: "", logprobs: null }], usage: { completion_tokens: 0 } }),
+    {
+      ids: [],
+      texts: [],
+    },
+  );
 });
 
 test("forcedPrompt replaces the last cached generated token with an unrelated one", () => {
@@ -337,67 +384,129 @@ test("forcedPrompt replaces the last cached generated token with an unrelated on
     { id: 50, text: " th" },
     { id: 99, text: "Z" },
   ];
-  // original "\n" (id 12): the same id is refused, " th" is unrelated and chosen
+  // original "\n" (id 12): same id refused; " th" is unrelated (normalized "th" vs "") and chosen
   const f = forcedPrompt([1, 2, 3], [10, 11, 12, 13], cands, "\n");
   assert.deepEqual(f.tokens, [1, 2, 3, 10, 11, 50]);
-  // original " the" (id 7): "\n" is unrelated and chosen; " th" (a prefix of " the") would be refused
+  // original " the" (id 7): "\n" has no text after normalization, " th" is a prefix: "Z" chosen
   const g = forcedPrompt([1, 2, 3], [10, 11, 7, 13], cands, " the");
-  assert.equal(forcedPrompt([1, 2, 3], [10, 11, 7, 13], [cands[1]], " the"), null);
   // cached after request A: prompt + g[0..G-2] = [1,2,3,10,11,7]; request B diverges at index 5
-  assert.deepEqual(g.tokens, [1, 2, 3, 10, 11, 12]);
+  assert.deepEqual(g.tokens, [1, 2, 3, 10, 11, 99]);
   assert.equal(g.forcedIndex, 5);
   assert.equal(g.originalToken, 7);
+  // whitespace-insensitive relation: original "\nthe" vs candidate " the" normalize to the same text
+  assert.equal(forcedPrompt([1], [10, 7, 13], [{ id: 50, text: " the" }], "\nthe"), null);
   assert.equal(forcedPrompt([1], [5], cands, ""), null);
 });
 
-test("engagement and per-prompt drops before scoring", () => {
-  const rec = (arm) => ({
-    arm,
-    prompts: [
-      { id: "p0", ok: true, forcedIndex: 100 },
-      { id: "p1", ok: true, forcedIndex: 200 },
-      { id: "p2", ok: true, forcedIndex: 300 },
-    ],
-  });
-  const line = (nPast, tailDist, chosenOrigin, outcome) => ({
-    nPast,
-    tailDist,
-    chosenOrigin,
-    outcome,
-  });
-  const off = [
-    line(5, 400, "none", "reset:no-checkpoint"),
-    line(100, 1, "tolerance", "restored"),
-    line(200, 1, "tolerance", "restored"),
-    line(300, 3, "tolerance", "restored"),
+// ---- step 4: one B prompt for every arm, drops, engagement ---------------------------------------
+
+const B = [1, 2, 3, 10, 11, 99];
+const row = (id, over = {}) => ({
+  id,
+  ok: true,
+  generated: [10, 11, 7, 13],
+  forcedIndex: 5,
+  forcedToken: 99,
+  originalToken: 7,
+  bSha: tokensSha(B),
+  continuation: [1, 2, 3, 4, 5, 6, 7, 8],
+  ...over,
+});
+const bLine = (over = {}) => ({
+  nPast: 5,
+  tailDist: 1,
+  chosenOrigin: "tolerance",
+  outcome: "restored",
+  tailAvailable: false,
+  cacheWin: { ids: [10, 11, 7], center: 2 },
+  promptWin: { ids: [10, 11, 99], center: 2 },
+  ...over,
+});
+const tailLine = (over = {}) => bLine({ chosenOrigin: "tail", tailAvailable: true, ...over });
+
+test("restore lines bind by request order and content, not position alone", () => {
+  const rec = { arm: "A0", prompts: [row("p0"), row("p1", { forcedToken: 50 })] };
+  // an equal-position line with other content (another prompt's B) is skipped
+  const restores = [
+    bLine({ promptWin: { ids: [10, 11, 42], center: 2 } }),
+    bLine(),
+    bLine({ promptWin: { ids: [10, 11, 50], center: 2 } }),
   ];
-  const on = [
-    line(100, 1, "tail", "restored"),
-    line(200, 1, "tolerance", "restored"),
-    line(300, 1, "tail", "restored"),
-  ];
-  const records = ["A0", "A1", "C", "A5", "A3"].map(rec);
-  const restoresByArm = { A0: off, A1: off, C: on, A5: off, A3: off };
-  const r = engagementAndDrops(records, restoresByArm, { shell: "C", minPrompts: 2 });
-  assert.equal(r.tailRestores, 2);
-  assert.equal(r.engaged, true);
-  // p1: C did not restore from the tail; p2: flag-off arms landed at tail_dist 3
-  assert.deepEqual([...r.drop.keys()].sort(), ["p1", "p2"]);
-  assert.equal(r.droppedPrompts, 2);
-  assert.equal(r.droppedCounts["C: not restored from the tail (tolerance/restored)"], 1);
-  assert.equal(r.droppedCounts["A0: tail_dist=3"], 1);
-  const r2 = engagementAndDrops(records, restoresByArm, { shell: "C", minPrompts: 20 });
-  assert.equal(r2.engaged, false);
+  const m = matchRestores(rec, restores);
+  assert.equal(m.p0, restores[1]);
+  assert.equal(m.p1, restores[2]);
+  // order: p1's line before p0's match is not reused
+  const out = [bLine({ promptWin: { ids: [10, 11, 50], center: 2 } }), bLine()];
+  const m2 = matchRestores(rec, out);
+  assert.equal(m2.p0, out[1]);
+  assert.equal(m2.p1, null);
 });
 
-test("score: void on A1 != A0, otherwise the v2 rule; dropped prompts are excluded", {
+test("engagement and drops: B built once from A0, constraints on A0/A1/C only", () => {
+  const ids = ["p0", "p1", "p2", "p3"];
+  const mk = (arm, over = {}) => ({ arm, prompts: ids.map((id) => row(id, over[id] ?? {})) });
+  const records = [
+    mk("A0"),
+    mk("A1"),
+    // C's request A differed on p2 (its cache is not A0's)
+    mk("C", { p2: { generated: [10, 11, 8, 13] } }),
+    // a benign arm whose own request A differs everywhere still answers A0's B: not dropped for that
+    mk("A5", { p0: { generated: [9, 9, 9, 9] }, p1: { generated: [9, 9, 9, 9] } }),
+    // a benign arm that sent a different B (it built its own) is dropped
+    mk("A3", { p3: { bSha: tokensSha([1, 2, 3, 9, 9, 99]) } }),
+  ];
+  const lines = ids.map(() => bLine());
+  const restoresByArm = {
+    A0: lines,
+    A1: lines,
+    C: ids.map(() => tailLine()),
+    // benign logs carry no B restore lines at tail distance 1: unconstrained
+    A5: [],
+    A3: [],
+  };
+  const r = engagementAndDrops(records, restoresByArm, { shell: "C", minPrompts: 2 });
+  assert.equal(r.tailRestores, 4);
+  assert.equal(r.tailAvailableAtB, 4);
+  assert.equal(r.engaged, true);
+  assert.deepEqual([...r.drop.keys()].sort(), ["p2", "p3"]);
+  assert.equal(r.droppedCounts["C: request A output differs from A0's"], 1);
+  assert.equal(r.droppedCounts["A3: request B differs from A0's"], 1);
+  // no eligible prompts vs tails not used
+  const noTails = engagementAndDrops(
+    records,
+    { ...restoresByArm, C: ids.map(() => bLine()) },
+    { shell: "C", minPrompts: 2 },
+  );
+  assert.equal(noTails.engaged, false);
+  assert.equal(noTails.eligibleExisted, false);
+  const unused = engagementAndDrops(
+    records,
+    { ...restoresByArm, C: ids.map(() => bLine({ tailAvailable: true })) },
+    { shell: "C", minPrompts: 2 },
+  );
+  assert.equal(unused.engaged, false);
+  assert.equal(unused.eligibleExisted, true);
+  assert.equal(gateStatus("not-engaged:no-eligible-prompts"), "VOID");
+  assert.equal(gateStatus("not-engaged:tails-not-used"), "STOP");
+  assert.equal(gateStatus("insufficient-sample"), "VOID");
+  assert.equal(gateStatus("void-determinism"), "VOID");
+  assert.equal(gateStatus("shellWorse"), "STOP");
+  assert.equal(gateStatus("compatible-at-horizon"), "PASS");
+});
+
+test("score: void on A1 != A0, otherwise the v2 rule; drops and differing B prompts are excluded", {
   skip: !fs.existsSync(DEFAULT_LIB),
 }, async () => {
   const lib = await import(pathToFileURL(DEFAULT_LIB).href);
-  const arm = (id, conts) => ({
+  const arm = (id, conts, bShas = []) => ({
     arm: id,
     horizon: 8,
-    prompts: conts.map((c, i) => ({ id: `p${i}`, ok: true, continuation: c })),
+    prompts: conts.map((c, i) => ({
+      id: `p${i}`,
+      ok: true,
+      continuation: c,
+      bSha: bShas[i] ?? "b",
+    })),
   });
   const base = [
     [1, 2, 3, 4, 5, 6, 7, 8],
@@ -428,4 +537,12 @@ test("score: void on A1 != A0, otherwise the v2 rule; dropped prompts are exclud
   assert.equal(withDrop.rows.length, 1);
   assert.deepEqual(withDrop.dropped, [{ id: "p1", reason: "C: tail_dist=2" }]);
   assert.equal(withDrop.verdict, "insufficient-sample");
+  assert.equal(gateStatus(withDrop.verdict), "VOID");
+  // a benign arm that answered a different B on p0 drops p0
+  const diffB = score(
+    [arm("A0", base), arm("A1", base), arm("C", base), arm("A5", off, ["x"]), arm("A3", off)],
+    lib,
+    opts,
+  );
+  assert.deepEqual(diffB.dropped, [{ id: "p0", reason: "request B differs across arms" }]);
 });
