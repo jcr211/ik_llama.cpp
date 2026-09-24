@@ -7,6 +7,7 @@
 #   bash sl1-gate.sh pair     <p0.err.log> <a2.err.log> [M=5]      A2 vs its P0 (acceptance, drafts, gain)
 #   bash sl1-gate.sh jcount   <err.log> [M=5]                      probe watcher: rounds and j rows short of 20
 #   bash sl1-gate.sh stepcost <p0 bench err logs, comma-separated> <a2 ...>   step 3: per-K step cost K=2..5
+#   bash sl1-gate.sh pcie     <pcie.log>                           replay-counter delta of one window step
 # Lines read: [spec-host] (LONGSPEAR_SPEC_HOST_TIMING), [ckpt-xcheck] (LONGSPEAR_SPEC_CKPT_CROSSCHECK),
 # [vt] (LONGSPEAR_VERIFY_TIMING, standing env), the server's "eval time" lines (err or out log), "CUDA error",
 # and pcie-telemetry.sh's replay counter (column 2).
@@ -98,6 +99,12 @@ ok_if() { # $1 = awk boolean expression over the -v variables that follow; print
 }
 
 case "$MODE" in
+pcie)
+    PCIE=${2:?pcie log}
+    [ -f "$PCIE" ] || { echo "no log $PCIE"; echo "RESULT STOP"; exit 1; }
+    D=$(pcie_delta "$PCIE")
+    check "$(ok_if 'd != "NA" && d == 0' -v d="$D")" "no PCIe replay increment (delta $D; NA = no numeric sample)"
+    ;;
 jcount)
     ERR=${2:?err log}; M=${3:-5}
     [ -f "$ERR" ] || { echo "rounds=0 short=$((M-1)) hist=none"; exit 0; }
