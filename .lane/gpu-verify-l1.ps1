@@ -180,6 +180,27 @@ function Parse-Restore($r, [string] $What) {
     }
 }
 
+# GET /list answers a JSON array of {filename, filesize, mtime, token_count, format, prompt, stateos?} over every regular
+# file in --slot-save-path (server.cpp list_saved_prompts). Find one entry by exact file name.
+# Never take .Count of an `if`-expression's result: the `if` unrolls a one-element @(...) into the bare PSCustomObject,
+# and in Windows PowerShell 5.1 a PSCustomObject has no .Count (it is $null), which made the 2026-09-24 F11 run record
+# `entry: null` although the server listed id4k.state (the recorded body in specoff.log has it).
+function Find-ListEntry($Resp, [string] $Name) {
+    if (($null -eq $Resp) -or ($Resp.Status -ne 200) -or ($null -eq $Resp.Body)) { return $null }
+    $hits = New-Object System.Collections.Generic.List[object]
+    foreach ($e in @($Resp.Body)) { if (($null -ne $e) -and ([string] $e.filename -ceq $Name)) { $hits.Add($e) } }
+    if ($hits.Count -eq 1) { return $hits[0] }
+    return $null
+}
+# a State-OS /list entry names the state (format, count, digest) and redacts its text (F11 4e1f27ca)
+function Test-ListEntry($E, [string] $TokenSha, [int] $NTokens) {
+    if ($null -eq $E) { return $false }
+    $r = [pscustomobject]@{ Status = 200; Body = $E }
+    return ((Field $r 'format') -eq 'stateos-v1') -and (@($E.PSObject.Properties.Name) -contains 'prompt') -and ($null -eq $E.prompt) -and
+           ((Field $r 'stateos.prompt_redacted') -eq $true) -and ((Field $r 'token_count') -eq $NTokens) -and
+           ((Field $r 'stateos.token_sha256') -eq $TokenSha)
+}
+
 function Get-Tokens([string] $Text) {
     $r = Api 'POST' '/tokenize' (@{ content = $Text } | ConvertTo-Json -Compress)
     return ,(Parse-Tokens $r)
@@ -659,7 +680,7 @@ function Get-RecordedExchanges([string] $LogPath) {
 }
 function Invoke-DryRun {
     $dir = if ($DryRunDir) { $DryRunDir } else { $Root }
-    $logs = if ($DryRunLog) { @($DryRunLog) } else { @(@('specoff.log', 'specon.log') | ForEach-Object { Join-Path $dir $_ } | Where-Object { Test-Path -LiteralPath $_ }) }
+    $logs = @(if ($DryRunLog) { $DryRunLog } else { @('specoff.log', 'specon.log') | ForEach-Object { Join-Path $dir $_ } | Where-Object { Test-Path -LiteralPath $_ } })
     if ($logs.Count -eq 0) { throw "dry run: no recorded specoff.log / specon.log in $dir" }
     foreach ($lp in $logs) { if (-not (Test-Path -LiteralPath $lp)) { throw "dry run: no recorded log at $lp" } }
     $check = {
@@ -676,6 +697,7 @@ function Invoke-DryRun {
         $ex = Get-RecordedExchanges $logPath
         Write-Host "  recorded exchanges with a response: $($ex.Count)"
         $seen = @{}
+        $saveSha = @{}
         $comps = New-Object System.Collections.Generic.List[object]
         foreach ($e in $ex) {
             $kind = if ($e.Path -like '/slots/*') { 'slots ' + ([regex]::Match($e.Params, '"action":"(\w+)"').Groups[1].Value) } else { $e.Path }
@@ -689,7 +711,23 @@ function Invoke-DryRun {
                     }
                 }
                 '/props'        { & $check '/props stateos' { $v = Need $e 'stateos.version' '/props'; [void] (Need $e 'stateos.keyed_header' '/props'); [void] (Need $e 'stateos.companion' '/props'); "version=$v" } }
-                'slots save'    { & $check "slots save #$($seen[$kind])" { $s = Parse-Save $e 'dry'; "n_saved=$($s.n_saved) n_written=$($s.n_written) checkpoints_saved=$($s.checkpoints_saved)" } }
+                'slots save'    {
+                    # the F11 run makes deliberate save refusals (reserved name, adapters changed): parse them as refusals
+                    if ($e.Status -eq 200) { & $check "slots save #$($seen[$kind])" { $s = Parse-Save $e 'dry'; $saveSha[[string] (Field $e 'filename')] = [string] $s.token_sha256; "n_saved=$($s.n_saved) n_written=$($s.n_written) checkpoints_saved=$($s.checkpoints_saved)" } }
+                    else { & $check "slots save refusal #$($seen[$kind])" { "status=$($e.Status) type=$(Field $e 'error.type') slot_untouched=$(Field $e 'error.slot_untouched')" } }
+                }
+                '/list'         {
+                    # the live lookup, on the recorded body: id4k.state must be found and redacted, with the save's digest
+                    & $check "/list #$($seen[$kind])" {
+                        $n = @($e.Body).Count
+                        $e0 = Find-ListEntry $e 'id4k.state'
+                        if ($null -eq $e0) { throw "id4k.state not found among $n entries" }
+                        $sha = $saveSha['id4k.state']
+                        if (-not $sha) { throw 'no recorded id4k.state save to compare the digest with' }
+                        if (-not (Test-ListEntry $e0 $sha 4096)) { throw "id4k.state entry fails the redaction check: $($e0 | ConvertTo-Json -Compress -Depth 5)" }
+                        "$n entries; id4k.state: format=$($e0.format) token_count=$($e0.token_count) prompt=null prompt_redacted=$($e0.stateos.prompt_redacted) digest matches the save"
+                    }
+                }
                 'slots erase'   { & $check "slots erase #$($seen[$kind])" { "n_erased=$(Need $e 'n_erased' 'erase')" } }
                 'slots restore' {
                     # binaries before b29a940c (lane 1's 7c77724b) did not report the checkpoints status the F11 parser
@@ -820,6 +858,27 @@ function Invoke-DryRun {
         $t4 = Get-CompletionTimeout 19 64; $t32 = Get-CompletionTimeout 32768 1; $t190 = Get-CompletionTimeout 190000 1; $tq = Get-CompletionTimeout 2365 8
         if (($t4 -gt 300) -or ($tq -gt 300) -or ($t32 -gt 600) -or ($t190 -lt 900) -or ($t190 -gt 3600)) { throw "timeouts 4K-cont=$t4 Q=$tq 32K=$t32 190K=$t190" }
         "build-info bb0b30ea, 'unknown' refused; --version bb0b30ea; timeouts: continuation $t4 s, Q $tq s, 32K prefill $t32 s, 190K prefill $t190 s"
+    }
+    # /list lookup on the real response shape (entries as the F11 server answered 2026-09-24, specoff.log): a match
+    # among several entries (the 5.1 PSCustomObject .Count case that recorded entry:null), a one-entry body, a
+    # missing name, a wrong digest, an unredacted prompt
+    & $check '/list lookup on the recorded response shape' {
+        $sha = '40c37ffae3bce716e9e05e03dc0b898543e98f68b0b970755cf37ed6fcc7ec4a'
+        $st = { param($n, $c, $p) '{"filename":"' + $n + '","filesize":538354121,"mtime":"2026-09-24 05:53:40","token_count":' + $c + ',"format":"stateos-v1","prompt":' + $p + ',"stateos":{"token_sha256":"' + $sha + '","prompt_redacted":true}}' }
+        $legacy = '{"filename":"legacy-fake.state","filesize":16,"mtime":"2026-09-24 05:55:12","token_count":0,"format":"llama-seq","prompt":""}'
+        $mk = { param($j) $o = $null; try { $o = $j | ConvertFrom-Json } catch {}; [pscustomobject]@{ Status = 200; Body = $o; Raw = $j } }
+        $many = & $mk ('[' + (& $st 'hard-rope.state' 4096 'null') + ',' + (& $st 'id32k.state' 32768 'null') + ',' + (& $st 'id4k.state' 4096 'null') + ',' + $legacy + ']')
+        $one = & $mk ('[' + (& $st 'id4k.state' 4096 'null') + ']')
+        $e1 = Find-ListEntry $many 'id4k.state'; $e2 = Find-ListEntry $one 'id4k.state'
+        if (($null -eq $e1) -or -not (Test-ListEntry $e1 $sha 4096)) { throw 'not found / not passed among several entries' }
+        if (($null -eq $e2) -or -not (Test-ListEntry $e2 $sha 4096)) { throw 'not found / not passed in a one-entry body' }
+        if ($null -ne (Find-ListEntry $many 'missing.state')) { throw 'a missing name was found' }
+        if ($null -ne (Find-ListEntry $many 'ID4K.STATE')) { throw 'the lookup must be exact' }
+        if (Test-ListEntry $e1 ('0' * 64) 4096) { throw 'a wrong digest passed' }
+        $leak = Find-ListEntry (& $mk ('[' + (& $st 'id4k.state' 4096 '"Record 000000: ..."') + ']')) 'id4k.state'
+        if (Test-ListEntry $leak $sha 4096) { throw 'an unredacted prompt passed' }
+        if ($null -ne (Find-ListEntry ([pscustomobject]@{ Status = 500; Body = $null; Raw = '' }) 'id4k.state')) { throw 'a 500 was searched' }
+        'found among 4 and in a 1-entry body; missing / case-changed name, wrong digest, unredacted prompt, 500 all refused'
     }
     & $check 'First-Divergence' {
         if ((First-Divergence 'abc' 'abd') -ne 2 -or (First-Divergence 'abc' 'abc') -ne -1 -or (First-Divergence 'ab' 'abc') -ne 2 -or (First-Divergence @(1, 2, 3) @(1, 5)) -ne 1) { throw 'wrong index' }
@@ -1071,13 +1130,10 @@ try {
 
     # F11 /list (4e1f27ca): a State-OS entry names the state (format, token count, token digest), never its text
     $ls = Api 'GET' '/list' $null
-    $ent = if (($ls.Status -eq 200) -and ($null -ne $ls.Body)) { @($ls.Body | Where-Object { $_.filename -eq 'id4k.state' }) } else { @() }
-    $e0 = if ($ent.Count -eq 1) { $ent[0] } else { $null }
+    $e0 = Find-ListEntry $ls 'id4k.state'
     $e0r = if ($e0) { [pscustomobject]@{ Status = 200; Body = $e0 } } else { $null }
-    $listOk = ($null -ne $e0) -and ((Field $e0r 'format') -eq 'stateos-v1') -and (@($e0.PSObject.Properties.Name) -contains 'prompt') -and ($null -eq $e0.prompt) -and
-              ((Field $e0r 'stateos.prompt_redacted') -eq $true) -and ((Field $e0r 'token_count') -eq 4096) -and
-              ((Field $e0r 'stateos.token_sha256') -eq $Results.legA.identity_4k.save.token_sha256)
-    $Results.legA.list_redacted = [ordered]@{ status = $ls.Status; entry = $e0; pass = $listOk }
+    $listOk = Test-ListEntry $e0 $Results.legA.identity_4k.save.token_sha256 4096
+    $Results.legA.list_redacted = [ordered]@{ status = $ls.Status; raw = $ls.Raw; entry = $e0; pass = $listOk }
     Log "GET /list id4k.state: status=$($ls.Status) format=$(Field $e0r 'format') prompt_redacted=$(Field $e0r 'stateos.prompt_redacted') token_count=$(Field $e0r 'token_count') pass=$listOk"
     Save-Results
 

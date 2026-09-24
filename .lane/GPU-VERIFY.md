@@ -296,6 +296,13 @@ production context.
 - F11 (hard expectations, no kill; see the next section): `tmp_cleanup.pass`, the F11 entries of `refusals`
   (`<effective_model absent>`, `<7c77724b file>`, `<unreadable: directory>`, `<reserved name: save|restore|rename>`),
   `list_redacted.pass`, `adapter_generation.pass`; `effective_model_header.value` is report-only (expect `none`).
+  `list_redacted.raw` records the full `/list` body. **2026-09-24 F11 run:** `list_redacted` recorded `entry: null,
+  pass: false`. The cause was the script, not the server. The body recorded in `specoff.log` (line 5933, 17 entries)
+  has `id4k.state` as `stateos-v1`, `prompt: null`, `prompt_redacted: true`, `token_count` 4096 and the save's digest.
+  The old lookup assigned an `if` expression whose one-element `@(...)` unrolls to a bare `PSCustomObject`, and Windows
+  PowerShell 5.1 (which ran the script) gives a `PSCustomObject` no `.Count`, so `.Count -eq 1` was false. PowerShell 7
+  finds the entry. `Find-ListEntry` / `Test-ListEntry` replace it, and the dry run replays them on the recorded body
+  (`/list #1`) and on synthetic bodies of the same shape.
 
 ## F11 behaviours: what the script exercises on the real model, and what it leaves to the CPU tests
 
