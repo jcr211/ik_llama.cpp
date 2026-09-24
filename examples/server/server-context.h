@@ -121,6 +121,10 @@ struct server_slot {
     void prompt_load(server_prompt_cache& prompt_cache, const server_tokens& tokens, float min_reusable_fraction);
 
     llama_pos checkpoint_pos = -1;
+
+    // State-OS: server_context::stateos_adapter_gen when this slot's KV started from empty (-1 = unknown, e.g. a RAM
+    // prompt-cache load after an adapter change); a save refuses a non-empty KV of another generation
+    int64_t stateos_kv_gen = 0;
     bool do_checkpoint = false;
     bool image_just_processed = false;
 
@@ -347,6 +351,20 @@ struct server_context {
     // State-OS v1 keyed slot state (/slots/{id}?action=save|restore)
     std::string stateos_model_fp; // model_fingerprint_v2, computed once after the load (empty = State-OS unavailable)
 
+    // bumped on every runtime LoRA / control-vector change: a slot's KV is honest to save only if it was built
+    // entirely under the current generation (server_slot::stateos_kv_gen)
+    int64_t stateos_adapter_gen = 0;
+    int64_t stateos_system_gen  = 0; // stateos_adapter_gen when the legacy system prompt's KV was last computed
+
+    // effective_model of what is APPLIED, written only on the main loop: at load, after SET_LORA, at the end of
+    // apply_control_vectors_internal ("unknown" after a failed apply). Save/restore read this, never the live scales
+    // (HTTP threads may hold requests in flight).
+    std::string stateos_effective_cur = "none";
+    bool stateos_startup_cvec_live = false; // --control-vector* still applied (cleared by any runtime cvec change)
+    bool stateos_lora_live = true; // lora_adapters' scales are applied (false under --lora-init-without-apply until SET_LORA)
+
+    void stateos_refresh_effective(bool apply_ok);
+
     void stateos_init_identity();
 
     stateos_fields stateos_identity_fields(std::string* err);
@@ -362,7 +380,8 @@ struct server_context {
 
     void stateos_slot_restore(const server_task& task, server_slot& slot);
 
-    void stateos_slot_save_impl(const server_task& task, server_slot& slot);
+    // sets `committed` once the file is in place under its name
+    void stateos_slot_save_impl(const server_task& task, server_slot& slot, bool& committed);
 
     // sets `destroyed` at the first step that modifies the slot
     void stateos_slot_restore_impl(const server_task& task, server_slot& slot, bool& destroyed);

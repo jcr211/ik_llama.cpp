@@ -16,6 +16,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 // ---- small LE helpers -------------------------------------------------------------------------------
@@ -376,21 +378,32 @@ stateos_scan_result stateos_scan_file(const std::string & path) {
     stateos_scan_result r;
     std::error_code ec;
     const std::filesystem::path p = stateos_path(path);
-    if (!std::filesystem::is_regular_file(p, ec) || ec) {
+    const std::filesystem::file_status st = std::filesystem::status(p, ec);
+    if (st.type() == std::filesystem::file_type::not_found) {
         r.status = STATEOS_SCAN_NOT_FOUND;
         r.error  = "state file not found";
         return r;
     }
+    if (ec) {
+        r.status = STATEOS_SCAN_UNREADABLE;
+        r.error  = "cannot stat state file (" + ec.message() + ")";
+        return r;
+    }
+    if (st.type() != std::filesystem::file_type::regular) {
+        r.status = STATEOS_SCAN_UNREADABLE;
+        r.error  = "state path is not a regular file";
+        return r;
+    }
     r.file_size = (uint64_t) std::filesystem::file_size(p, ec);
     if (ec) {
-        r.status = STATEOS_SCAN_NOT_FOUND;
-        r.error  = "cannot stat state file";
+        r.status = STATEOS_SCAN_UNREADABLE;
+        r.error  = "cannot stat state file (" + ec.message() + ")";
         return r;
     }
     std::ifstream f(p, std::ios::binary);
     if (!f.is_open()) {
-        r.status = STATEOS_SCAN_NOT_FOUND;
-        r.error  = "cannot open state file";
+        r.status = STATEOS_SCAN_UNREADABLE;
+        r.error  = "cannot open state file (permission or sharing lock)";
         return r;
     }
     uint8_t pre[12];
@@ -502,6 +515,7 @@ bool stateos_read_range(const std::string & path, uint64_t offset, uint64_t size
 
 stateos_section_check stateos_check_sections(const stateos_scan_result & scan, size_t n_ctx_slot) {
     stateos_section_check c;
+    c.type = "state_corrupt";
     const stateos_section * toks = scan.find(STATEOS_TAG_TOKS);
     const stateos_section * target = scan.find(STATEOS_TAG_MAIN);
     if (toks == nullptr || target == nullptr) {
@@ -516,6 +530,8 @@ stateos_section_check stateos_check_sections(const stateos_scan_result & scan, s
     }
     c.n_tokens = (size_t) (toks->size / 4);
     if (c.n_tokens > n_ctx_slot) {
+        // a well-formed state from a larger-context server: a refusal, not corruption
+        c.type  = "state_refused";
         c.field = "n_tokens";
         c.error = std::to_string(c.n_tokens) + " tokens exceed the slot context of " + std::to_string(n_ctx_slot);
         return c;
@@ -529,11 +545,189 @@ stateos_section_check stateos_check_sections(const stateos_scan_result & scan, s
     }
     c.empty = c.n_tokens == 0;
     c.ok    = true;
+    c.type.clear();
     return c;
+}
+
+std::string stateos_effective_model_value(const std::vector<std::string> & parts) {
+    if (parts.empty()) {
+        return "none";
+    }
+    stateos_sha256 h;
+    const std::string tag = "stateos-effective-model/1";
+    h.update(tag.data(), tag.size());
+    for (const auto & p : parts) {
+        // length-prefixed: no two different lists hash the same bytes (a path may contain anything)
+        std::vector<uint8_t> len;
+        put_u64(len, p.size());
+        h.update(len.data(), len.size());
+        h.update(p.data(), p.size());
+    }
+    return h.final_hex();
+}
+
+static std::string stateos_fmt_g(float v) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.9g", (double) v);
+    return buf;
+}
+
+std::vector<std::string> stateos_cvec_parts(bool startup_live, const std::vector<stateos_cvec_desc> & startup,
+                                            const std::vector<stateos_cvec_desc> & runtime) {
+    std::vector<std::string> parts;
+    if (startup_live) {
+        for (const auto & cv : startup) {
+            if (cv.scale != 0.0f) {
+                parts.push_back("cvec-startup path=" + cv.path + " scale=" + stateos_fmt_g(cv.scale) + " layers=" +
+                                std::to_string(cv.layer_start) + ".." + std::to_string(cv.layer_end));
+            }
+        }
+    }
+    for (const auto & cv : runtime) {
+        if (cv.applied && cv.scale != 0.0f) {
+            parts.push_back("cvec path=" + cv.path + " scale=" + stateos_fmt_g(cv.scale) + " layers=" +
+                            std::to_string(cv.layer_start) + ".." + std::to_string(cv.layer_end));
+        }
+    }
+    return parts;
+}
+
+void stateos_cvec_accumulate(std::vector<float> & combined, const std::vector<float> & data, float scale) {
+    const size_t n = std::min(combined.size(), data.size());
+    for (size_t i = 0; i < n; ++i) {
+        combined[i] += data[i] * scale;
+    }
+}
+
+std::vector<std::string> stateos_lora_parts(bool live, const std::vector<std::pair<std::string, float>> & loras) {
+    std::vector<std::string> parts;
+    if (!live) {
+        return parts;
+    }
+    for (const auto & la : loras) {
+        if (la.second != 0.0f) {
+            parts.push_back("lora path=" + la.first + " scale=" + stateos_fmt_g(la.second));
+        }
+    }
+    return parts;
+}
+
+bool stateos_apply_scales(std::vector<float> & scales, const std::vector<std::pair<int64_t, float>> & request, std::string * err) {
+    for (const auto & r : request) {
+        if (r.first < 0 || r.first >= (int64_t) scales.size()) {
+            set_err(err, "invalid id " + std::to_string(r.first));
+            return false;
+        }
+    }
+    std::fill(scales.begin(), scales.end(), 0.0f);
+    for (const auto & r : request) {
+        scales[(size_t) r.first] = r.second;
+    }
+    return true;
+}
+
+bool stateos_kv_built_under_current(size_t n_tokens, int64_t kv_gen, int64_t current_gen) {
+    return n_tokens == 0 || (kv_gen >= 0 && kv_gen == current_gen);
+}
+
+int64_t stateos_slot_start_gen(size_t n_system_tokens, int64_t system_gen, int64_t current_gen) {
+    return (n_system_tokens == 0 || system_gen == current_gen) ? current_gen : -1;
+}
+
+bool stateos_tokens_in_vocab(const int32_t * ids, size_t n, int32_t n_vocab, size_t * bad_index) {
+    for (size_t i = 0; i < n; ++i) {
+        if (ids[i] < 0 || ids[i] >= n_vocab) {
+            if (bad_index != nullptr) {
+                *bad_index = i;
+            }
+            return false;
+        }
+    }
+    return true;
 }
 
 bool stateos_kv_consistent(size_t n_tokens, int32_t kv_pos_max) {
     return n_tokens == 0 || kv_pos_max >= 0;
+}
+
+bool stateos_reserved_name(const std::string & filename_in) {
+    // Win32 strips trailing dots and spaces from a name ("x.stateos.tmp. " lands as "x.stateos.tmp")
+    std::string filename = filename_in;
+    while (!filename.empty() && (filename.back() == '.' || filename.back() == ' ')) {
+        filename.pop_back();
+    }
+    const std::string suffix = STATEOS_TMP_SUFFIX;
+    if (filename.size() < suffix.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < suffix.size(); ++i) {
+        const char c = filename[filename.size() - suffix.size() + i];
+        const char lower = (c >= 'A' && c <= 'Z') ? (char) (c - 'A' + 'a') : c;
+        if (lower != suffix[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool stateos_flush_file(const std::string & path, std::string * err) {
+#if defined(_WIN32)
+    const std::wstring w = stateos_path(path).wstring();
+    HANDLE h = CreateFileW(w.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        set_err(err, "cannot open for flush (Win32 error " + std::to_string((unsigned long) GetLastError()) + ")");
+        return false;
+    }
+    const BOOL ok = FlushFileBuffers(h);
+    const DWORD last = ok ? 0 : GetLastError();
+    CloseHandle(h);
+    if (!ok) {
+        set_err(err, "FlushFileBuffers failed (Win32 error " + std::to_string((unsigned long) last) + ")");
+        return false;
+    }
+    return true;
+#else
+    std::FILE * f = std::fopen(path.c_str(), "r+b");
+    if (f == nullptr) {
+        set_err(err, "cannot open for flush");
+        return false;
+    }
+    const bool ok = std::fflush(f) == 0 && fsync(fileno(f)) == 0;
+    std::fclose(f);
+    if (!ok) {
+        set_err(err, "fsync failed");
+    }
+    return ok;
+#endif
+}
+
+size_t stateos_cleanup_stale_tmp(const std::string & dir, int64_t min_age_seconds, std::vector<std::string> * removed) {
+    size_t n = 0;
+    std::error_code ec;
+    const std::string suffix = STATEOS_TMP_SUFFIX;
+    const auto now = std::filesystem::file_time_type::clock::now();
+    for (std::filesystem::directory_iterator it(stateos_path(dir), ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code ec2;
+        if (!it->is_regular_file(ec2) || ec2) {
+            continue;
+        }
+        const std::string name = stateos_path_utf8(it->path().filename());
+        if (name.size() <= suffix.size() || name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+            continue;
+        }
+        const auto mtime = std::filesystem::last_write_time(it->path(), ec2);
+        if (ec2 || now - mtime < std::chrono::seconds(min_age_seconds)) {
+            continue;
+        }
+        if (std::filesystem::remove(it->path(), ec2) && !ec2) {
+            ++n;
+            if (removed != nullptr) {
+                removed->push_back(name);
+            }
+        }
+    }
+    return n;
 }
 
 bool stateos_replace_file(const std::string & src, const std::string & dst, std::string * err) {
@@ -541,11 +735,17 @@ bool stateos_replace_file(const std::string & src, const std::string & dst, std:
     const std::wstring wsrc = stateos_path(src).wstring();
     const std::wstring wdst = stateos_path(dst).wstring();
     DWORD last = 0;
-    for (int attempt = 0; attempt < 5; ++attempt) {
+    const int attempts = 5;
+    for (int attempt = 0; attempt < attempts; ++attempt) {
         if (MoveFileExW(wsrc.c_str(), wdst.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
             return true;
         }
         last = GetLastError();
+        // only a lock (scanner, indexer, sharing) is worth waiting for; a missing file or path never appears
+        const bool transient = last == ERROR_SHARING_VIOLATION || last == ERROR_LOCK_VIOLATION || last == ERROR_ACCESS_DENIED;
+        if (!transient || attempt + 1 == attempts) {
+            break; // no sleep after the final attempt
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
     }
     set_err(err, "MoveFileExW failed (Win32 error " + std::to_string((unsigned long) last) + ")");
@@ -559,6 +759,14 @@ bool stateos_replace_file(const std::string & src, const std::string & dst, std:
     }
     return true;
 #endif
+}
+
+uint64_t stateos_container_size(uint64_t header_len, const std::vector<uint64_t> & section_sizes) {
+    uint64_t n = 12 + header_len;
+    for (const uint64_t s : section_sizes) {
+        n += 16 + s;
+    }
+    return n + 16; // END
 }
 
 bool stateos_write_bytes(std::FILE * f, const void * data, size_t size) {
@@ -637,6 +845,40 @@ bool stateos_decode_checkpoints(const uint8_t * data, size_t size, std::vector<s
     if (pos != size) {
         set_err(err, "checkpoint section has trailing bytes");
         return false;
+    }
+    return true;
+}
+
+bool stateos_ckpt_within_budget(uint64_t section_size, uint64_t max_records, uint64_t max_record_bytes) {
+    const uint64_t framing = 12;  // u32 version + u64 count
+    const uint64_t per_rec = 32;  // 4 x i32 positions + i64 n_tokens + u64 length
+    if (max_record_bytes > UINT64_MAX - per_rec) {
+        return true;
+    }
+    const uint64_t per = per_rec + max_record_bytes;
+    if (max_records != 0 && per > (UINT64_MAX - framing) / max_records) {
+        return true; // the budget exceeds any file
+    }
+    return section_size <= framing + max_records * per;
+}
+
+uint64_t stateos_ckpt_record_bound(uint64_t partial_now, uint64_t n_ctx_slot, bool compacted, uint64_t main_size) {
+    if (compacted) {
+        return main_size;
+    }
+    if (n_ctx_slot > (UINT64_MAX - partial_now) / STATEOS_CELL_META_BYTES) {
+        return UINT64_MAX;
+    }
+    return partial_now + STATEOS_CELL_META_BYTES * n_ctx_slot;
+}
+
+bool stateos_checkpoints_fit(const std::vector<stateos_checkpoint_rec> & recs, uint64_t max_record_bytes, std::string * err) {
+    for (size_t i = 0; i < recs.size(); ++i) {
+        if ((uint64_t) recs[i].data.size() > max_record_bytes) {
+            set_err(err, "checkpoint " + std::to_string(i) + " holds " + std::to_string(recs[i].data.size()) +
+                         " bytes, more than a partial state of this context (" + std::to_string(max_record_bytes) + ")");
+            return false;
+        }
     }
     return true;
 }

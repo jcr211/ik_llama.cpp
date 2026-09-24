@@ -33,3 +33,14 @@ Log (ET, approximate):
 - 22:55 fix round 3: merged lane/ple-hist-rewind (1b3352ed; CMake conflict kept both); restore reaches the
   server-resume choke point; GPU script sets PLE env + counts [ple-hist] resets per restore round; build exit 0,
   test-l1 exit 0 (202 / 0, ctest 3/3 incl. test-ple-hist)
+- 01:20 (09-24) lane/stateos-lane1-f11: F11 items 1-7 committed one per item; build-f11 exit 0; test-f11 exit 0
+  (242 / 0, ctest 4/4 incl. test-stateos-layout)
+- 01:35 F11 review round: P1 CKPT bound, P2-1 startup cvec, P2-2 adapter generation, P2-3 reserved suffix, P3 size
+  check + fallback sha; build-f11 exit 0; test-f11 exit 0 (264 / 0, ctest 4/4). Open (noted): lora-init-without-apply
+  and path-spelling over-refusal, flush retry + POSIX dir fsync, a 7c77724b-anchored layout golden, fmt buffer assert
+- 01:50 F11-2 review round: P2-A/B cached effective_model + handlers forward to the task (c5d66f76), P3-1 rename
+  validation + trailing dot/space (91579f16), P3-2 ckpt_ok hard gate (82c7b1b1), P3-4 system-prompt generation
+  (9729d763), P3-3 recovery documented in REPORT.md; build-f11 exit 0; test-f11 exit 0 (285 / 0, ctest 4/4)
+- 01:58 F11-3 review round: P2-1 lora_live for --lora-init-without-apply (0acc6624), P3-1 SET_LORA keeps unknown
+  (5eab5279), P3-2 restore refuses on unknown (e3e4b7ab), P3-3 UPSTREAM-CODE FIX combined cvec sizing (8347edf7), P3-4
+  system-prompt recovery documented; P3-5 left as follow-ups; build-f11 exit 0; test-f11 exit 0 (291 / 0, ctest 4/4)

@@ -121,7 +121,8 @@ struct stateos_section {
 
 enum stateos_scan_status {
     STATEOS_SCAN_OK,
-    STATEOS_SCAN_NOT_FOUND,
+    STATEOS_SCAN_NOT_FOUND,    // no such file
+    STATEOS_SCAN_UNREADABLE,   // it exists but cannot be stat'ed/opened/read (permission, sharing lock, not a file)
     STATEOS_SCAN_LEGACY,       // a headerless llama state-seq file: refused, fail closed
     STATEOS_SCAN_UNRECOGNIZED, // neither a State-OS container nor a llama state file
     STATEOS_SCAN_UNSUPPORTED,  // a State-OS container of another container version
@@ -148,6 +149,7 @@ bool stateos_read_range(const std::string & path, uint64_t offset, uint64_t size
 // context first). ok=false names the refusing field ("section:TOKS", "section:MAIN", "n_tokens").
 struct stateos_section_check {
     bool        ok       = false;
+    std::string type;    // 409 error type when !ok: "state_refused" (valid file, this server cannot hold it) or "state_corrupt"
     std::string field;
     std::string error;
     size_t      n_tokens = 0;
@@ -156,13 +158,77 @@ struct stateos_section_check {
 
 stateos_section_check stateos_check_sections(const stateos_scan_result & scan, size_t n_ctx_slot);
 
+// "effective_model" hard field: what changes the computed weights without changing the GGUF (runtime LoRA adapters,
+// applied control vectors, --override-kv, expert-count overrides). "none" when nothing is active, else sha256 over
+// the descriptor lines (one per active item, in load order: application order is part of the identity).
+std::string stateos_effective_model_value(const std::vector<std::string> & parts);
+
+// Control-vector items of effective_model. The startup vectors (--control-vector*) describe the applied state only while
+// no runtime control-vector change has run: every runtime apply replaces the context's single steering vector with the
+// runtime sum (or disables it), so startup_live is cleared there and their lines disappear.
+struct stateos_cvec_desc {
+    std::string path;
+    float       scale       = 0.0f;
+    int32_t     layer_start = 0;
+    int32_t     layer_end   = 0;
+    bool        applied     = true; // runtime vectors: whether apply_control_vectors_internal applied it
+};
+std::vector<std::string> stateos_cvec_parts(bool startup_live, const std::vector<stateos_cvec_desc> & startup,
+                                            const std::vector<stateos_cvec_desc> & runtime);
+
+// combined += data * scale over the common length only (upstream control-vector fix used by
+// apply_control_vectors_internal: the combined buffer is sized for every layer, a vector may cover fewer or more).
+void stateos_cvec_accumulate(std::vector<float> & combined, const std::vector<float> & data, float scale);
+
+// LoRA items of effective_model ({path, scale} per loaded adapter). `live` is false while the loaded scales were never
+// applied to the context (--lora-init-without-apply until the first /lora-adapters apply): no lines then.
+std::vector<std::string> stateos_lora_parts(bool live, const std::vector<std::pair<std::string, float>> & loras);
+
+// Apply a runtime scale request ({id, scale} pairs) all-or-nothing: every id is validated first; on a bad id nothing
+// changes and false is returned. Otherwise every scale is zeroed and the requested ones set (the endpoints' semantics).
+bool stateos_apply_scales(std::vector<float> & scales, const std::vector<std::pair<int64_t, float>> & request, std::string * err);
+
+// Sentinel effective_model after a failed runtime adapter apply: never equal to a saved value, never saved.
+constexpr const char * STATEOS_EFFECTIVE_UNKNOWN = "unknown";
+
+// A non-empty KV is saved (stamped with the current effective_model) only when it was built entirely under the
+// current runtime adapter generation; kv_gen -1 means unknown and never qualifies.
+bool stateos_kv_built_under_current(size_t n_tokens, int64_t kv_gen, int64_t current_gen);
+
+// Generation a slot's KV gets when it starts over from empty: the current one, unless a legacy system prompt (copied
+// in from seq 0) was computed under an older generation, which leaves the KV mixed: -1 (unknown, never saved).
+int64_t stateos_slot_start_gen(size_t n_system_tokens, int64_t system_gen, int64_t current_gen);
+
+// every id inside [0, n_vocab); on failure *bad_index (if not null) is the first offending position
+bool stateos_tokens_in_vocab(const int32_t * ids, size_t n, int32_t n_vocab, size_t * bad_index);
+
 // KV <-> tokens: a slot (or a just-loaded state) that claims tokens must hold at least one KV cell. kv_pos_max is
 // llama_kv_cache_seq_pos_max (-1 = no cells). The exact pos_max == n_tokens - 1 relation stays report-only.
 bool stateos_kv_consistent(size_t n_tokens, int32_t kv_pos_max);
 
+// Suffix of the file a save writes before its commit rename (`<name>.stateos.tmp`).
+constexpr const char * STATEOS_TMP_SUFFIX = ".stateos.tmp";
+
+// A client name that ends (case-insensitively, as on Windows) in STATEOS_TMP_SUFFIX: refused for save/restore/rename,
+// so the startup cleanup of that suffix can never delete a committed state.
+bool stateos_reserved_name(const std::string & filename);
+
+// Push a written file's data to the device (FlushFileBuffers / fsync) so the commit rename never publishes bytes that
+// a power loss could still take back.
+bool stateos_flush_file(const std::string & path, std::string * err);
+
+// Remove `*.stateos.tmp` files (only that suffix, regular files, not recursive) in `dir` whose last write is older
+// than `min_age_seconds`: leftovers of saves interrupted by a crash. Returns how many were removed.
+size_t stateos_cleanup_stale_tmp(const std::string & dir, int64_t min_age_seconds, std::vector<std::string> * removed);
+
 // Replace `dst` with `src` (same directory). Windows: MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH) with short
 // retries; the previous `dst` is never deleted first, so a transient lock cannot destroy the last good state.
 bool stateos_replace_file(const std::string & src, const std::string & dst, std::string * err);
+
+// Exact byte size of a container with this header and these section payloads (plus the END section): the save checks
+// its finished temp file against it before the commit, so a temp file that vanished and was recreated mid-save
+// (without its header) can never replace the last good state.
+uint64_t stateos_container_size(uint64_t header_len, const std::vector<uint64_t> & section_sizes);
 
 // Writers over a stdio FILE* opened in binary mode. All return false on a short write.
 bool stateos_write_preamble(std::FILE * f, const std::string & header_text);
@@ -182,6 +248,21 @@ struct stateos_checkpoint_rec {
 
 void stateos_encode_checkpoints(const std::vector<stateos_checkpoint_rec> & in, std::vector<uint8_t> & out);
 bool stateos_decode_checkpoints(const uint8_t * data, size_t size, std::vector<stateos_checkpoint_rec> & out, std::string * err);
+
+// CKPT budget, checked BEFORE the section is read: at most max_records records of at most max_record_bytes each
+// (plus the codec's framing). A section over budget is skipped (restored without checkpoints), never allocated.
+bool stateos_ckpt_within_budget(uint64_t section_size, uint64_t max_records, uint64_t max_record_bytes);
+
+// Per-checkpoint bound that does not depend on what the target slot holds now. A partial (checkpoint) state is a fixed
+// part (recurrent rows) plus STATEOS_CELL_META_BYTES per cell of its source conversation (write_kv_cache_meta: pos +
+// n_seq_id), so a checkpoint of a long conversation outgrows a partial measured on a short one. partial_now is
+// llama_state_seq_get_size(PARTIAL_ONLY) of the slot as it is (>= the fixed part); the bound adds room for a full
+// context of cells. A compacted SWA window can grow a checkpoint up to the full state: then the MAIN size bounds it.
+constexpr uint64_t STATEOS_CELL_META_BYTES = 8;
+uint64_t stateos_ckpt_record_bound(uint64_t partial_now, uint64_t n_ctx_slot, bool compacted, uint64_t main_size);
+
+// After decode: every record's state fits max_record_bytes (a larger one is corrupt).
+bool stateos_checkpoints_fit(const std::vector<stateos_checkpoint_rec> & recs, uint64_t max_record_bytes, std::string * err);
 
 // Positions must be ordered and non-negative (a crafted record could otherwise overflow pos_max_prompt + 1 later).
 bool stateos_checkpoints_sane(const std::vector<stateos_checkpoint_rec> & recs, std::string * err);

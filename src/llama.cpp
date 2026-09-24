@@ -18,6 +18,7 @@
 #include "llama-hparams.h"
 #include "llama-context.h"
 #include "llama-ple-hist.h"
+#include "llama-state-layout.h"
 #include "llama-spec-features.h"
 #include "llama-dflash.h"
 #include "llama-dsv4.h"
@@ -10610,6 +10611,8 @@ struct llama_data_write {
         }
     }
 
+    // State-OS: a change to what this writes (or read_kv_cache expects) must follow the BUMP RULE in
+    // llama-state-layout.h (golden descriptor test + STATEOS_KV_LAYOUT_VERSION).
     void write_kv_cache(const struct llama_context * ctx, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) {
         const struct llama_kv_cache & kv_self = ctx->kv_self;
 
@@ -12148,49 +12151,58 @@ int32_t llama_state_seq_layout_desc(const struct llama_context * ctx, char * buf
     const llama_hparams   & hparams = ctx->model.hparams;
     const llama_cparams   & cparams = ctx->cparams;
 
-    std::string rope = format("rope=type=%d base=%.9g scale=%.9g orig_yarn=%u ext=%.9g attn=%.9g beta_fast=%.9g beta_slow=%.9g\n",
-            (int) llama_rope_type(&ctx->model), cparams.rope_freq_base, cparams.rope_freq_scale, cparams.n_ctx_orig_yarn,
-            cparams.yarn_ext_factor, cparams.yarn_attn_factor, cparams.yarn_beta_fast, cparams.yarn_beta_slow);
-
     // mirrors the per-layer meta that write_kv_cache_data emits and read_kv_cache_data checks (flags = 0),
-    // plus the value transforms the payload does not record (Hadamard rotations)
-    const uint32_t v_state = kv.v_l.empty() ? 2 : kv.v_trans ? 1 : 0;
-    const uint32_t n_layer = kv.k_l.size();
-    std::string desc = format("kv=arch=%s seqv=%d n_ctx=%u size=%u v_state=%u n_layer=%u fa=%d mla=%d khad=%d vhad=%d ihad=%d compact=%d",
-            llama_model_arch_name(ctx->model.arch), LLAMA_STATE_SEQ_VERSION, cparams.n_ctx, kv.size, v_state, n_layer,
-            (int) cparams.flash_attn, cparams.mla_attn, (int) cparams.k_cache_hadamard, (int) cparams.v_cache_hadamard,
-            (int) cparams.dsa_indexer_hadamard, (int) kv.any_compacted());
-    if (kv.any_compacted()) {
-        desc += format(" size_swa=%u sink_rows=%u", kv.size_swa, kv.sink_rows);
-    }
-    for (uint32_t il = 0; il < n_layer; ++il) {
+    // plus the value transforms the payload does not record (Hadamard rotations); rendering and the bump rule
+    // live in llama-state-layout.h (golden-tested)
+    llama_state_layout_info L;
+    L.rope_type        = (int) llama_rope_type(&ctx->model);
+    L.rope_freq_base   = cparams.rope_freq_base;
+    L.rope_freq_scale  = cparams.rope_freq_scale;
+    L.n_ctx_orig_yarn  = cparams.n_ctx_orig_yarn;
+    L.yarn_ext_factor  = cparams.yarn_ext_factor;
+    L.yarn_attn_factor = cparams.yarn_attn_factor;
+    L.yarn_beta_fast   = cparams.yarn_beta_fast;
+    L.yarn_beta_slow   = cparams.yarn_beta_slow;
+    L.arch         = llama_model_arch_name(ctx->model.arch);
+    L.seq_version  = LLAMA_STATE_SEQ_VERSION;
+    L.n_ctx        = cparams.n_ctx;
+    L.kv_size      = kv.size;
+    L.v_state      = kv.v_l.empty() ? 2 : kv.v_trans ? 1 : 0;
+    L.n_layer      = kv.k_l.size();
+    L.flash_attn   = (int) cparams.flash_attn;
+    L.mla_attn     = cparams.mla_attn;
+    L.k_hadamard   = (int) cparams.k_cache_hadamard;
+    L.v_hadamard   = (int) cparams.v_cache_hadamard;
+    L.idx_hadamard = (int) cparams.dsa_indexer_hadamard;
+    L.compacted    = kv.any_compacted();
+    L.size_swa     = kv.size_swa;
+    L.sink_rows    = kv.sink_rows;
+    for (uint32_t il = 0; il < L.n_layer; ++il) {
         if (kv.k_l[il] == nullptr) {
             continue;
         }
         const uint64_t k_row = cparams.mla_attn == 0
             ? ggml_row_size(kv.k_l[il]->type, llama_kv_k_row_embd(ctx->model, hparams, il))
             : ggml_row_size(kv.k_l[il]->type, hparams.n_lora_kv + hparams.n_rot);
-        desc += format(" k%u=%d/%llu", il, (int) kv.k_l[il]->type, (unsigned long long) k_row);
-        if (v_state != 2 && il < kv.v_l.size() && kv.v_l[il] != nullptr) {
-            const uint32_t n_embd_v = llama_kv_v_row_embd(ctx->model, hparams, il);
-            desc += format(" v%u=%d/%u", il, (int) kv.v_l[il]->type, n_embd_v);
+        L.k_rows.push_back({ il, (int) kv.k_l[il]->type, k_row });
+        if (L.v_state != 2 && il < kv.v_l.size() && kv.v_l[il] != nullptr) {
+            L.v_rows.push_back({ il, (int) kv.v_l[il]->type, (uint64_t) llama_kv_v_row_embd(ctx->model, hparams, il) });
         }
     }
-    desc += format(" qnext=%d", (int) llama_kv_has_qnext_state_storage(kv));
+    L.qnext = (int) llama_kv_has_qnext_state_storage(kv);
     for (uint32_t il = 0; il < kv.s_l.size(); ++il) {
         if (kv.s_l[il] != nullptr) {
-            desc += format(" s%u=%d/%lld", il, (int) kv.s_l[il]->type, (long long) kv.s_l[il]->ne[0]);
+            L.s_rows.push_back({ il, (int) kv.s_l[il]->type, (uint64_t) kv.s_l[il]->ne[0] });
         }
     }
-    desc += format(" idx=%d", (int) !kv.kr_l.empty());
+    L.has_indexer = (int) !kv.kr_l.empty();
     for (uint32_t il = 0; il < kv.kr_l.size(); ++il) {
         if (kv.kr_l[il] != nullptr) {
-            desc += format(" r%u=%d/%lld", il, (int) kv.kr_l[il]->type, (long long) kv.kr_l[il]->ne[0]);
+            L.r_rows.push_back({ il, (int) kv.kr_l[il]->type, (uint64_t) kv.kr_l[il]->ne[0] });
         }
     }
-    desc += "\n";
 
-    const std::string out = rope + desc;
+    const std::string out = llama_state_layout_render(L);
     if (buf != nullptr && buf_size > 0) {
         const size_t n = std::min(out.size(), buf_size - 1);
         memcpy(buf, out.data(), n);

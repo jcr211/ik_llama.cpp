@@ -274,6 +274,9 @@ bool server_context::load_model(const gpt_params& params_) {
     }
 
     stateos_init_identity();
+    stateos_startup_cvec_live = !params_base.control_vectors.empty();
+    stateos_lora_live = !params_base.lora_init_without_apply;
+    stateos_refresh_effective(true);
 
     return true;
 }
@@ -1093,7 +1096,13 @@ server_slot* server_context::get_available_slot(const server_task& task) {
             const int64_t t_start = ggml_time_us();
             copy_data_to_cached_prompt(tokens, *ret);
 
+            const size_t n_states_before = prompt_cache->states.size();
             ret->prompt_load(*prompt_cache, task.tokens, cache_ram_similarity);
+            if (prompt_cache->states.size() != n_states_before) {
+                // a cached state of unknown adapter generation replaced the slot's KV: honest only if the adapter set
+                // never changed since startup (State-OS save refuses -1 until the slot is rebuilt from scratch)
+                ret->stateos_kv_gen = stateos_adapter_gen == 0 ? 0 : -1;
+            }
             prompt_cache->update();
 
             ret->cache_tokens = ret->server_cached_prompt.tokens.clone(); // recover cache tokens
@@ -2089,6 +2098,7 @@ void server_context::system_prompt_update() {
 
     kv_cache_clear();
     system_tokens.clear();
+    stateos_system_gen = stateos_adapter_gen; // the system KV below is computed under the current adapter set
 
     if (!system_prompt.empty()) {
         system_tokens = ::common_tokenize(ctx, system_prompt, true);
@@ -2753,6 +2763,16 @@ void server_context::stateos_init_identity() {
     if (params_base.slot_save_path.empty()) {
         return; // no /slots routes: State-OS is off, and startup pays nothing
     }
+    // leftovers of saves a crash interrupted (only our temp suffix, only older than an hour)
+    try {
+        std::vector<std::string> removed;
+        stateos_cleanup_stale_tmp(params_base.slot_save_path, 3600, &removed);
+        for (const auto & name : removed) {
+            SRV_INF("State-OS: removed stale temp file %s\n", name.c_str());
+        }
+    } catch (const std::exception & e) {
+        SRV_WRN("State-OS: stale temp cleanup skipped (%s)\n", e.what());
+    }
     // computed once, right after the load, so a GGUF replaced on disk later cannot stamp saves with its identity
     const int64_t t0 = ggml_time_us();
     std::string err;
@@ -2773,6 +2793,57 @@ void server_context::stateos_init_identity() {
     SRV_INF("State-OS model_fingerprint_v2 %s (%.1f ms)\n", stateos_model_fp.c_str(), (ggml_time_us() - t0) / 1000.0);
 }
 
+// runtime changes to the computed weights that the GGUF fingerprint cannot see (a KV computed under one adapter set
+// is not the KV of another)
+// computed only on the main loop, from what was actually applied (see stateos_refresh_effective)
+static std::string stateos_effective_model(const gpt_params & params, const std::vector<llama_lora_adapter_container> & loras,
+                                           const std::vector<control_vector_container> & cvs, bool lora_live,
+                                           bool startup_cvec_live) {
+    // --lora-init-without-apply loads the adapters at their scales but never applies them: no lines until SET_LORA
+    std::vector<std::pair<std::string, float>> lora_list;
+    for (const auto & la : loras) {
+        lora_list.emplace_back(la.path, la.scale);
+    }
+    std::vector<std::string> parts = stateos_lora_parts(lora_live, lora_list);
+    // --control-vector / --control-vector-scaled / --control-vector-layer-range are applied at load (never in `cvs`)
+    // and stay applied only until the first runtime control-vector change replaces the context's vector
+    std::vector<stateos_cvec_desc> startup;
+    for (const auto & cv : params.control_vectors) {
+        startup.push_back({ cv.fname, cv.strength, params.control_vector_layer_start, params.control_vector_layer_end, true });
+    }
+    std::vector<stateos_cvec_desc> runtime;
+    for (const auto & cv : cvs) {
+        runtime.push_back({ cv.path, cv.scale, cv.layer_start, cv.layer_end, cv.applied });
+    }
+    for (auto & p : stateos_cvec_parts(startup_cvec_live, startup, runtime)) {
+        parts.push_back(std::move(p));
+    }
+    for (const auto & ov : params.kv_overrides) {
+        if (ov.key[0] == '\0') {
+            continue; // the list's terminator
+        }
+        std::string val;
+        switch (ov.tag) {
+            case LLAMA_KV_OVERRIDE_TYPE_INT:   val = "int:"   + std::to_string(ov.val_i64); break;
+            case LLAMA_KV_OVERRIDE_TYPE_FLOAT: val = string_format("float:%.17g", ov.val_f64); break;
+            case LLAMA_KV_OVERRIDE_TYPE_BOOL:  val = ov.val_bool ? "bool:true" : "bool:false"; break;
+            case LLAMA_KV_OVERRIDE_TYPE_STR:   val = std::string("str:") + ov.val_str; break;
+            default:                           val = "tag:" + std::to_string((int) ov.tag); break;
+        }
+        parts.push_back(std::string("override-kv ") + ov.key + "=" + val);
+    }
+    if (params.min_experts >= 0 || params.thresh_experts != 0.0f) {
+        parts.push_back(string_format("experts min=%d thresh=%.9g", params.min_experts, params.thresh_experts));
+    }
+    return stateos_effective_model_value(parts);
+}
+
+void server_context::stateos_refresh_effective(bool apply_ok) {
+    stateos_effective_cur = apply_ok
+        ? stateos_effective_model(params_base, lora_adapters, control_vectors, stateos_lora_live, stateos_startup_cvec_live)
+        : std::string(STATEOS_EFFECTIVE_UNKNOWN);
+}
+
 stateos_fields server_context::stateos_identity_fields(std::string * err) {
     if (stateos_model_fp.empty()) {
         *err = "the model identity was not computed at startup (see the startup log)";
@@ -2785,6 +2856,7 @@ stateos_fields server_context::stateos_identity_fields(std::string * err) {
     // the catch-all geometry digest
     stateos_fields fields = {
         { STATEOS_HARD, "model_fingerprint_v2", stateos_model_fp },
+        { STATEOS_HARD, "effective_model",   stateos_effective_cur },
         { STATEOS_HARD, "n_ctx",             std::to_string(llama_n_ctx(ctx)) },
         { STATEOS_HARD, "cache_type_k",      params_base.cache_type_k },
         { STATEOS_HARD, "cache_type_v",      params_base.cache_type_v },
@@ -2869,21 +2941,49 @@ void server_context::stateos_clear_slot(server_slot & slot) {
     slot.n_kept_prompt = 0;
     slot.n_discarded_prompt = 0;
     slot.checkpoint_pos = -1;
+    slot.stateos_kv_gen = stateos_adapter_gen; // empty: nothing in it predates the current adapter set
 }
 
 void server_context::stateos_slot_save(const server_task & task, server_slot & slot) {
     std::string what;
+    bool committed = false;
     try {
-        stateos_slot_save_impl(task, slot);
+        stateos_slot_save_impl(task, slot, committed);
         return;
     } catch (const std::exception & e) {
         what = e.what();
     } catch (...) {
         what = "unknown exception";
     }
+    if (committed) {
+        // the file is written and in place: answer success (the fields a client needs), not "save failed"
+        try {
+            std::error_code ec;
+            const std::string filepath = task.data.at("filepath").get<std::string>();
+            server_task_result result;
+            result.id    = task.id;
+            result.error = false;
+            result.data  = json{
+                { "id_slot",   slot.id },
+                { "filename",  task.data.at("filename") },
+                { "n_saved",   slot.cache_tokens.size() },
+                { "n_written", (uint64_t) std::filesystem::file_size(stateos_path(filepath), ec) },
+                { "stateos",   {
+                    // the save did not modify the slot, so its tokens are the saved ones
+                    { "token_sha256", stateos_token_sha256(slot.cache_tokens.data(), slot.cache_tokens.size()) },
+                    { "reply", "minimal: the full reply could not be built (" + what + ")" },
+                } },
+            };
+            queue_results.send(result);
+            return;
+        } catch (...) {}
+        send_slot_error(task, 500, "server_error", "State-OS save wrote the file but could not reply: " + what,
+                { {"slot_untouched", true}, {"file_written", true} });
+        return;
+    }
     try {
         std::error_code ec;
-        std::filesystem::remove(stateos_path(task.data.at("filepath").get<std::string>() + ".stateos.tmp"), ec);
+        std::filesystem::remove(stateos_path(task.data.at("filepath").get<std::string>() + STATEOS_TMP_SUFFIX), ec);
     } catch (...) {}
     send_slot_error(task, 500, "server_error", "State-OS save failed: " + what, { {"slot_untouched", true} });
 }
@@ -2908,11 +3008,11 @@ void server_context::stateos_slot_restore(const server_task & task, server_slot 
             { {"slot_untouched", !destroyed} });
 }
 
-void server_context::stateos_slot_save_impl(const server_task & task, server_slot & slot) {
+void server_context::stateos_slot_save_impl(const server_task & task, server_slot & slot, bool & committed) {
     const int64_t t_start = ggml_time_us();
     const std::string filename = task.data.at("filename");
     const std::string filepath = task.data.at("filepath");
-    const std::string tmppath  = filepath + ".stateos.tmp";
+    const std::string tmppath  = filepath + STATEOS_TMP_SUFFIX;
 
     if (slot.cache_tokens.has_mtmd_data()) {
         send_slot_error(task, 501, "not_supported_error", "State-OS v1 does not persist a slot that holds media (image/audio) chunks");
@@ -2936,6 +3036,23 @@ void server_context::stateos_slot_save_impl(const server_task & task, server_slo
     fields.push_back({ STATEOS_HARD, "token_sha256", token_sha });
     fields.push_back({ STATEOS_INFO, "saved_unix",   std::to_string((long long) time(nullptr)) });
     fields.push_back({ STATEOS_INFO, "slot_id",      std::to_string(slot.id) });
+
+    // after a failed runtime adapter apply nobody knows what the context computes with: never stamp that
+    if (stateos_effective_cur == STATEOS_EFFECTIVE_UNKNOWN) {
+        send_slot_error(task, 409, "state_adapters_unknown",
+                "a runtime control-vector apply failed, so the applied adapter set is unknown; nothing was saved "
+                "(a successful /control-vectors/apply makes it known again)",
+                { {"slot_untouched", true} });
+        return;
+    }
+    // the header's effective_model is today's adapter set: honest only if the whole KV was built under it
+    if (!stateos_kv_built_under_current(n_tokens, slot.stateos_kv_gen, stateos_adapter_gen)) {
+        send_slot_error(task, 409, "state_adapters_changed",
+                "the slot's KV was built (in part) under a different runtime LoRA/control-vector set than the current "
+                "one; nothing was saved (the next request that starts from an empty slot makes it saveable again)",
+                { {"slot_untouched", true} });
+        return;
+    }
 
     // tokens without KV cells (e.g. after a failed RAM prompt-cache load) would restore as a false success
     const llama_pos kv_pos_max_save = llama_kv_cache_seq_pos_max(ctx, slot.id);
@@ -3072,10 +3189,31 @@ void server_context::stateos_slot_save_impl(const server_task & task, server_slo
         return;
     }
 
+    // the finished temp file must be exactly what this save wrote (a temp deleted and recreated mid-save, e.g. by
+    // another instance's cleanup, would be headerless)
+    {
+        std::vector<uint64_t> sections = { toks.size(), main_bytes, ckpt_bytes.size() };
+        if (ctx_mtp != nullptr) {
+            sections.push_back(comp_prefix.size() + comp_bytes);
+        }
+        const uint64_t expected = stateos_container_size(header_text.size(), sections);
+        std::error_code ec_sz;
+        const uint64_t actual = (uint64_t) std::filesystem::file_size(stateos_path(tmppath), ec_sz);
+        if (ec_sz || actual != expected) {
+            fail(string_format("the temp file holds %llu bytes, %llu expected", (unsigned long long) actual, (unsigned long long) expected));
+            return;
+        }
+    }
+    // durable before it becomes visible under its name
+    if (!stateos_flush_file(tmppath, &err)) {
+        fail("cannot flush the finished file to disk: " + err);
+        return;
+    }
     if (!stateos_replace_file(tmppath, filepath, &err)) {
         fail("cannot move the finished file into place: " + err);
         return;
     }
+    committed = true;
     std::error_code ec;
     const uint64_t n_written = (uint64_t) std::filesystem::file_size(stateos_path(filepath), ec);
 
@@ -3132,6 +3270,11 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
             send_slot_error(task, 409, "state_missing", scan.error + ": '" + filename + "'",
                     { {"refused_field", "file"}, {"slot_untouched", true} });
             return;
+        case STATEOS_SCAN_UNREADABLE:
+            // the file is there but this process cannot read it: say so (not "missing")
+            send_slot_error(task, 409, "state_unreadable", scan.error + ": '" + filename + "'",
+                    { {"refused_field", "file"}, {"slot_untouched", true} });
+            return;
         case STATEOS_SCAN_LEGACY:
             send_slot_error(task, 409, "state_legacy_unkeyed", scan.error,
                     { {"refused_field", "format"}, {"slot_untouched", true} });
@@ -3160,7 +3303,8 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
     // required sections present, TOKS bounded by the slot context before it is read, MAIN not empty
     const stateos_section_check sc = stateos_check_sections(scan, (size_t) std::max(slot.n_ctx, 0));
     if (!sc.ok) {
-        corrupt(sc.field, sc.error);
+        send_slot_error(task, 409, sc.type, "State-OS restore refused: " + sc.error + "; slot untouched",
+                { {"refused_field", sc.field}, {"slot_untouched", true} });
         return;
     }
     const stateos_section * s_toks = scan.find(STATEOS_TAG_TOKS);
@@ -3179,6 +3323,14 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
     }
     const std::string token_sha = stateos_token_sha256(ids.data(), ids.size());
 
+    // nobody knows what the context computes with: no header can match that, whatever it says
+    if (stateos_effective_cur == STATEOS_EFFECTIVE_UNKNOWN) {
+        send_slot_error(task, 409, "state_adapters_unknown",
+                "State-OS restore refused: a runtime control-vector apply failed, so the applied adapter set is unknown "
+                "(a successful /control-vectors/apply makes it known again); slot untouched",
+                { {"slot_untouched", true} });
+        return;
+    }
     stateos_fields current = stateos_identity_fields(&err);
     if (current.empty()) {
         send_slot_error(task, 500, "server_error", "State-OS identity unavailable: " + err, { {"slot_untouched", true} });
@@ -3197,22 +3349,36 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
                   {"warnings", stateos_mismatches_json(verdict.warnings)}, {"slot_untouched", true} });
         return;
     }
-    const int32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
-    for (size_t i = 0; i < n_tokens; ++i) {
-        if (ids[i] < 0 || ids[i] >= n_vocab) {
-            corrupt("section:TOKS", string_format("token %zu (id %d) is outside the vocabulary", i, ids[i]));
-            return;
-        }
+    size_t bad_id = 0;
+    if (!stateos_tokens_in_vocab(ids.data(), ids.size(), llama_vocab_n_tokens(llama_model_get_vocab(model)), &bad_id)) {
+        corrupt("section:TOKS", string_format("token %zu (id %d) is outside the vocabulary", bad_id, ids[bad_id]));
+        return;
     }
 
+    // checkpoints: bounded by what this context can hold BEFORE the section is read, independently of what the
+    // target slot holds right now (a checkpoint carries 8 B per cell of its source conversation; see
+    // stateos_ckpt_record_bound)
     std::vector<stateos_checkpoint_rec> recs;
+    std::string ckpt_status = s_ckpt == nullptr ? "absent" : "restored";
     if (s_ckpt != nullptr) {
-        std::vector<uint8_t> ckpt_bytes;
-        if (!stateos_read_range(filepath, s_ckpt->offset, s_ckpt->size, ckpt_bytes, &err) ||
-            !stateos_decode_checkpoints(ckpt_bytes.data(), ckpt_bytes.size(), recs, &err) ||
-            !stateos_checkpoints_sane(recs, &err)) {
-            corrupt("section:CKPT", err);
-            return;
+        const bool compacted = stateos_layout_line(ctx, "kv").find(" compact=1") != std::string::npos;
+        const uint64_t max_record = stateos_ckpt_record_bound(
+                (uint64_t) llama_state_seq_get_size(ctx, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY),
+                (uint64_t) std::max(slot.n_ctx, 0), compacted, (uint64_t) s_main->size);
+        const uint64_t max_records = (uint64_t) std::max(params_base.ctx_checkpoints_n, 1);
+        if (!stateos_ckpt_within_budget(s_ckpt->size, max_records, max_record)) {
+            // optional section: restore without checkpoints rather than allocate an oversized one
+            ckpt_status = string_format("skipped: %llu bytes exceed %llu checkpoints of at most %llu bytes",
+                    (unsigned long long) s_ckpt->size, (unsigned long long) max_records, (unsigned long long) max_record);
+        } else {
+            std::vector<uint8_t> ckpt_bytes;
+            if (!stateos_read_range(filepath, s_ckpt->offset, s_ckpt->size, ckpt_bytes, &err) ||
+                !stateos_decode_checkpoints(ckpt_bytes.data(), ckpt_bytes.size(), recs, &err) ||
+                !stateos_checkpoints_sane(recs, &err) ||
+                !stateos_checkpoints_fit(recs, max_record, &err)) {
+                corrupt("section:CKPT", err);
+                return;
+            }
         }
     }
 
@@ -3276,7 +3442,7 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
                 { "token_sha256",                  token_sha },
                 { "empty",                         true },
                 { "warnings",                      stateos_mismatches_json(verdict.warnings) },
-                { "companion",                     "cleared (empty state)" },
+                { "companion",                     ctx_mtp != nullptr ? std::string("cleared (empty state)") : comp_status },
                 { "checkpoints_restored",          0 },
                 { "checkpoints_dropped_in_memory", n_dropped_ckpt },
                 { "prompt_cache_record_replaced",  true },
@@ -3308,6 +3474,8 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
     }
 
     slot.cache_tokens = server_tokens(llama_tokens(ids.begin(), ids.end()), mctx != nullptr);
+    // verified: the file's effective_model equals the current one, so this KV belongs to the current generation
+    slot.stateos_kv_gen = stateos_adapter_gen;
     const llama_pos pos_next = slot.cache_tokens.pos_next();
 
     if (comp_load) {
@@ -3361,6 +3529,7 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
             { "warnings",                     stateos_mismatches_json(verdict.warnings) },
             { "companion",                    comp_status },
             { "checkpoints_restored",         n_ckpt_restored },
+            { "checkpoints",                  ckpt_status },
             { "checkpoints_dropped_in_memory", n_dropped_ckpt },
             { "prompt_cache_record_replaced", true },
             { "kv_pos_max",                   llama_kv_cache_seq_pos_max(ctx, slot.id) }, // report-only: KV <-> TOKS invariant
@@ -3577,6 +3746,7 @@ void server_context::process_single_task(server_task&& task) {
         // Erase token cache
         const size_t n_erased = slot->cache_tokens.size();
         llama_kv_cache_seq_rm(ctx, slot->id, -1, -1);
+        slot->stateos_kv_gen = stateos_adapter_gen; // empty: nothing in it predates the current adapter set
         slot->cache_tokens.keep_first(0);
         //slot->cache_tokens.clear();
         slot->server_cached_prompt.checkpoints.clear();
@@ -3592,7 +3762,34 @@ void server_context::process_single_task(server_task&& task) {
     } break;
     case SERVER_TASK_TYPE_SET_LORA:
     {
+        // the requested scales are applied here, on the main loop, all-or-nothing (the HTTP handler mutates nothing)
+        if (task.data.contains("scales")) {
+            std::vector<std::pair<int64_t, float>> request;
+            for (const auto & e : task.data.at("scales")) {
+                request.emplace_back(e.at("id").get<int64_t>(), e.at("scale").get<float>());
+            }
+            std::vector<float> scales;
+            for (const auto & la : lora_adapters) {
+                scales.push_back(la.scale);
+            }
+            std::string err;
+            if (!stateos_apply_scales(scales, request, &err)) {
+                server_task_result result;
+                result.id = task.id;
+                result.error = true;
+                result.data = json{ { "success", false }, { "error", "invalid adapter id: " + err } };
+                queue_results.send(result);
+                break;
+            }
+            for (size_t i = 0; i < lora_adapters.size(); ++i) {
+                lora_adapters[i].scale = scales[i];
+            }
+        }
+        ++stateos_adapter_gen; // KV built before this point was computed under another adapter set
         llama_lora_adapters_apply(ctx, lora_adapters);
+        stateos_lora_live = true; // the containers' scales are now what the context computes with
+        // a failed control-vector apply left the context's vector unknown: only a successful control-vector apply clears it
+        stateos_refresh_effective(stateos_effective_cur != STATEOS_EFFECTIVE_UNKNOWN);
         server_task_result result;
         result.id = task.id;
         result.error = false;
@@ -3720,6 +3917,38 @@ void server_context::process_single_task(server_task&& task) {
     } break;
     case SERVER_TASK_TYPE_SET_CONTROL_VECTOR:
     {
+        // the requested scales/layer ranges are applied here, on the main loop, all-or-nothing
+        if (task.data.contains("entries")) {
+            std::vector<std::pair<int64_t, float>> request;
+            for (const auto & e : task.data.at("entries")) {
+                request.emplace_back(e.at("id").get<int64_t>(), e.at("scale").get<float>());
+            }
+            std::vector<float> scales;
+            for (const auto & cv : control_vectors) {
+                scales.push_back(cv.scale);
+            }
+            std::string err;
+            if (!stateos_apply_scales(scales, request, &err)) {
+                server_task_result result;
+                result.id = task.id;
+                result.error = true;
+                result.data = json{ { "success", false }, { "error", "Invalid control vector id: " + err } };
+                queue_results.send(result);
+                break;
+            }
+            for (size_t i = 0; i < control_vectors.size(); ++i) {
+                control_vectors[i].scale = scales[i];
+            }
+            for (const auto & e : task.data.at("entries")) {
+                auto & cv = control_vectors[(size_t) e.at("id").get<int64_t>()];
+                if (e.contains("layer_start")) {
+                    cv.layer_start = e.at("layer_start");
+                }
+                if (e.contains("layer_end")) {
+                    cv.layer_end = e.at("layer_end");
+                }
+            }
+        }
         if (!apply_control_vectors_internal()) {
             server_task_result result;
             result.id = task.id;
@@ -3739,6 +3968,9 @@ void server_context::process_single_task(server_task&& task) {
 }
 
 bool server_context::apply_control_vectors_internal() {
+    ++stateos_adapter_gen; // every load/unload/apply path comes through here; KV built before was steered differently
+    // the context holds one steering vector: whatever follows replaces (or clears) the --control-vector* one
+    stateos_startup_cvec_live = false;
     llama_control_vector_data combined_cv = { -1, {} };
 
     // Check if we have anything to apply
@@ -3753,6 +3985,7 @@ bool server_context::apply_control_vectors_internal() {
     if (!any_active) {
         // Clear control vectors if nothing is active
         llama_control_vector_apply(ctx, nullptr, 0, 0, 0, 0);
+        stateos_refresh_effective(true);
         return true;
     }
 
@@ -3764,13 +3997,13 @@ bool server_context::apply_control_vectors_internal() {
         }
 
         if (combined_cv.n_embd == -1) {
+            // upstream fix: size for every layer (the buffer starts at layer 1), zero-filled, so a vector with fewer
+            // layers cannot overflow it or leave an earlier apply's values in the layers it does not cover
             combined_cv.n_embd = cv.data.n_embd;
-            combined_cv.data.resize(cv.data.data.size(), 0.0f);
+            combined_cv.data.assign((size_t) cv.data.n_embd * (size_t) std::max(llama_n_layer(model) - 1, 0), 0.0f);
         }
 
-        for (size_t i = 0; i < cv.data.data.size(); i++) {
-            combined_cv.data[i] += cv.data.data[i] * cv.scale;
-        }
+        stateos_cvec_accumulate(combined_cv.data, cv.data.data, cv.scale);
         cv.applied = true;
     }
 
@@ -3792,9 +4025,11 @@ bool server_context::apply_control_vectors_internal() {
                                             combined_cv.n_embd,
                                             min_layer_start,
                                             max_layer_end);
+        stateos_refresh_effective(err == 0); // a failed apply: "unknown", never saved, never matched
         return (err == 0);
     }
 
+    stateos_refresh_effective(true);
     return true;
 }
 
@@ -4625,6 +4860,13 @@ void server_context::batch_pending_prompt(const int32_t n_ubatch, const int32_t 
                     { "id_task", slot.id_task },
                     { "p0",      p0 }
                     });
+
+                // State-OS: a slot whose KV starts over (nothing reused) is built entirely under the current adapter
+                // set; one that reuses a prefix keeps the generation of that prefix (a save then refuses a mixed KV)
+                if (slot.n_prompt_tokens_processed == 0 && slot.n_past == 0) {
+                    // a legacy system prompt is copied in from seq 0: its KV keeps the generation it was built under
+                    slot.stateos_kv_gen = stateos_slot_start_gen(system_tokens.size(), stateos_system_gen, stateos_adapter_gen);
+                }
 
                 // LONGSPEAR_PLE_HIST_REWIND: every rewind before this point (checkpoint restore,
                 // prompt-cache or /slots state load, prefix trim) leaves the PLE n-gram history at

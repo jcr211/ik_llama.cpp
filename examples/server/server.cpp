@@ -957,11 +957,24 @@ int main(int argc, char ** argv) {
         res.status = 200; // HTTP OK
     };
 
-    const auto handle_slots_save = [&ctx_server, &params](const httplib::Request & req, httplib::Response & res, int id_slot) {
+    // names ending in the State-OS temp suffix are reserved: the startup cleanup deletes such files
+    const auto reject_reserved_name = [](const std::string & filename, httplib::Response & res) {
+        if (!stateos_reserved_name(filename)) {
+            return false;
+        }
+        res_err(res, json{ {"code", 409}, {"type", "state_name_reserved"},
+                           {"message", std::string("State-OS file names ending in ") + STATEOS_TMP_SUFFIX + " are reserved for in-progress saves"} });
+        return true;
+    };
+
+    const auto handle_slots_save = [&ctx_server, &params, &reject_reserved_name](const httplib::Request & req, httplib::Response & res, int id_slot) {
         json request_data = json::parse(req.body);
         std::string filename = request_data.at("filename");
         if (!fs_validate_filename(filename)) {
             res_err(res, format_error_response("Invalid filename", ERROR_TYPE_INVALID_REQUEST));
+            return;
+        }
+        if (reject_reserved_name(filename, res)) {
             return;
         }
         std::string filepath = params.slot_save_path + filename;
@@ -990,11 +1003,14 @@ int main(int argc, char ** argv) {
         }
     };
 
-    const auto handle_slots_restore = [&ctx_server, &params](const httplib::Request & req, httplib::Response & res, int id_slot) {
+    const auto handle_slots_restore = [&ctx_server, &params, &reject_reserved_name](const httplib::Request & req, httplib::Response & res, int id_slot) {
         json request_data = json::parse(req.body);
         std::string filename = request_data.at("filename");
         if (!fs_validate_filename(filename)) {
             res_err(res, format_error_response("Invalid filename", ERROR_TYPE_INVALID_REQUEST));
+            return;
+        }
+        if (reject_reserved_name(filename, res)) {
             return;
         }
         std::string filepath = params.slot_save_path + filename;
@@ -1657,34 +1673,27 @@ int main(int argc, char ** argv) {
     const auto handle_lora_adapters_apply = [&](const httplib::Request & req, httplib::Response & res) {
         log_prompt(ctx_server.params_base, json::parse(req.body));
         const std::vector<json> body = json::parse(req.body);
-        int max_idx = ctx_server.lora_adapters.size();
 
-        // clear existing value
-        for (auto & la : ctx_server.lora_adapters) {
-            la.scale = 0.0f;
-        }
-
-        // set value
-        for (auto entry : body) {
-            int id      = entry.at("id");
-            float scale = entry.at("scale");
-            if (0 <= id && id < max_idx) {
-                ctx_server.lora_adapters[id].scale = scale;
-            } else {
-                throw std::runtime_error("invalid adapter id");
-            }
+        // the scales are changed by the SET_LORA task on the main loop, all-or-nothing: this thread only forwards
+        // the request (it never writes lora_adapters, which the main loop reads)
+        json scales = json::array();
+        for (const auto & entry : body) {
+            scales.push_back({ { "id", entry.at("id").get<int64_t>() }, { "scale", entry.at("scale").get<float>() } });
         }
 
         server_task task;
         task.type = SERVER_TASK_TYPE_SET_LORA;
-        const int id_task = ctx_server.queue_tasks.post(std::move(task));
+        task.data = { { "scales", scales } };
+        task.id = ctx_server.queue_tasks.get_new_id();
+        const int id_task = task.id;
         ctx_server.queue_results.add_waiting_task_id(id_task);
+        ctx_server.queue_tasks.post(std::move(task));
 
         server_task_result result = ctx_server.queue_results.recv(id_task);
         ctx_server.queue_results.remove_waiting_task_id(id_task);
 
         res.set_content(result.data.dump(), "application/json");
-        res.status = 200; // HTTP OK
+        res.status = result.error ? 400 : 200;
     };
 
     // Control vector handlers
@@ -1741,39 +1750,28 @@ int main(int argc, char ** argv) {
 
     const auto handle_control_vectors_apply = [&](const httplib::Request & req, httplib::Response & res) {
         const std::vector<json> body = json::parse(req.body);
-        int max_idx = ctx_server.control_vectors.size();
 
-        // Update scales for existing control vectors
-        for (auto & cv : ctx_server.control_vectors) {
-            cv.scale = 0.0f;  // Reset all scales first
-        }
-
-        // Set new scales
-        for (auto entry : body) {
-            int id = entry.at("id");
-            float scale = entry.at("scale");
-            if (0 <= id && id < max_idx) {
-                ctx_server.control_vectors[id].scale = scale;
-
-                // Optionally update layer range
-                if (entry.contains("layer_start")) {
-                    ctx_server.control_vectors[id].layer_start = entry.at("layer_start");
-                }
-                if (entry.contains("layer_end")) {
-                    ctx_server.control_vectors[id].layer_end = entry.at("layer_end");
-                }
-            } else {
-                res.set_content(json{{ "success", false }, { "error", "Invalid control vector id" }}.dump(), "application/json");
-                res.status = 400;
-                return;
+        // scales and layer ranges are changed by the SET_CONTROL_VECTOR task on the main loop, all-or-nothing (a bad
+        // id changes nothing); this thread only forwards the request
+        json entries = json::array();
+        for (const auto & entry : body) {
+            json e = { { "id", entry.at("id").get<int64_t>() }, { "scale", entry.at("scale").get<float>() } };
+            if (entry.contains("layer_start")) {
+                e["layer_start"] = entry.at("layer_start").get<int32_t>();
             }
+            if (entry.contains("layer_end")) {
+                e["layer_end"] = entry.at("layer_end").get<int32_t>();
+            }
+            entries.push_back(e);
         }
 
         server_task task;
         task.type = SERVER_TASK_TYPE_SET_CONTROL_VECTOR;
-
-        const int id_task = ctx_server.queue_tasks.post(std::move(task));
+        task.data = { { "entries", entries } };
+        task.id = ctx_server.queue_tasks.get_new_id();
+        const int id_task = task.id;
         ctx_server.queue_results.add_waiting_task_id(id_task);
+        ctx_server.queue_tasks.post(std::move(task));
 
         server_task_result result = ctx_server.queue_results.recv(id_task);
         ctx_server.queue_results.remove_waiting_task_id(id_task);
@@ -1794,23 +1792,19 @@ int main(int argc, char ** argv) {
                 std::vector<llama_token> tokens;
                 uint32_t n_token_count = 0;
                 std::string file_format = "llama-seq";
+                json stateos_entry = nullptr;
 
-                // State-OS keyed container: tokens come from its TOKS section
+                // State-OS keyed container. Its state is secret (token ids invert to text), so the listing names it
+                // (count, token digest) and never decodes TOKS back into a prompt.
                 const std::string entry_path = stateos_path_utf8(entry.path());
                 const stateos_scan_result scan = stateos_scan_file(entry_path);
                 const stateos_section * toks = scan.status == STATEOS_SCAN_OK ? scan.find(STATEOS_TAG_TOKS) : nullptr;
                 if (toks != nullptr && toks->size % 4 == 0) {
-                    std::vector<uint8_t> bytes;
-                    if (!stateos_read_range(entry_path, toks->offset, toks->size, bytes, nullptr)) {
-                        continue;
-                    }
-                    n_token_count = (uint32_t) (bytes.size() / 4);
-                    tokens.resize(n_token_count);
-                    for (size_t i = 0; i < tokens.size(); ++i) {
-                        tokens[i] = (llama_token) ((uint32_t) bytes[4 * i] | ((uint32_t) bytes[4 * i + 1] << 8) |
-                                                   ((uint32_t) bytes[4 * i + 2] << 16) | ((uint32_t) bytes[4 * i + 3] << 24));
-                    }
+                    n_token_count = (uint32_t) (toks->size / 4);
                     file_format = "stateos-v" + std::to_string(scan.version);
+                    stateos_fields hdr;
+                    const stateos_field * sha = stateos_decode_header(scan.header_text, hdr, nullptr) ? stateos_find(hdr, "token_sha256") : nullptr;
+                    stateos_entry = { {"token_sha256", sha ? sha->value : std::string()}, {"prompt_redacted", true} };
                 } else {
                     std::ifstream file(entry.path(), std::ios::binary);
                     if (!file) continue;
@@ -1848,20 +1842,34 @@ int main(int argc, char ** argv) {
                 auto str_time = oss.str();
 
 
-                response.push_back({
+                json item = {
                     {"filename", entry.path().filename().string()},
                     {"filesize", entry.file_size()},
                     {"mtime", str_time},
                     {"token_count", n_token_count},
                     {"format", file_format},
-                    {"prompt", tokens_to_str(ctx_server.ctx, tokens)}
-                });
+                };
+                if (!stateos_entry.is_null()) {
+                    item["prompt"] = nullptr;
+                    item["stateos"] = stateos_entry;
+                } else {
+                    // a legacy file's ids are untrusted: an out-of-range id must not reach the detokenizer
+                    size_t bad = 0;
+                    const int32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(ctx_server.model));
+                    if (stateos_tokens_in_vocab(tokens.data(), tokens.size(), n_vocab, &bad)) {
+                        item["prompt"] = tokens_to_str(ctx_server.ctx, tokens);
+                    } else {
+                        item["prompt"] = nullptr;
+                        item["error"] = "token " + std::to_string(bad) + " is outside the vocabulary";
+                    }
+                }
+                response.push_back(item);
             }
         } catch (const std::exception& e) {
             res.status = 500;
             response = {{"error", e.what()}};
         }
-        res.set_content(response.dump(), "application/json; charset=utf-8");
+        res.set_content(safe_json_to_str(response), "application/json; charset=utf-8");
     };
 
     const auto list_slot_prompts = [&ctx_server, &params](const httplib::Request& req, httplib::Response& res) {
@@ -1937,6 +1945,24 @@ int main(int argc, char ** argv) {
                 new_filename_str.find("..") != std::string::npos || new_filename_str.find_first_of("/\\") != std::string::npos) {
                 res.status = 400;
                 response = {{"error", "Invalid filename format."}};
+                res.set_content(response.dump(), "application/json; charset=utf-8");
+                return;
+            }
+
+            // the same name rules as /slots save and restore (fs_validate_filename rejects trailing dots/spaces, control
+            // characters, reserved device names...)
+            if (!fs_validate_filename(old_filename_str) || !fs_validate_filename(new_filename_str)) {
+                res.status = 400;
+                response = {{"error", "Invalid filename format."}};
+                res.set_content(response.dump(), "application/json; charset=utf-8");
+                return;
+            }
+            // a state renamed onto our temp suffix would be deleted by the startup cleanup, and renaming a temp would
+            // publish a half-written save under a real name
+            if (stateos_reserved_name(new_filename_str) || stateos_reserved_name(old_filename_str)) {
+                res.status = 409;
+                response = {{"error", std::string("Names ending in ") + STATEOS_TMP_SUFFIX + " are reserved for in-progress saves."},
+                            {"type", "state_name_reserved"}};
                 res.set_content(response.dump(), "application/json; charset=utf-8");
                 return;
             }

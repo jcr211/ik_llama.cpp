@@ -1,0 +1,48 @@
+'vswhere.exe' is not recognized as an internal or external command,
+operable program or batch file.
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.0
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+[vcvarsall.bat] Environment initialized for: 'x64'
+==== configure
+-- OpenMP found
+-- Using optimized iqk matrix multiplications
+-- Enabling IQK Flash Attention kernels
+-- Including all IQK FA kernels
+-- CUDA found
+-- Using CUDA architectures: 120
+-- Could NOT find NCCL (missing: NCCL_INCLUDE_DIRS NCCL_LIBRARIES) 
+==================== NCCL NOT found -> building wihout NCCL support
+-- CUDA Toolkit: 13.0.48
+-- Warning: ccache not found - consider installing it for faster compilation or disable this warning with GGML_CCACHE=OFF
+-- CMAKE_SYSTEM_PROCESSOR: AMD64
+-- CMAKE_GENERATOR_PLATFORM: 
+-- x86 detected
+CMake Warning at common/CMakeLists.txt:26 (message):
+  Git index not found in git repository.
+
+
+-- ARCH_FLAGS = 
+TARGET_SRCS contains: D:/AI/worktrees/stateos-lane1-f11/examples/server/public/index.html.gz
+TARGET_SRCS contains: D:/AI/worktrees/stateos-lane1-f11/examples/server/public_llamacpp/index_llamacpp.html.gz
+TARGET_SRCS contains: D:/AI/worktrees/stateos-lane1-f11/examples/server/public_llamacpp/loading.html
+-- Configuring done (1.8s)
+-- Generating done (0.2s)
+-- Build files have been written to: D:/AI/worktrees/stateos-lane1-f11/build-stateos-f11
+configure exit=0
+building at HEAD bb0b30ea
+==== build
+[1/8] Generating build details from Git
+-- Found Git: C:/Program Files/Git/cmd/git.exe (found version "2.54.0.windows.1")
+[2/8] Building CXX object common\CMakeFiles\build_info.dir\build-info.cpp.obj
+[3/8] Linking CXX static library common\common.lib
+sampling.cpp.obj : warning LNK4006: "struct common_reasoning_budget_ctx * __cdecl common_reasoning_budget_init(struct llama_vocab const *,class std::vector<int,class std::allocator<int> > const &,class std::vector<int,class std::allocator<int> > const &,class std::vector<int,class std::allocator<int> > const &,int,enum common_reasoning_budget_state)" (?common_reasoning_budget_init@@YAPEAUcommon_reasoning_budget_ctx@@PEBUllama_vocab@@AEBV?$vector@HV?$allocator@H@std@@@std@@11HW4common_reasoning_budget_state@@@Z) already defined in reasoning-budget.cpp.obj; second definition ignored
+sampling.cpp.obj : warning LNK4006: "enum common_reasoning_budget_state __cdecl common_reasoning_budget_get_state(struct common_reasoning_budget_ctx const *)" (?common_reasoning_budget_get_state@@YA?AW4common_reasoning_budget_state@@PEBUcommon_reasoning_budget_ctx@@@Z) already defined in reasoning-budget.cpp.obj; second definition ignored
+[4/8] Linking CXX executable bin\test-stateos-layout.exe
+[5/8] Linking CXX executable bin\test-ple-hist.exe
+[6/8] Linking CXX executable bin\test-stateos-header.exe
+[7/8] Linking CXX executable bin\test-speculative-params.exe
+[8/8] Linking CXX executable bin\llama-server.exe
+build exit=0
+build-f11 exit=0

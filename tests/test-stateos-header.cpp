@@ -7,7 +7,15 @@
 
 #include "ggml.h"
 
+#if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
+#include <share.h>
+#include <sys/stat.h>
+#endif
+
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -32,6 +40,7 @@ static int g_checks   = 0;
 static stateos_fields server_like_fields() {
     return {
         { STATEOS_HARD, "model_fingerprint_v2", "3f1c0d5e9a" },
+        { STATEOS_HARD, "effective_model",      "none" },
         { STATEOS_HARD, "n_ctx",                "196608" },
         { STATEOS_HARD, "cache_type_k",         "q8_0" },
         { STATEOS_HARD, "cache_type_v",         "q8_0" },
@@ -263,6 +272,9 @@ static void test_container() {
 
     const stateos_scan_result r = stateos_scan_file(good);
     CHECK(r.status == STATEOS_SCAN_OK);
+    // the save's pre-commit size check predicts the writer's output exactly
+    CHECK(stateos_container_size(header.size(), { toks.size(), main_payload.size(), ckpt.size() }) == r.file_size);
+    CHECK(stateos_container_size(header.size(), { toks.size(), main_payload.size() }) != r.file_size);
     CHECK(r.version == STATEOS_CONTAINER_VERSION);
     CHECK(r.header_text == header);
     CHECK(r.sections.size() == 3);
@@ -277,8 +289,25 @@ static void test_container() {
     const stateos_section * t = r.find(STATEOS_TAG_TOKS);
     CHECK(t != nullptr && t->offset == 12 + header.size() + 16 && t->size == toks.size());
 
-    // not found
+    // not found vs present-but-unreadable (a directory; a file another process holds with no read sharing)
     CHECK(stateos_scan_file(tmp_file("missing.state")).status == STATEOS_SCAN_NOT_FOUND);
+    std::filesystem::create_directories(stateos_path(tmp_file("a-directory.state")));
+    CHECK(stateos_scan_file(tmp_file("a-directory.state")).status == STATEOS_SCAN_UNREADABLE);
+#if defined(_WIN32)
+    {
+        int fd = -1;
+        const std::wstring wpath = stateos_path(good).wstring();
+        if (_wsopen_s(&fd, wpath.c_str(), _O_RDONLY | _O_BINARY, _SH_DENYRW, 0) == 0) {
+            const stateos_scan_result locked = stateos_scan_file(good);
+            CHECK(locked.status == STATEOS_SCAN_UNREADABLE);
+            CHECK(locked.error.find("cannot open") != std::string::npos);
+            _close(fd);
+        } else {
+            CHECK(false); // could not take the exclusive handle the test needs
+        }
+        CHECK(stateos_scan_file(good).status == STATEOS_SCAN_OK); // readable again once released
+    }
+#endif
 
     // a headerless llama state-seq file (magic 'ggsq', version 4, token count ...) is legacy/unkeyed
     const std::string legacy = tmp_file("legacy.state");
@@ -450,6 +479,105 @@ static void test_props_capability() {
     CHECK(stateos_props_entry(false, false, false).is_null());
 }
 
+// runtime adapters/overrides are part of the identity: a state from one adapter set is refused on another
+static void test_effective_model() {
+    CHECK(stateos_effective_model_value({}) == "none");
+    const std::string a = stateos_effective_model_value({ "lora path=a.gguf scale=1" });
+    CHECK(a.size() == 64 && a != "none");
+    CHECK(stateos_effective_model_value({ "lora path=a.gguf scale=1" }) == a);             // stable
+    CHECK(stateos_effective_model_value({ "lora path=a.gguf scale=0.5" }) != a);           // scale matters
+    CHECK(stateos_effective_model_value({ "lora path=b.gguf scale=1" }) != a);             // adapter matters
+    const std::string ab = stateos_effective_model_value({ "lora path=a.gguf scale=1", "cvec path=c.gguf scale=1 layers=0..9" });
+    const std::string ba = stateos_effective_model_value({ "cvec path=c.gguf scale=1 layers=0..9", "lora path=a.gguf scale=1" });
+    CHECK(ab != a && ab != ba);                                                            // order is part of it
+    // no line-joining ambiguity: two items are not one item containing a separator
+    CHECK(stateos_effective_model_value({ "x", "y" }) != stateos_effective_model_value({ "x\ny" }));
+    CHECK(stateos_effective_model_value({ "xy" }) != stateos_effective_model_value({ "x", "y" }));
+    // a startup control vector (--control-vector) is its own item: a server with it is not a server without it
+    const std::string sv = stateos_effective_model_value({ "cvec-startup path=steer.gguf scale=1 layers=-1..-1" });
+    CHECK(sv != "none" && sv != stateos_effective_model_value({ "cvec path=steer.gguf scale=1 layers=-1..-1" }));
+
+    // startup control vectors describe the applied state only until a runtime control-vector change (review F11-2 P2-B)
+    {
+        const std::vector<stateos_cvec_desc> startup = { { "x.gguf", 1.0f, -1, -1, true } };
+        const std::vector<stateos_cvec_desc> none;
+        const std::vector<stateos_cvec_desc> runtime = { { "r.gguf", 0.5f, 1, 20, true }, { "off.gguf", 0.0f, 1, 20, false } };
+        CHECK(stateos_cvec_parts(true, startup, none) == std::vector<std::string>({ "cvec-startup path=x.gguf scale=1 layers=-1..-1" }));
+        CHECK(stateos_cvec_parts(false, startup, none).empty());                   // replaced/cleared by a runtime apply
+        CHECK(stateos_cvec_parts(false, startup, runtime) == std::vector<std::string>({ "cvec path=r.gguf scale=0.5 layers=1..20" }));
+        std::vector<stateos_cvec_desc> unapplied = runtime;
+        unapplied[0].applied = false;                                               // loaded but not applied
+        CHECK(stateos_cvec_parts(false, startup, unapplied).empty());
+        CHECK(stateos_effective_model_value(stateos_cvec_parts(false, startup, none)) == "none");
+    }
+
+    // the combined control vector is sized for every layer and zero-filled; a shorter vector cannot leave stale layers
+    // and a longer one cannot overflow it (review F11-3 P3-3, upstream code)
+    {
+        std::vector<float> combined(6, 0.0f);                                    // n_embd 2 x 3 layers
+        stateos_cvec_accumulate(combined, { 1, 1 }, 2.0f);                       // one layer only
+        stateos_cvec_accumulate(combined, { 1, 1, 1, 1, 1, 1, 9, 9 }, 0.5f);      // one layer more than the model
+        CHECK(combined == std::vector<float>({ 2.5f, 2.5f, 0.5f, 0.5f, 0.5f, 0.5f }));
+        std::vector<float> fresh(6, 0.0f);
+        stateos_cvec_accumulate(fresh, { 1, 1 }, 2.0f);
+        CHECK(fresh == std::vector<float>({ 2, 2, 0, 0, 0, 0 }));                // uncovered layers stay zero
+    }
+
+    // --lora-init-without-apply: loaded at scale 1 but never applied, so no lora lines until SET_LORA (review F11-3 P2-1)
+    {
+        const std::vector<std::pair<std::string, float>> loras = { { "x.gguf", 1.0f }, { "off.gguf", 0.0f } };
+        CHECK(stateos_lora_parts(true, loras) == std::vector<std::string>({ "lora path=x.gguf scale=1" }));
+        CHECK(stateos_lora_parts(false, loras).empty());
+        CHECK(stateos_effective_model_value(stateos_lora_parts(false, loras)) == "none");
+        CHECK(stateos_effective_model_value(stateos_lora_parts(true, loras)) != "none");
+    }
+
+    // a scale request is all-or-nothing: a bad id changes nothing, so the cached stamp (computed from what was applied)
+    // stays true (review F11-2 P2-A)
+    {
+        std::vector<float> scales = { 1.0f, 0.0f, 0.25f };
+        auto stamp_of = [](const std::vector<float> & s) {
+            std::vector<std::string> parts;
+            for (size_t i = 0; i < s.size(); ++i) {
+                if (s[i] != 0.0f) {
+                    parts.push_back("lora path=a" + std::to_string(i) + " scale=" + std::to_string(s[i]));
+                }
+            }
+            return stateos_effective_model_value(parts);
+        };
+        const std::string cached = stamp_of(scales);
+        std::string e2;
+        CHECK(!stateos_apply_scales(scales, { { 0, 0.0f }, { 7, 1.0f } }, &e2)); // id 7 does not exist
+        CHECK(scales == std::vector<float>({ 1.0f, 0.0f, 0.25f }));
+        CHECK(stamp_of(scales) == cached);
+        CHECK(!stateos_apply_scales(scales, { { -1, 1.0f } }, &e2));
+        CHECK(stateos_apply_scales(scales, { { 1, 2.0f } }, &e2));               // valid: zero all, set requested
+        CHECK(scales == std::vector<float>({ 0.0f, 2.0f, 0.0f }));
+        CHECK(stamp_of(scales) != cached);
+        CHECK(stateos_apply_scales(scales, {}, &e2) && scales == std::vector<float>({ 0.0f, 0.0f, 0.0f }));
+        CHECK(std::string(STATEOS_EFFECTIVE_UNKNOWN) != "none" && std::string(STATEOS_EFFECTIVE_UNKNOWN).size() != 64);
+    }
+
+    // save honesty: the stamp is today's set, so the KV must have been built under it (review F11 P2-2)
+    CHECK(stateos_kv_built_under_current(0, -1, 7));    // empty slot: nothing to misdescribe
+    CHECK(stateos_kv_built_under_current(4096, 0, 0));  // no adapter change since startup
+    CHECK(stateos_kv_built_under_current(4096, 3, 3));  // rebuilt after the last change
+    CHECK(!stateos_kv_built_under_current(4096, 2, 3)); // prefilled under LoRA A, then the scale changed: refused
+    CHECK(!stateos_kv_built_under_current(4096, -1, 3)); // RAM prompt-cache state of unknown generation: refused
+    // a fresh start copies a legacy system prompt from seq 0: it counts only if computed under the current set
+    CHECK(stateos_slot_start_gen(0, 0, 3) == 3);  // no system prompt
+    CHECK(stateos_slot_start_gen(12, 3, 3) == 3); // system KV recomputed after the last change
+    CHECK(stateos_slot_start_gen(12, 1, 3) == -1); // system KV from an older adapter set: unknown, never saved
+    CHECK(!stateos_kv_built_under_current(4096, stateos_slot_start_gen(12, 1, 3), 3));
+
+    // the verify path refuses a different adapter set by name
+    stateos_fields saved   = server_like_fields();
+    stateos_fields current = server_like_fields();
+    set_value(current, "effective_model", a);
+    const stateos_verdict v = stateos_verify(saved, current);
+    CHECK(!v.ok && !v.refused.empty() && v.refused.front().key == "effective_model");
+}
+
 // section-level restore checks: MAIN must not be empty (0 is the loader's failure value), TOKS is bounded first
 static void test_section_checks() {
     stateos_scan_result r;
@@ -460,7 +588,7 @@ static void test_section_checks() {
 
     r.sections[1].size = 0;
     c = stateos_check_sections(r, 196608);
-    CHECK(!c.ok && c.field == "section:MAIN");
+    CHECK(!c.ok && c.field == "section:MAIN" && c.type == "state_corrupt");
 
     r.sections[1].size = 50;
     r.sections[0].size = 0; // a state saved from an empty slot
@@ -473,7 +601,7 @@ static void test_section_checks() {
 
     r.sections[0].size = 8;
     c = stateos_check_sections(r, 1);
-    CHECK(!c.ok && c.field == "n_tokens");
+    CHECK(!c.ok && c.field == "n_tokens" && c.type == "state_refused"); // valid file, larger context: refused
 
     r.sections = { { STATEOS_TAG_TOKS, 100, 8 } };
     c = stateos_check_sections(r, 196608);
@@ -481,6 +609,18 @@ static void test_section_checks() {
     r.sections = { { STATEOS_TAG_MAIN, 100, 8 } };
     c = stateos_check_sections(r, 196608);
     CHECK(!c.ok && c.field == "section:TOKS");
+
+    // vocabulary range (restore refuses, /list withholds the prompt)
+    {
+        const int32_t ok_ids[3]  = { 0, 5, 9 };
+        const int32_t bad_hi[3]  = { 0, 10, 1 };
+        const int32_t bad_neg[2] = { 3, -1 };
+        size_t bad = 99;
+        CHECK(stateos_tokens_in_vocab(ok_ids, 3, 10, &bad) && bad == 99);
+        CHECK(!stateos_tokens_in_vocab(bad_hi, 3, 10, &bad) && bad == 1);
+        CHECK(!stateos_tokens_in_vocab(bad_neg, 2, 10, &bad) && bad == 1);
+        CHECK(stateos_tokens_in_vocab(nullptr, 0, 10, nullptr));
+    }
 
     // KV <-> tokens: tokens need at least one KV cell (save refuses, restore fails and clears the slot)
     CHECK(stateos_kv_consistent(0, -1));      // empty slot
@@ -502,6 +642,45 @@ static void test_section_checks() {
     recs[1].pos_min = 100;
     recs[1].pos_max_prompt = INT32_MAX; // pos_max_prompt + 1 would overflow
     CHECK(!stateos_checkpoints_sane(recs, &err));
+
+    // CKPT budget before reading: 12 framing + records x (32 + state bytes)
+    CHECK(stateos_ckpt_within_budget(12, 0, 100));                 // an empty list
+    CHECK(stateos_ckpt_within_budget(12 + 2 * (32 + 100), 2, 100));
+    CHECK(!stateos_ckpt_within_budget(12 + 2 * (32 + 100) + 1, 2, 100));
+    CHECK(!stateos_ckpt_within_budget(1ull << 40, 32, 112u << 20)); // a crafted terabyte section is never read
+    CHECK(stateos_ckpt_within_budget(UINT64_MAX, UINT64_MAX, UINT64_MAX)); // no overflow in the bound itself
+    // the per-record bound does not depend on the target slot's current length (review P1): a checkpoint taken in a
+    // 4K conversation must fit when measured against a slot that now holds 10 cells, or none
+    {
+        const uint64_t fixed = 112u << 20;                       // recurrent rows
+        const uint64_t ckpt_4k = fixed + STATEOS_CELL_META_BYTES * 4096;
+        const uint64_t partial_short = fixed + STATEOS_CELL_META_BYTES * 10;
+        const uint64_t partial_empty = fixed;
+        CHECK(stateos_ckpt_record_bound(partial_short, 196608, false, 0) >= ckpt_4k);
+        CHECK(stateos_ckpt_record_bound(partial_empty, 196608, false, 0) >= ckpt_4k);
+        CHECK(stateos_ckpt_record_bound(partial_empty, 196608, false, 0) >= fixed + STATEOS_CELL_META_BYTES * 196608);
+        CHECK(stateos_ckpt_record_bound(partial_short, 196608, true, 5000) == 5000); // compacted: the MAIN size
+        CHECK(stateos_ckpt_record_bound(UINT64_MAX - 1, UINT64_MAX, false, 0) == UINT64_MAX); // saturates
+        std::vector<stateos_checkpoint_rec> long_ckpt(32);
+        for (auto & c : long_ckpt) {
+            c.data.resize(1024 + STATEOS_CELL_META_BYTES * 4096);
+        }
+        const uint64_t bound = stateos_ckpt_record_bound(1024 + STATEOS_CELL_META_BYTES * 10, 196608, false, 0);
+        CHECK(stateos_checkpoints_fit(long_ckpt, bound, &err));
+        uint64_t section = 12;
+        for (const auto & c : long_ckpt) {
+            section += 32 + c.data.size();
+        }
+        CHECK(stateos_ckpt_within_budget(section, 32, bound)); // a full list of long checkpoints is not skipped
+    }
+
+    // after decode: every record fits a partial state of this context
+    std::vector<stateos_checkpoint_rec> fit(2);
+    fit[0].data.assign(100, 1);
+    fit[1].data.assign(100, 2);
+    CHECK(stateos_checkpoints_fit(fit, 100, &err));
+    fit[1].data.push_back(3);
+    CHECK(!stateos_checkpoints_fit(fit, 100, &err) && err.find("checkpoint 1") != std::string::npos);
 }
 
 // the save's commit point: replace the previous state without deleting it first
@@ -514,8 +693,58 @@ static void test_replace_file() {
     CHECK(stateos_replace_file(b, a, &err));
     CHECK(read_all(a) == std::vector<uint8_t>({ 'n', 'e', 'w', '!' }));
     CHECK(!std::filesystem::exists(stateos_path(b)));
+    const auto t0 = std::chrono::steady_clock::now();
     CHECK(!stateos_replace_file(tmp_file("replace-missing.state"), a, &err));
+    const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    CHECK(waited < 300); // a missing source is not retried (was ~1.5 s of sleeps, one after the last attempt)
     CHECK(read_all(a) == std::vector<uint8_t>({ 'n', 'e', 'w', '!' })); // a failed replace keeps the old file
+
+    // durability before the commit rename
+    CHECK(stateos_flush_file(a, &err));
+    CHECK(!stateos_flush_file(tmp_file("flush-missing.state"), &err));
+}
+
+// startup cleanup: only our temp suffix, only regular files, only older than the age limit
+static void test_stale_tmp_cleanup() {
+    const std::filesystem::path dir = g_tmp / "cleanup";
+    std::filesystem::create_directories(dir);
+    const auto old_time = std::filesystem::file_time_type::clock::now() - std::chrono::hours(2);
+    auto make = [&](const std::string & name, bool old) {
+        const std::string p = stateos_path_utf8(dir / name);
+        write_raw(p, { 'x' });
+        if (old) {
+            std::filesystem::last_write_time(stateos_path(p), old_time);
+        }
+    };
+    make("crashed.state.stateos.tmp", true);  // removed
+    make("in-flight.state.stateos.tmp", false); // too young: a save may be writing it
+    make("user-file.tmp", true);               // not our suffix
+    make("saved.state", true);                 // a real state
+    make(".stateos.tmp", true);                // suffix only, no name: left alone
+    std::filesystem::create_directories(dir / "dir.stateos.tmp"); // not a regular file
+
+    // client names on the temp suffix are refused, so the cleanup below can never meet a committed state
+    CHECK(stateos_reserved_name("notes.stateos.tmp"));
+    CHECK(stateos_reserved_name("NOTES.STATEOS.TMP"));  // Windows names are case-insensitive
+    CHECK(stateos_reserved_name(".stateos.tmp"));
+    CHECK(!stateos_reserved_name("notes.state"));
+    CHECK(!stateos_reserved_name("notes.stateos.tmp.bak"));
+    CHECK(!stateos_reserved_name("stateos.tmp"));
+    CHECK(!stateos_reserved_name(""));
+    CHECK(stateos_reserved_name("notes.stateos.tmp."));   // Win32 strips the trailing dot
+    CHECK(stateos_reserved_name("notes.stateos.tmp . ")); // and trailing spaces
+    CHECK(!stateos_reserved_name("notes.stateos.tmpx."));
+
+    std::vector<std::string> removed;
+    const size_t n = stateos_cleanup_stale_tmp(stateos_path_utf8(dir), 3600, &removed);
+    CHECK(n == 1 && removed.size() == 1 && removed[0] == "crashed.state.stateos.tmp");
+    CHECK(!std::filesystem::exists(dir / "crashed.state.stateos.tmp"));
+    CHECK(std::filesystem::exists(dir / "in-flight.state.stateos.tmp"));
+    CHECK(std::filesystem::exists(dir / "user-file.tmp"));
+    CHECK(std::filesystem::exists(dir / "saved.state"));
+    CHECK(std::filesystem::exists(dir / ".stateos.tmp"));
+    CHECK(std::filesystem::exists(dir / "dir.stateos.tmp"));
+    CHECK(stateos_cleanup_stale_tmp(stateos_path_utf8(dir / "does-not-exist"), 3600, nullptr) == 0);
 }
 
 // a GGUF with real tensor data (the vocab fixtures have none, so their sampling path is empty)
@@ -685,8 +914,10 @@ int main(int argc, char ** argv) {
     test_checkpoints();
     test_companion();
     test_props_capability();
+    test_effective_model();
     test_section_checks();
     test_replace_file();
+    test_stale_tmp_cleanup();
     test_fingerprint_v2();
     if (argc > 1) {
         test_model_fingerprint(argv[1], argc > 2 ? argv[2] : "");

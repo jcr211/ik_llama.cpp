@@ -215,6 +215,9 @@ target_include_directories(test-stateos-header PRIVATE ${PROJECT_SOURCE_DIR}/exa
 
 llama_build_and_test(test-ple-hist.cpp)
 
+# State-OS layout descriptor goldens (kv_geometry input; see the BUMP RULE in src/llama-state-layout.h)
+llama_build_and_test(test-stateos-layout.cpp)
+
 llama_build_and_test(test-iq4-ks-kt-decode.cpp)
 target_include_directories(test-iq4-ks-kt-decode PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src)
 
