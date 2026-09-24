@@ -1,10 +1,14 @@
 == env flags read (added lines) ==
-10:+        const char * v = std::getenv("LONGSPEAR_STATEOS_TAIL_SNAPSHOT");
-580:+    const char * v = std::getenv(name);
-585:+    static const bool v = stateos_env_flag("LONGSPEAR_STATEOS_DIV_LOG");
-590:+    static const bool v = stateos_env_flag("LONGSPEAR_STATEOS_TAIL_SNAPSHOT");
-595:+    static const bool v = stateos_env_flag("LONGSPEAR_STATEOS_TAIL_XCHECK");
-725:+    bool    flag = false;              // LONGSPEAR_STATEOS_TAIL_SNAPSHOT
+8:+        const char * value = getenv("LONGSPEAR_PLE_HIST_REWIND");
+22:+        const char * value = getenv("LONGSPEAR_PLE_HIST_LOG");
+88:+        const char * v = std::getenv("LONGSPEAR_STATEOS_TAIL_SNAPSHOT");
+700:+    const char * v = std::getenv(name);
+705:+    static const bool v = stateos_env_flag("LONGSPEAR_STATEOS_DIV_LOG");
+710:+    static const bool v = stateos_env_flag("LONGSPEAR_STATEOS_TAIL_SNAPSHOT");
+715:+    static const bool v = stateos_env_flag("LONGSPEAR_STATEOS_TAIL_XCHECK");
+845:+    bool    flag = false;              // LONGSPEAR_STATEOS_TAIL_SNAPSHOT
+1341:+        const char * value = std::getenv("LONGSPEAR_PLE_HIST_REWIND");
+1350:+        const char * value = std::getenv("LONGSPEAR_PLE_HIST_LOG");
 
 == gates: stateos_div_log() / stateos_tail_snapshot() / stateos_tail_xcheck() / common_speculative_tail_snapshot_enabled() ==
 examples/server/server-context.cpp:3611:                if (stateos_div_log()) {
@@ -14,26 +18,26 @@ examples/server/server-context.cpp:3848:                    if (it->origin == ST
 examples/server/server-context.cpp:3910:            if (stateos_div_log()) {
 examples/server/server-context.cpp:3924:    if (stateos_div_log()) {
 examples/server/server-context.cpp:4027:        if (stateos_div_log()) {
-examples/server/server-context.cpp:4710:        if (stateos_div_log()) {
-examples/server/server-context.cpp:4781:                    if (stateos_div_log()) {
-examples/server/server-context.cpp:4817:    if (stateos_div_log()) {
-examples/server/server-context.cpp:4834:        if (stateos_tail_snapshot()) {
-examples/server/server-context.cpp:5418:            if (stateos_div_log()) {
-common/speculative.cpp:2480:static bool common_speculative_tail_snapshot_enabled() {
-common/speculative.cpp:2509:    ckpt.valid = common_speculative_tail_snapshot_enabled()
+examples/server/server-context.cpp:4739:        if (stateos_div_log()) {
+examples/server/server-context.cpp:4810:                    if (stateos_div_log()) {
+examples/server/server-context.cpp:4846:    if (stateos_div_log()) {
+examples/server/server-context.cpp:4863:        if (stateos_tail_snapshot()) {
+examples/server/server-context.cpp:5447:            if (stateos_div_log()) {
+common/speculative.cpp:2512:static bool common_speculative_tail_snapshot_enabled() {
+common/speculative.cpp:2541:    ckpt.valid = common_speculative_tail_snapshot_enabled()
 
 == writers of the only state the flags create (shadow_pos set, tail checkpoints, [stateos-div]/[ckpt-xcheck] output) ==
-src/llama.cpp:10145:        kv.ckpt.shadow_pos = root_pos - 1;
+src/llama.cpp:10144:        kv.ckpt.shadow_pos = root_pos - 1;
 examples/server/server-context.cpp:3808:                    fprintf(stderr, "[stateos-div] event=tail_sha_mismatch slot=%d task=%d pos_max=%d n_tokens=%" PRId64 " cache_n=%d\n",
 examples/server/server-context.cpp:3914:                fprintf(stderr, "%s chosen_origin=%s chosen_pos_max=%d gap=%d restore_ms=%.2f reason=%s outcome=%s%s\n",
 examples/server/server-context.cpp:4028:            fprintf(stderr, "[stateos-div] event=create slot=%d task=%d origin=%s pos_min=%d pos_max=%d n_tokens=%" PRId64 " bytes=%zu ms=%.2f n_ckpt=%d\n",
 examples/server/server-context.cpp:4049:        fprintf(stderr, "[stateos-div] event=tail_skip slot=%d task=%d cause=%s shadow_pos=%d cache_pos_max=%d last_ckpt_pos_max=%d n_ckpt=%d\n",
-examples/server/server-context.cpp:4093:    tail.origin         = STATEOS_ORIGIN_TAIL;
-examples/server/server-context.cpp:4120:    fprintf(stderr, "[stateos-div] event=create slot=%d task=%d origin=tail pos_min=%d pos_max=%d n_tokens=%" PRId64 " bytes=%zu ms=%.2f n_ckpt=%d cache_pos_max=%d\n",
-examples/server/server-context.cpp:4167:        [](const server_prompt_checkpoint & c) { return c.origin != STATEOS_ORIGIN_TAIL; });
-examples/server/server-context.cpp:4172:        fprintf(stderr, "[ckpt-xcheck] origin=tail slot=%d task=%d skip=%s x=%d tail_pos=%d ref_origin=%s ref_pos=%d\n",
-examples/server/server-context.cpp:4223:                fprintf(stderr, "[ckpt-xcheck] origin=tail slot=%d task=%d x=%d tail_pos=%d ref_origin=%s ref_pos=%d layer=%zu type=%d n_bitequal=%zu n=%zu relL2=%.6g\n",
-examples/server/server-context.cpp:4227:                fprintf(stderr, "[ckpt-xcheck] origin=tail slot=%d task=%d summary x=%d tail_gap=%d ref_gap=%d layers=%zu bitequal_layers=%zu max_relL2=%.6g ms=%.2f\n",
+examples/server/server-context.cpp:4097:    tail.origin         = STATEOS_ORIGIN_TAIL;
+examples/server/server-context.cpp:4124:    fprintf(stderr, "[stateos-div] event=create slot=%d task=%d origin=tail pos_min=%d pos_max=%d n_tokens=%" PRId64 " bytes=%zu ms=%.2f n_ckpt=%d cache_pos_max=%d\n",
+examples/server/server-context.cpp:4181:        [](const server_prompt_checkpoint & c) { return c.origin != STATEOS_ORIGIN_TAIL; });
+examples/server/server-context.cpp:4186:        fprintf(stderr, "[ckpt-xcheck] origin=tail slot=%d task=%d skip=%s x=%d tail_pos=%d ref_origin=%s ref_pos=%d\n",
+examples/server/server-context.cpp:4237:                fprintf(stderr, "[ckpt-xcheck] origin=tail slot=%d task=%d x=%d tail_pos=%d ref_origin=%s ref_pos=%d layer=%zu type=%d n_bitequal=%zu n=%zu relL2=%.6g\n",
+examples/server/server-context.cpp:4241:                fprintf(stderr, "[ckpt-xcheck] origin=tail slot=%d task=%d summary x=%d tail_gap=%d ref_gap=%d layers=%zu bitequal_layers=%zu max_relL2=%.6g ms=%.2f\n",
 
 == new aborts/asserts on added lines (must be empty) ==
 (none)
