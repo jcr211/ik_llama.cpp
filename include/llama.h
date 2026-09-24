@@ -867,7 +867,8 @@ extern "C" {
 
     // Sets the history for decoding at next_pos to the last llama_ple_history_len() tokens of prev
     // (the tokens before next_pos, oldest first), front-padded with EOS when n_prev is shorter,
-    // which reproduces the position-0 convention. LLAMA_TOKEN_NULL entries (media) act as EOS.
+    // which reproduces the position-0 convention. LLAMA_TOKEN_NULL entries (media positions) become
+    // the model's image token, which is what a decode of the image leaves in the history.
     // No-op for a model without PLE.
     LLAMA_API void llama_ple_history_set(
             struct llama_context * ctx,

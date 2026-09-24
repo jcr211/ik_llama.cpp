@@ -27,7 +27,9 @@ static inline bool llama_ple_hist_rewind_enabled() {
     return enabled;
 }
 
-// LONGSPEAR_PLE_HIST_LOG=1: one stderr line per mid-sequence EOS reset.
+// LONGSPEAR_PLE_HIST_LOG=1: one stderr line per mid-sequence EOS reset. Not every one is a rewind
+// defect: an M-RoPE image puts all its positions at pos_0, so an image longer than one ubatch
+// resets on each ubatch after the first (vision mode only; text-only runs expect zero).
 static inline bool llama_ple_hist_log_enabled() {
     static const bool enabled = [] {
         const char * value = std::getenv("LONGSPEAR_PLE_HIST_LOG");
@@ -36,12 +38,19 @@ static inline bool llama_ple_hist_log_enabled() {
     return enabled;
 }
 
+// The id the builder hashes for a position without a token id (an embedding ubatch: image
+// patches): the model's image token, EOS when it names none.
+static inline llama_token llama_ple_media_token(llama_token eos, uint32_t image_token_id) {
+    return image_token_id != 0 ? (llama_token) image_token_id : eos;
+}
+
 // The history a sequential decode holds before `next_pos` after decoding `prev`: its last
 // n_gram - 1 tokens, front-padded with EOS when there are fewer, which at next_pos == n_prev is
-// exactly the position-0 convention. A negative id (LLAMA_TOKEN_NULL, a media position) becomes
-// EOS: text after an image follows an IMROPE position jump, where a sequential decode resets too.
+// exactly the position-0 convention. A negative id (LLAMA_TOKEN_NULL, a media position in the
+// server's cache tokens) becomes `media`, the id the builder pushed for that position: text after
+// an image continues at next_pos (M-RoPE images take one position), so no reset intervenes.
 template <typename H>
-static inline void llama_ple_hist_assign(H & h, int32_t n_gram, llama_token eos,
+static inline void llama_ple_hist_assign(H & h, int32_t n_gram, llama_token eos, llama_token media,
         const llama_token * prev, int32_t n_prev, llama_pos next_pos) {
     const int32_t keep = n_gram - 1;
     const int32_t n    = prev != nullptr ? std::min(std::max(n_prev, 0), keep) : 0;
@@ -49,9 +58,47 @@ static inline void llama_ple_hist_assign(H & h, int32_t n_gram, llama_token eos,
     h.toks.assign(keep, eos);
     for (int32_t i = 0; i < n; ++i) {
         const llama_token tok = prev[n_prev - n + i];
-        h.toks[keep - n + i] = tok < 0 ? eos : tok;
+        h.toks[keep - n + i] = tok < 0 ? media : tok;
     }
     h.next_pos = next_pos;
+}
+
+// Speculative resume (common_speculative_ple_resume): from the history snapshot taken at the
+// checkpoint, the tokens before the resume position and that position. A replay restore resumes at
+// n_past with the snapshot itself; a per-step (direct) restore resumes after the sampled token and
+// the accepted drafts ids[0 .. n-2], at n_past + n. False when the snapshot is not contiguous with
+// the checkpoint, so there is nothing exact to rebuild from.
+static inline bool llama_ple_hist_spec_resume(
+        const std::vector<llama_token> & snap, llama_pos snap_next_pos, llama_pos n_past,
+        llama_token sampled, const std::vector<llama_token> & ids, bool direct,
+        std::vector<llama_token> & prev, llama_pos & next_pos) {
+    if (snap_next_pos != n_past || ids.empty()) {
+        return false;
+    }
+    prev     = snap;
+    next_pos = n_past;
+    if (direct) {
+        prev.push_back(sampled);
+        prev.insert(prev.end(), ids.begin(), ids.end() - 1);
+        next_pos += (llama_pos) ids.size();
+    }
+    return true;
+}
+
+// Server prompt resume: the last n_hist tokens before the first decoded position, which follows
+// the system tokens and then cache[0 .. n_past) (the server's cache tokens, LLAMA_TOKEN_NULL at
+// media positions).
+template <typename Cache>
+static inline std::vector<llama_token> llama_ple_hist_prompt_window(
+        const std::vector<llama_token> & system_tokens, const Cache & cache, int32_t n_past, int32_t n_hist) {
+    std::vector<llama_token> prev;
+    for (int32_t i = std::max(0, (int32_t) system_tokens.size() - n_hist); i < (int32_t) system_tokens.size(); ++i) {
+        prev.push_back(system_tokens[i]);
+    }
+    for (int32_t i = std::max(0, n_past - n_hist); i < n_past; ++i) {
+        prev.push_back(cache[i]);
+    }
+    return prev;
 }
 
 // Writes the n-gram context of every ubatch token into ctx (n_tokens x n_gram: [i*n_gram] is the
