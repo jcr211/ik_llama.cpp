@@ -25,6 +25,9 @@ import {
   forcedPrompt,
   gateRefusal,
   gateStatus,
+  PREREG,
+  preregProblems,
+  receiptProblems,
   rowProblem,
   SPEC_OFF_LABEL,
   preScoreChecks,
@@ -510,9 +513,11 @@ const recMeta = (arm) => ({
   url: "http://127.0.0.1:8099",
   logStem: `stem-${arm}`,
   bRequest: { ignore_eos: true },
+  startedAt: "2026-09-24T01:00:00.000Z", // after the port check (PORT_CHECKED_AT)
 });
 const row = (id, over = {}) => ({
   id,
+  sha256: tokensSha([id]), // the prompt's content hash, the same in every arm
   ok: true,
   generated: [10, 11, 7, 13],
   forcedIndex: 5,
@@ -729,10 +734,11 @@ test("step 3: T1 recorded with the crosscheck is VOID; a CUDA error is STOP even
 });
 
 // raw census state with a flags record and a port record, as feedFiles returns it
+const PORT_CHECKED_AT = "2026-09-24T00:00:00.000Z";
 const rawCensus = (lines, port = [PORT_OK, PID]) => {
   const c = newCensus();
   for (const l of lines) feed(c, l);
-  if (port) setPortRecord(c, port[0], port[1]);
+  if (port) setPortRecord(c, port[0], port[1], PORT_CHECKED_AT);
   return c;
 };
 // each arm's recorded flags, with its own logstem (recMeta's logStem) and speculation state
@@ -745,8 +751,16 @@ const armFlags = (a, shell, spec = "on") =>
         ? flags(1, 0, 0, "-fa 0", `stem-${a}`, spec)
         : flags(1, 0, 0, "", `stem-${a}`, spec);
 // every arm: its recorded flags, the port check and an armed PLE-history repair
+// each arm its own launch: its own PID (distinct across arms) and port record
+const ARM_PID = { A0: "11", A1: "12", C: "13", A5: "14", A3: "15" };
+const armPort = (a) => [
+  `[stateos-port] ok pid=${ARM_PID[a]} listeners=${ARM_PID[a]} port=8099`,
+  ARM_PID[a],
+];
 const gateCensus = (arms, shell = "C", spec = "on") =>
-  Object.fromEntries(arms.map((a) => [a, rawCensus([armFlags(a, shell, spec), ...ARMED])]));
+  Object.fromEntries(
+    arms.map((a) => [a, rawCensus([armFlags(a, shell, spec), ...ARMED], armPort(a))]),
+  );
 
 test("Opus repro: a C arm served by the crosscheck never scores (restored:xcheck-flag-off is no tail restore)", () => {
   const ids = Array.from({ length: 24 }, (_, i) => `p${i}`);
@@ -1101,7 +1115,11 @@ test("round 8 (Sol bug 1): zero-token responses are invalid by the one rule shar
   // a 1-token request A from C is invalid too
   assert.equal(rowProblem(row("p0", { generated: [10] }), 8).request, "A");
   // A0/A1 returning 0 tokens is a control failure
-  const a0Empty = refuse24({ A0: onIds(ids24, { continuation: [] }) });
+  // (both controls empty: A0 alone empty against A1's full B is a determinism failure, round 11)
+  const a0Empty = refuse24({
+    A0: onIds(ids24, { continuation: [] }),
+    A1: onIds(ids24, { continuation: [] }),
+  });
   assert.equal(a0Empty.pre.cExcluded, 0);
   assert.equal(a0Empty.refused.verdict, "insufficient-control");
   // within the slack: engagement's drops and score agree; score never rejects a row engagement scored
@@ -1221,11 +1239,39 @@ test("round 9 (Opus N1/S4): A1's request-B failure is a control failure; its req
   assert.equal(s4.refused.verdict, "void-determinism");
 });
 
-test("round 9 (Opus N4): the spec-off fallback runs when EVERY arm is spec=off; mixed = mislaunched", () => {
-  const off = gateRefusal(recs24(), gateCensus(ARMS, "C", "off"), lines24(), OPTS);
-  assert.equal(off.specOff, true);
+test("rounds 9/11: the spec-off fallback is a dedicated VOID with determinism PASS/FAIL; mixed = mislaunched", () => {
   assert.equal(SPEC_OFF_LABEL, "spec-off fallback: determinism only; C1 not testable");
-  assert.equal(off.refused, null);
+  const offCensus = gateCensus(ARMS, "C", "off");
+  // spec-off: C1 is never scored and C is never charged. Realistic spec-off traffic: no drafted
+  // rounds, so no tails anywhere
+  const noTail = () => bLine({ prevRound: "root-only", prevNAcc: 0 });
+  const offLines = {
+    A0: ids24.map(noTail),
+    A1: ids24.map(noTail),
+    C: ids24.map(noTail),
+    A5: [],
+    A3: [],
+  };
+  const off = gateRefusal(recs24(), offCensus, offLines, OPTS);
+  assert.equal(off.specOff, true);
+  assert.equal(off.refused.verdict, "spec-off-fallback");
+  assert.equal(off.refused.determinism, "PASS");
+  assert.equal(gateStatus(off.refused.verdict), "VOID");
+  assert.ok(off.refused.voidReason.startsWith(SPEC_OFF_LABEL));
+  // Opus P4: C's request A differs on 5 prompts - still the dedicated VOID, never shell-diverged
+  const p4 = gateRefusal(
+    recs24({ C: onIds(ids24.slice(0, 5), OTHER_A) }),
+    offCensus,
+    offLines,
+    OPTS,
+  );
+  assert.equal(p4.refused.verdict, "spec-off-fallback");
+  assert.equal(p4.refused.determinism, "PASS");
+  // A1 differs from A0: determinism FAIL, still the dedicated VOID
+  const nd = gateRefusal(recs24({ A1: { p3: OTHER_B } }), offCensus, offLines, OPTS);
+  assert.equal(nd.refused.verdict, "spec-off-fallback");
+  assert.equal(nd.refused.determinism, "FAIL");
+  assert.deepEqual(nd.refused.determinismFailures, [{ id: "p3", request: "B" }]);
   assert.equal(gateRefusal(recs24(), gateCensus(ARMS), lines24(), OPTS).specOff, false);
   const mixed = { ...gateCensus(ARMS), A3: rawCensus([armFlags("A3", "C", "off"), ...ARMED]) };
   const m = gateRefusal(recs24(), mixed, lines24(), OPTS).refused;
@@ -1268,6 +1314,14 @@ test("round 9: verdict precedence, one case per adjacent pair of rules (the firs
     ],
     ["port", (s) => setPortRecord(s.census.A1, null, PID), "mislaunched", /port ownership/],
     ["ple-set", (s) => (s.census.C.ple.sets = 0), "ple-hist", /never logged a set/],
+    [
+      "spec-off",
+      (s) => {
+        for (const a of ARMS) s.census[a].flags = { ...s.census[a].flags, spec: "off" };
+      },
+      "spec-off-fallback",
+      /determinism only; C1 not testable/,
+    ],
     ["determinism", (s) => setRow(s, "A1", 0, OTHER_A), "void-determinism", null],
     [
       "control",
@@ -1320,6 +1374,96 @@ test("round 9: verdict precedence, one case per adjacent pair of rules (the firs
     // and each rule alone fires its own verdict
     expectRule(RULES[i], run([RULES[i][1]]), `${RULES[i][0]} alone`);
   }
+});
+
+// ---- round 11 -----------------------------------------------------------------------------------
+
+test("round 11 (Opus B1/P1): no tail where C's OWN final round was not eligible is not C's fault", () => {
+  // A0 eligible everywhere; on p10-p14 C's drafting drifted (ngram-mod) and its final round accepted
+  // no draft, so it correctly wrote no tail
+  const drifted = () => bLine({ prevRound: "drafted", prevNAcc: 0, tailAvailable: false });
+  const cLines = ids24.map((_, i) => (i >= 10 && i < 15 ? drifted() : tailLine()));
+  const p1 = refuse24({}, lines24(cLines));
+  assert.equal(p1.pre.cExcluded, 0);
+  assert.equal(p1.pre.nonCReasons["C: final round not eligible (drafting differed from A0's)"], 5);
+  assert.equal(p1.refused.verdict, "not-engaged:no-eligible-prompts");
+  assert.equal(gateStatus(p1.refused.verdict), "VOID");
+  // but a C whose OWN round was eligible and still did not restore the tail is charged (STOP past 4)
+  const lazy = ids24.map((_, i) =>
+    i >= 10 && i < 15 ? bLine({ tailAvailable: true }) : tailLine(),
+  );
+  const stop = refuse24({}, lines24(lazy));
+  assert.equal(stop.pre.cReasons["not a strict tail restore"], 5);
+  assert.equal(stop.refused.verdict, "shell-diverged");
+});
+
+test("round 11 (Opus N1/P2b): A1's B differing from A0's at ANY length is a determinism failure", () => {
+  const p2b = refuse24({
+    A1: { p3: { continuation: [1, 2, 3, 4, 9, 9, 9], eosAt: 7, bFinish: "stop" } },
+  });
+  assert.equal(p2b.refused.verdict, "void-determinism");
+  assert.ok(/p3@B/.test(p2b.refused.voidReason));
+});
+
+test("round 11 (Sol bug 2 + Opus N4): prompt content, exact url and distinct launches are bound", () => {
+  const refuse = (records, census = gateCensus(ARMS), re = /refusing to score/) =>
+    assert.throws(() => gateRefusal(records, census, lines24(), OPTS), re);
+  const r1 = recs24();
+  rec(r1, "C").prompts[7].sha256 = tokensSha(["other content"]);
+  refuse(r1, undefined, /C: prompt sha256 values differ/);
+  const r2 = recs24();
+  rec(r2, "A3").url = "http://10.0.0.5:8099"; // right port, another host
+  refuse(r2, undefined, /need exactly http:\/\/127\.0\.0\.1:8099/);
+  // Opus P5: A1's record and log are A0's (the same launch twice)
+  const r3 = recs24();
+  rec(r3, "A1").logStem = "stem-A0";
+  refuse(r3, { ...gateCensus(ARMS), A1: gateCensus(["A0"]).A0 }, /log stems are not distinct/);
+  // the same PID behind two arms
+  const samePid = {
+    ...gateCensus(ARMS),
+    A5: rawCensus([armFlags("A5", "C"), ...ARMED], armPort("A0")),
+  };
+  refuse(recs24(), samePid, /PIDs are not distinct/);
+  // a record whose traffic started before its own port check
+  const r4 = recs24();
+  rec(r4, "A5").startedAt = "2026-09-23T23:59:00.000Z";
+  refuse(r4, undefined, /A5: record startedAt .* is not after its port check/);
+});
+
+test("round 11 (Opus N2 + Sol bug 1): only the preregistered parameters make a verdict", {
+  skip: !fs.existsSync(PREREG.receipt),
+}, () => {
+  const text = fs.readFileSync(PREREG.receipt, "utf8");
+  const prompts = JSON.parse(text).inputsEcho.prompts;
+  const prereg = (over = {}) =>
+    ARMS.map((arm) => ({
+      ...recMeta(arm),
+      horizon: 256,
+      receipt: PREREG.receipt,
+      prompts: prompts.map((p) => row(p.id, { sha256: p.sha256 })),
+      ...over,
+    }));
+  const opts = { minPrompts: 20, nMin: 6, shell: "C", benign: ["A5", "A3"] };
+  assert.deepEqual(preregProblems(prereg(), opts, text), []);
+  assert.deepEqual(receiptProblems(prereg(), text), []);
+  // off-prereg: a short horizon, a looser min-prompts or n-min, another receipt, fewer prompts
+  assert.ok(preregProblems(prereg({ horizon: 16 }), opts, text).some((p) => /^horizon=16/.test(p)));
+  assert.ok(
+    preregProblems(prereg(), { ...opts, minPrompts: 1 }, text).some((p) =>
+      /^min-prompts=1/.test(p),
+    ),
+  );
+  assert.ok(preregProblems(prereg(), { ...opts, nMin: 1 }, text).length > 0);
+  assert.ok(preregProblems(prereg(), opts, `${text} `).some((p) => /^receipt sha256/.test(p)));
+  const limited = prereg();
+  for (const r of limited) r.prompts = r.prompts.slice(0, 20);
+  assert.ok(preregProblems(limited, opts, text).some((p) => /^prompts=20/.test(p)));
+  // prompt content must be the receipt's
+  const swapped = prereg();
+  rec(swapped, "A0").prompts[0].sha256 = tokensSha(["x"]);
+  assert.equal(receiptProblems(swapped, text).length, 1);
+  assert.equal(PREREG.horizon, 256);
+  assert.equal(PREREG.nFirst, 64);
 });
 
 test("N9: feedFiles resets per-log parser state (a pending tail at the end of log 1 never reaches log 2)", async () => {

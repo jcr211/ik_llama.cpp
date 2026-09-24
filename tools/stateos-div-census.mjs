@@ -221,6 +221,8 @@ export function newCensus() {
     portProblem: null, // set by feedFiles: a log without a port record, or a record that is not ok
     cudaErrors: 0,
     logStem: null, // the flags record's logstem= (one log); feedFiles: null unless exactly one log
+    pid: null, // <LogStem>.pid (one log)
+    portCheckedAt: null, // <LogStem>.port mtime, ISO (one log)
     _last: null,
     _tailPending: new Map(),
   };
@@ -543,9 +545,13 @@ export function portProblemOf(c) {
 }
 
 /** Record one log's port evidence (the <LogStem>.port / .pid contents, null = missing) in `c`. */
-export function setPortRecord(c, portText, pidText) {
+export function setPortRecord(c, portText, pidText, checkedAt = null) {
   const problem = portRecordProblem(portText, pidText);
   c.port = { ok: problem === null, detail: problem ?? portText.trim() };
+  // the launched PID and the port check's time (the .port file's mtime): the gate requires distinct
+  // PIDs across arms and each arm's traffic to start after its own port check
+  c.pid = pidText == null ? null : pidText.trim();
+  c.portCheckedAt = portText == null ? null : checkedAt;
 }
 
 const miss = (name, ok, detail) => ({ name, ok: Boolean(ok), detail });
@@ -828,7 +834,13 @@ export async function feedFiles(files) {
     }
     // port evidence: ONLY the <LogStem>.port sidecar, validated against <LogStem>.pid
     const readOrNull = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null);
-    setPortRecord(c, readOrNull(portSidecarOf(f)), readOrNull(pidSidecarOf(f)));
+    const portFile = portSidecarOf(f);
+    setPortRecord(
+      c,
+      readOrNull(portFile),
+      readOrNull(pidSidecarOf(f)),
+      fs.existsSync(portFile) ? fs.statSync(portFile).mtime.toISOString() : null,
+    );
     const rl = readline.createInterface({ input: fs.createReadStream(f), crlfDelay: Infinity });
     for await (const line of rl) feed(c, line);
     const out = stdoutLogOf(f);
@@ -846,9 +858,13 @@ export async function feedFiles(files) {
       bindFailed: c.serverBindFailed,
       port: c.port,
       logStem: c.logStem,
+      pid: c.pid,
+      portCheckedAt: c.portCheckedAt,
     });
   }
   c.logStem = perFile.length === 1 ? perFile[0].logStem : null;
+  c.pid = perFile.length === 1 ? perFile[0].pid : null;
+  c.portCheckedAt = perFile.length === 1 ? perFile[0].portCheckedAt : null;
   const portBad = perFile.filter((p) => !p.port || !p.port.ok);
   c.port =
     perFile.length && !portBad.length

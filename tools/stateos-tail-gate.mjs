@@ -10,14 +10,17 @@
 //      request A never chooses a tail (a tail sits at <= last cached - 2 of the PREVIOUS prompt's
 //      generation, and A diverges near the prompt start), and A0, A1 and C take the same restore path
 //      for A (same prompts in the same order); the tail writer's extra eviction cannot change C's list
-//      below the 32-checkpoint cap. Every arm sends the same request sequence. Caveat: the ngram-mod
-//      draft table is server-lifetime state, fed every request's prompt and output. A0 and A1 see
-//      the same history, so their tables stay identical; only C's table changes, after any benign
-//      difference in C's B continuation. C's later request-A drafts (and verify batch shapes) can then
-//      differ from A0's, and if greedy is not batch-invariant C's request A can differ: that is
-//      charged to C ("request A output differs", against the shared slack), NOT caught by the A1 vs A0
-//      determinism control. Low probability: it needs a chained n_min=4 hit on one of the few hundred
-//      differing buckets out of 4M;
+//      below the 32-checkpoint cap. Every arm sends the same request sequence. Caveat (round 11
+//      correction): the ngram-mod draft table is server-lifetime state, fed every request's prompt
+//      and output, and it pre-empts MTP in the draft chain; the whole table is reset after three
+//      low-acceptance rounds in a row. A0 and A1 see the same history, so their tables stay identical;
+//      C's diverges once C's B continuation differs benignly from A0's - which a working C is EXPECTED
+//      to do on some prompts - and from then on C's tables, draft outcomes and reset timing can differ
+//      wholesale. This is NOT low probability. Two consequences: (a) C's final request-A round can
+//      hold no accepted draft where A0's did, so C writes no tail: rule 8 charges "no strict tail
+//      restore" only when C's OWN line shows an eligible round; (b) C's request-A output can differ
+//      only if greedy is not batch-invariant under different draft/verify shapes - its probability is
+//      unmeasured, it is charged to C, and the A1-vs-A0 control cannot see it;
 //   2. request A: greedy, max_tokens = --n-first, cache_prompt: true -> generated ids g[0..G-1].
 //      After A the slot caches prompt + g[0..G-2] (the last sampled token is never decoded);
 //   3. request B: the forced prompt, built ONCE from arm A0's request-A output:
@@ -53,42 +56,50 @@
 // own cache, so their restore lines are not constrained.
 //
 // VERDICT PRECEDENCE (the first rule that fires decides; tested pairwise in the tools test):
-//   0. inconsistent or missing records - error, exit 1 (checkRecords): exactly one record per arm A0,
-//      A1, C, A5, A3 and no other; one horizon, nFirst and receipt; bRequest == {ignore_eos: true}
-//      in every record; A0's prompt-id list in every
-//      record; url on port 8099; each record's logStem == its --arm-log stem == that .flags logstem=;
+//   0. refusal - error, exit 1:
+//      - checkRecords: exactly one record per arm A0, A1, C, A5, A3 and no other; one horizon, nFirst
+//        and receipt; bRequest == {ignore_eos: true} in every record; A0's prompt ids AND sha256 values
+//        in every record; url exactly http://127.0.0.1:8099; each record's logStem == its --arm-log
+//        stem == that .flags logstem=; distinct log stems and distinct .pid PIDs across the five arms;
+//        each record's startedAt after its own port check (the .port mtime);
+//      - receipt binding: A0's prompt ids and sha256 values == the receipt's inputsEcho.prompts;
+//      - preregistered parameters (PREREG): the default receipt (by sha256), 24 prompts, horizon 256,
+//        n-first 64, min-prompts 20, n-min 6, shell C, benign A5,A3. Otherwise "non-preregistered
+//        parameters", or with --smoke a run labelled SMOKE that exits 4 (never 0 or 2);
 //   1. CUDA error lines in any arm's log - `cuda-errors` STOP;
 //   2. flags/spec mismatch - `mislaunched` VOID: recorded flags differ from the arm's required set
 //      (C: DIV_LOG + TAIL_SNAPSHOT; others DIV_LOG only; all PLE_HIST_REWIND + PLE_HIST_LOG; ExtraArgs
 //      A5 '-no-fmoe -no-fug', A3 '-fa 0', others none), no flags record, or the arms' spec states are
-//      mixed/unknown. All spec=off = the plan's spec-off fallback run, labelled "spec-off fallback:
-//      determinism only; C1 not testable" (no drafted rounds = no tail; C1 stays off by default);
+//      mixed/unknown;
 //   3. a `[ple-hist] reset` at pos > 0 in any arm - `ple-hist` STOP;
 //   4. a .port record missing or not (ok, port 8099, exactly one listener == .pid) - `mislaunched` VOID;
 //   5. no `[ple-hist] set` line in an arm - `ple-hist` STOP;
-//   6. A1 differs from A0 (request A where both As succeeded; B continuation where both rows are valid
-//      with the same B) - `void-determinism` VOID;
-//   7. invalid A0/A1 rows (control failures, never charged to C) > slack - `insufficient-control` VOID;
-//   8. C-attributable exclusions > the ONE shared slack (prompts - min-prompts, 24 - 20 = 4) -
+//   6. every arm spec=off (the plan's fallback) - `spec-off-fallback` VOID, "spec-off fallback:
+//      determinism only; C1 not testable", with determinism PASS/FAIL (rule 7's comparison); never C
+//      exclusions, never C1 scoring (no drafted rounds = no tail; C1 stays off by default);
+//   7. A1 differs from A0 (request A where both As succeeded; B continuation where both B requests
+//      succeeded on the same B, at any length) - `void-determinism` VOID;
+//   8. invalid A0/A1 rows (control failures, never charged to C) > slack - `insufficient-control` VOID;
+//   9. C-attributable exclusions > the ONE shared slack (prompts - min-prompts, 24 - 20 = 4) -
 //      `shell-diverged` STOP. C reasons (only where A0's and A1's rows are valid and A1 reproduced A0's
 //      request A): C's row invalid; C's request A differs from A0's; C's B differs; on a prompt A0's line
-//      shows as eligible (prev_round=drafted, prev_n_acc >= 1), C's request-B line missing, not at
-//      tail_dist=1, or not a strict tail restore (chosen_origin=tail, outcome=restored, reason=tail).
-//      Each is reported with prompt, request (A or B) and reason; up to the slack = counted drops;
-//   9. fewer than --min-prompts scorable strict tail restores (the shortfall is not C's: A0/A1 lines,
-//      A0 showing no eligible tail, a benign arm's different B) - `not-engaged:no-eligible-prompts` VOID;
-//  10. score (v2 rule): compatible-at-horizon PASS; shellWorse STOP; insufficient-sample VOID.
-// Exit codes: PASS 0, STOP 2, VOID 3 (the gate did not answer; not a C1 kill), refusal 1.
+//      shows as eligible (prev_round=drafted, prev_n_acc >= 1): C's request-B line missing or not at
+//      tail_dist=1, or - only when C's OWN line also shows an eligible round - not a strict tail
+//      restore (chosen_origin=tail, outcome=restored, reason=tail). Each is reported with prompt,
+//      request (A or B) and reason; up to the slack = counted drops;
+//  10. fewer than --min-prompts scorable strict tail restores (the shortfall is not C's: A0/A1 lines,
+//      A0 showing no eligible tail, C's own round not eligible, a benign arm's different B) -
+//      `not-engaged:no-eligible-prompts` VOID;
+//  11. score (v2 rule): compatible-at-horizon PASS; shellWorse STOP; insufficient-sample VOID.
+// Exit codes: PASS 0, STOP 2, VOID 3 (the gate did not answer; not a C1 kill), refusal 1, SMOKE 4.
 //
 // Usage:
 //   node tools/stateos-tail-gate.mjs run --arm A0 --log-stem <stem> --out <dir>
 //        [--url http://127.0.0.1:8099] [--receipt <v2 receipt.json>] [--n-first 64] [--horizon 256]
 //   node tools/stateos-tail-gate.mjs run --arm C --log-stem <stem> --out <dir> [--reference <dir>/arm-A0.json] ...
 //   node tools/stateos-tail-gate.mjs score --out <dir> --arm-log A0=<log> --arm-log A1=<log>
-//        --arm-log C=<log> --arm-log A5=<log> --arm-log A3=<log> [--lib <noise-floor-lib.mjs>]
-//        [--shell C] [--benign A5,A3] [--min-prompts 20] [--n-min 6]
-//   (--limit N exists for smoke runs only: a limited record set is refused by score unless every arm
-//   used the same limit)
+//        --arm-log C=<log> --arm-log A5=<log> --arm-log A3=<log> [--lib <noise-floor-lib.mjs>] [--smoke]
+//   (the preregistered values are the defaults; --limit, other horizons etc. only make a --smoke run)
 // The API key comes from LONGSPEAR_API_KEY, else from the --api-key line of
 // D:/AI/llama-swap/config.yaml; it is never printed or written.
 
@@ -131,6 +142,7 @@ export function parseArgs(argv) {
     benign: ["A5", "A3"],
     minPrompts: 20,
     nMin: 6,
+    smoke: false,
     armLogs: {},
   };
   for (let i = 1; i < argv.length; i += 1) {
@@ -154,6 +166,7 @@ export function parseArgs(argv) {
     else if (flag === "--benign") o.benign = value().split(",").filter(Boolean);
     else if (flag === "--min-prompts") o.minPrompts = Number(value());
     else if (flag === "--n-min") o.nMin = Number(value());
+    else if (flag === "--smoke") o.smoke = true;
     else if (flag === "--arm-log") {
       const v = value();
       const eq = v.indexOf("=");
@@ -270,6 +283,71 @@ async function post(url, key, route, body) {
 // so another end-of-generation token can still end B early: rowProblem's EOS/short rule stays as the
 // backstop.
 export const B_REQUEST = Object.freeze({ ignore_eos: true });
+
+// every record's url, exactly (host AND port; round 11)
+export const MODEL_URL = `http://127.0.0.1:${MODEL_PORT}`;
+
+// The preregistered step-4 parameters (round 11, coordinator ruling). Anything else is refused as a
+// verdict (exit 1, "non-preregistered parameters"), or runs only with --smoke, labelled SMOKE, exit 4
+// (never 0 or 2).
+export const PREREG = Object.freeze({
+  receipt: DEFAULT_RECEIPT,
+  receiptSha256: "7acd327043cb01c860f403380d3df0a50306e2ee1c06a818549ee26eb44a7cf3",
+  prompts: 24,
+  horizon: 256,
+  nFirst: 64,
+  minPrompts: 20,
+  nMin: 6,
+  shell: "C",
+  benign: Object.freeze(["A5", "A3"]),
+});
+
+const sha256Hex = (text) => crypto.createHash("sha256").update(text).digest("hex");
+
+/**
+ * Prompt content binding (round 11): A0's rows (ids and sha256, in order) must equal the receipt's
+ * inputsEcho.prompts; checkRecords binds every other arm to A0's. receiptText: the receipt file's
+ * contents (null = unreadable). Returns the problems (empty = bound).
+ */
+export function receiptProblems(records, receiptText) {
+  const a0 = records.find((r) => r.arm === "A0");
+  if (!a0) return ["no A0 record"];
+  if (receiptText == null) return [`receipt ${a0.receipt} unreadable`];
+  let prompts;
+  try {
+    prompts = JSON.parse(receiptText)?.inputsEcho?.prompts;
+  } catch {
+    prompts = null;
+  }
+  if (!Array.isArray(prompts)) return [`receipt ${a0.receipt} has no inputsEcho.prompts`];
+  const want = JSON.stringify(prompts.map((p) => [p.id, p.sha256]));
+  const got = JSON.stringify(a0.prompts.map((p) => [p.id, p.sha256 ?? null]));
+  return want === got
+    ? []
+    : [
+        `A0's prompt ids/sha256 differ from the receipt's (${a0.prompts.length} rows vs ${prompts.length})`,
+      ];
+}
+
+/** Differences from PREREG (empty = the preregistered gate). receiptText as in receiptProblems. */
+export function preregProblems(records, { minPrompts, nMin, shell, benign }, receiptText) {
+  const a0 = records.find((r) => r.arm === "A0");
+  const bad = [];
+  const want = (name, got, need) => {
+    if (JSON.stringify(got) !== JSON.stringify(need))
+      bad.push(`${name}=${JSON.stringify(got)} (preregistered ${JSON.stringify(need)})`);
+  };
+  want("receipt", a0?.receipt, PREREG.receipt);
+  want("receipt sha256", receiptText == null ? null : sha256Hex(receiptText), PREREG.receiptSha256);
+  want("prompts", a0?.prompts.length, PREREG.prompts);
+  want("horizon", a0?.horizon, PREREG.horizon);
+  want("n-first", a0?.nFirst, PREREG.nFirst);
+  want("min-prompts", minPrompts, PREREG.minPrompts);
+  want("n-min", nMin, PREREG.nMin);
+  want("shell", shell, PREREG.shell);
+  want("benign", benign, PREREG.benign);
+  return bad;
+}
 
 // The spec-off fallback (every arm -SpecOff) checks determinism only: the tail comes from the spec
 // shadow and needs a drafted round, so with speculation off C1 cannot engage (coordinator ruling).
@@ -533,22 +611,23 @@ const requestAUsable = (row) =>
 /**
  * Determinism control (merged plan section 4 step 4): A1 must reproduce A0 - request A's ids on every
  * prompt where both request As succeeded (even when a request B then failed), and B's continuation
- * where both rows are valid and sent the same B. Returns the failing prompts [{id, request}]. Checked
+ * where both B requests succeeded on the same B, at any length. Returns the failing prompts [{id, request}]. Checked
  * BEFORE any C attribution or slack: spec-on nondeterminism would otherwise show up as C differences.
  */
 export function determinismFailures(records) {
   const a0 = records.find((r) => r.arm === "A0");
   const a1 = records.find((r) => r.arm === "A1");
   if (!a0 || !a1) return [];
-  const horizon = requireHorizon(a0.horizon);
   const out = [];
   for (const p of a0.prompts) {
     const q = a1.prompts.find((x) => x.id === p.id);
     if (requestAUsable(p) && requestAUsable(q) && !sameIds(p.generated, q.generated)) {
       out.push({ id: p.id, request: "A" });
     } else if (
-      !rowProblem(p, horizon) &&
-      !rowProblem(q, horizon) &&
+      // both B requests succeeded on the same B: any difference, at ANY length (an EOS-ended or short
+      // continuation included), is nondeterminism (round 11, Opus N1)
+      p?.ok &&
+      q?.ok &&
       p.bSha === q.bSha &&
       !sameIds(p.continuation, q.continuation)
     ) {
@@ -673,7 +752,11 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
       exclude(id, false, null, `${otherB.arm}: request B differs from A0's`);
       continue;
     }
-    // C's request-B line: a strict tail restore scores; otherwise C's fault iff A0 shows a tail
+    // C's request-B line: a strict tail restore scores. Otherwise, where A0 shows a tail: a missing or
+    // misplaced line is C's fault; "no strict tail restore" is C's fault ONLY when C's OWN line shows an
+    // eligible final round (round 11, Opus B1): C's server-lifetime ngram-mod table drifts after any
+    // benign B divergence, so C's final round can legitimately hold no accepted draft (no tail to
+    // write) while A0's did - that prompt is not C-attributable.
     const mc = matched[shell]?.[id];
     if (mc && mc.tailDist === 1 && isTailRestore(mc)) {
       tailRestores += 1;
@@ -681,14 +764,25 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
     }
     if (eligibleInA0(a0Line)) {
       const lp = lineProblem(mc);
-      exclude(
-        id,
-        true,
-        "B",
-        lp ? lp.replace(/tail_dist=.*$/, "tail_dist != 1") : "not a strict tail restore",
-        lp ??
+      if (lp) {
+        exclude(id, true, "B", lp.replace(/tail_dist=.*$/, "tail_dist != 1"), lp);
+      } else if (eligibleInA0(mc)) {
+        exclude(
+          id,
+          true,
+          "B",
+          "not a strict tail restore",
           `${mc.chosenOrigin}/${mc.outcome}/${mc.reason}${mc.tailAvailable ? "" : ", no tail written"}`,
-      );
+        );
+      } else {
+        exclude(
+          id,
+          false,
+          null,
+          `${shell}: final round not eligible (drafting differed from A0's)`,
+          `prev_round=${mc.prevRound} prev_n_acc=${mc.prevNAcc}`,
+        );
+      }
     } else {
       exclude(
         id,
@@ -775,7 +869,26 @@ export function checkRecords(records, censusByArm, { shell, benign }) {
   if (!bad.length) {
     const a0 = records.find((r) => r.arm === "A0");
     const ids = JSON.stringify(a0.prompts.map((p) => p.id));
+    // prompt CONTENT: every row carries the prompt's sha256, equal to A0's (round 11, Sol bug 2)
+    const shas = JSON.stringify(a0.prompts.map((p) => p.sha256 ?? null));
+    if (a0.prompts.some((p) => typeof p.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(p.sha256)))
+      bad.push("A0: a prompt row has no sha256");
+    // distinct launches (round 11, Opus N4): distinct log stems and PIDs, and each arm's traffic
+    // started after its own port check (the .port mtime)
+    const stems = records.map((r) => r.logStem);
+    if (new Set(stems).size !== stems.length)
+      bad.push(`log stems are not distinct across arms (${stems.join(", ")})`);
+    const pids = records.map((r) => censusByArm?.[r.arm]?.pid).filter((p) => p != null);
+    if (new Set(pids).size !== pids.length)
+      bad.push(`launched PIDs are not distinct across arms (${pids.join(", ")})`);
     for (const r of records) {
+      if (JSON.stringify(r.prompts.map((p) => p.sha256 ?? null)) !== shas)
+        bad.push(`${r.arm}: prompt sha256 values differ from A0's`);
+      const checkedAt = censusByArm?.[r.arm]?.portCheckedAt ?? null;
+      if (checkedAt !== null && !(Date.parse(r.startedAt) > Date.parse(checkedAt)))
+        bad.push(
+          `${r.arm}: record startedAt ${JSON.stringify(r.startedAt ?? null)} is not after its port check ${checkedAt}`,
+        );
       for (const k of ["horizon", "nFirst", "receipt"]) {
         if (r[k] !== a0[k])
           bad.push(`${r.arm}: ${k}=${JSON.stringify(r[k])} (A0: ${JSON.stringify(a0[k])})`);
@@ -789,14 +902,8 @@ export function checkRecords(records, censusByArm, { shell, benign }) {
         bad.push(
           `${r.arm}: prompt ids differ from A0's (${r.prompts.length} vs ${a0.prompts.length})`,
         );
-      let port = null;
-      try {
-        port = new URL(r.url).port;
-      } catch {
-        port = null;
-      }
-      if (port !== String(MODEL_PORT))
-        bad.push(`${r.arm}: url ${JSON.stringify(r.url)} is not on port ${MODEL_PORT}`);
+      if (r.url !== MODEL_URL)
+        bad.push(`${r.arm}: url ${JSON.stringify(r.url)} (need exactly ${MODEL_URL})`);
       const logStem = censusByArm?.[r.arm]?.logStem ?? null;
       if (!r.logStem || r.logStem !== logStem)
         bad.push(
@@ -817,9 +924,10 @@ export function checkRecords(records, censusByArm, { shell, benign }) {
  * Everything before scoring, in the full precedence order (round 9; see the header):
  *   0. checkRecords (throws: exit 1);
  *   1-5. preScoreChecks (CUDA STOP, flags/spec VOID, PLE reset STOP, port VOID, PLE set STOP);
- *   6. determinism: A1 differing from A0 = `void-determinism` (VOID) - BEFORE any C attribution, so
+ *   6. spec-off fallback (every arm spec=off): `spec-off-fallback` (VOID) with determinism PASS/FAIL;
+ *   7. determinism: A1 differing from A0 = `void-determinism` (VOID) - BEFORE any C attribution, so
  *      spec-on nondeterminism is never charged to C;
- *   7-9. preVerdict (insufficient-control VOID, C slack STOP, not-engaged VOID).
+ *   8-10. preVerdict (insufficient-control VOID, C slack STOP, not-engaged VOID).
  * Returns {pre, refused, specOff}: refused is a verdict object, or null to score with pre.drop; specOff
  * is true when every arm was launched with -SpecOff (the plan's spec-off fallback run).
  */
@@ -830,17 +938,28 @@ export function gateRefusal(records, censusByArm, restoresByArm, { shell, benign
   const checks = preScoreChecks(records, censusByArm, { shell });
   if (checks) return { pre, refused: checks, specOff };
   const nd = determinismFailures(records);
+  const ndList = nd.map((f) => `${f.id}@${f.request}`).join(", ");
+  // the spec-off fallback answers ONE question, determinism, and stops here: never C exclusions,
+  // never C1 scoring (round 11)
+  if (specOff) {
+    return {
+      pre,
+      specOff,
+      refused: {
+        verdict: "spec-off-fallback",
+        determinism: nd.length ? "FAIL" : "PASS",
+        determinismFailures: nd,
+        voidReason: `${SPEC_OFF_LABEL}; determinism ${nd.length ? `FAIL: A1 differed from A0 on ${nd.length} prompt(s) (${ndList}) even with speculation off` : "PASS: A1 reproduced A0 on every prompt"}`,
+      },
+    };
+  }
   if (nd.length) {
     return {
       pre,
       specOff,
       refused: {
         verdict: "void-determinism",
-        voidReason: `A1 differed from A0 on ${nd.length} prompt(s) (${nd.map((f) => `${f.id}@${f.request}`).join(", ")}): ${
-          specOff
-            ? "greedy is not deterministic even with speculation off"
-            : "spec-on greedy is not deterministic; rerun once with speculation off in all arms (launcher -SpecOff; merged plan section 4 step 4)"
-        }`,
+        voidReason: `A1 differed from A0 on ${nd.length} prompt(s) (${ndList}): spec-on greedy is not deterministic; rerun once with speculation off in all arms (launcher -SpecOff; merged plan section 4 step 4)`,
       },
     };
   }
@@ -1103,8 +1222,20 @@ async function runScore(o) {
     benign: o.benign,
     minPrompts: o.minPrompts,
   });
+  // rule 0, continued: prompt content bound to the receipt; preregistered parameters, else refuse
+  // (exit 1) - or, with --smoke, run labelled SMOKE with exit 4 (never 0 or 2)
+  const a0 = records.find((r) => r.arm === "A0");
+  const receiptText = fs.existsSync(a0.receipt) ? fs.readFileSync(a0.receipt, "utf8") : null;
+  const unbound = receiptProblems(records, receiptText);
+  if (unbound.length) throw new Error(`refusing to score: ${unbound.join("; ")}`);
+  const offPrereg = preregProblems(records, o, receiptText);
+  if (offPrereg.length && !o.smoke) {
+    throw new Error(
+      `refusing to score: non-preregistered parameters: ${offPrereg.join("; ")} (use --smoke for a labelled smoke run)`,
+    );
+  }
   const horizon = records[0].horizon; // equal in every record (checkRecords)
-  const runLabel = specOff ? SPEC_OFF_LABEL : "standard (spec on)";
+  const runLabel = `${o.smoke ? "SMOKE (not the gate) - " : ""}${specOff ? SPEC_OFF_LABEL : "standard (spec on)"}`;
   const result = refused
     ? { ...refused, rule: { outcome: "not-scored", reason: "" } }
     : score(records, lib, {
@@ -1115,13 +1246,29 @@ async function runScore(o) {
         nMin: o.nMin,
         drop: pre.drop,
       });
-  const status = gateStatus(result.verdict);
+  const status = o.smoke ? "SMOKE" : gateStatus(result.verdict);
   const file = path.join(o.out, "gate.json");
   const report = {
     scoredAt: new Date().toISOString(),
     lib: o.lib,
     armLogs: o.armLogs,
     run: runLabel,
+    // every parameter the verdict depends on, and whether it is the preregistered gate
+    parameters: {
+      preregistered: offPrereg.length === 0 && !o.smoke,
+      offPreregistration: offPrereg,
+      receipt: a0.receipt,
+      receiptSha256: receiptText == null ? null : sha256Hex(receiptText),
+      prompts: a0.prompts.length,
+      horizon,
+      nFirst: a0.nFirst,
+      minPrompts: o.minPrompts,
+      nMin: o.nMin,
+      shell: o.shell,
+      benign: o.benign,
+      bRequest: a0.bRequest,
+      specOff,
+    },
     status,
     engagement: {
       tailRestores: pre.tailRestores,
@@ -1159,11 +1306,12 @@ async function runScore(o) {
     `verdict [${runLabel}]: ${result.verdict}${result.voidReason ? ` (${result.voidReason})` : ""}\n`,
   );
   process.stdout.write(`rule: ${result.rule.outcome} - ${result.rule.reason ?? ""}\n`);
+  if (result.determinism) process.stdout.write(`determinism: ${result.determinism}\n`);
   process.stdout.write(
-    `status: ${status}${status === "VOID" ? " (the gate did not answer; not a C1 kill)" : ""}\n`,
+    `status: ${status}${status === "VOID" ? " (the gate did not answer; not a C1 kill)" : status === "SMOKE" ? " (not the preregistered gate; no verdict)" : ""}\n`,
   );
   process.stdout.write(`wrote ${file}\n`);
-  process.exitCode = status === "PASS" ? 0 : status === "VOID" ? 3 : 2;
+  process.exitCode = status === "SMOKE" ? 4 : status === "PASS" ? 0 : status === "VOID" ? 3 : 2;
 }
 
 const isEntryPoint =
