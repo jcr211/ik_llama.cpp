@@ -13,11 +13,13 @@
 // This header is pure (no llama or server dependencies) so tests/ can include it directly.
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 inline bool stateos_env_flag(const char * name) {
     const char * v = std::getenv(name);
@@ -222,6 +224,118 @@ auto stateos_find_restore(List & list, int64_t thold, Usable && usable) -> declt
         }
     }
     return it;
+}
+
+// ---- tail crosscheck (LONGSPEAR_STATEOS_TAIL_XCHECK=1): read a PARTIAL_ONLY payload --------------
+
+struct stateos_row_view {
+    int32_t  type     = -1;
+    uint64_t row_size = 0;
+    uint32_t n_rows   = 0;
+    size_t   offset   = 0; // byte offset of the rows in the payload
+};
+
+struct stateos_partial_view {
+    uint32_t cell_count = 0;
+    int32_t  pos_max    = -1;
+    std::vector<stateos_row_view> layers;
+};
+
+// Walks a single-sequence PARTIAL_ONLY payload as llama_data_write::write_kv_cache emits it when no
+// layer is SWA-compacted and the arch keeps no position-indexed side state (qwen4exp): u32 cell_count,
+// 8 B/cell metadata, u32 v_state, u32 n_layer, empty K (and V) headers, u32 qnext flag, per-layer row
+// blocks, u32 DSA marker. Returns false on anything else (then the caller reports, never guesses).
+inline bool stateos_parse_partial(const uint8_t * data, size_t size, stateos_partial_view & out) {
+    size_t off = 0;
+    auto take = [&](void * dst, size_t n) {
+        if (size - off < n) {
+            return false;
+        }
+        std::memcpy(dst, data + off, n);
+        off += n;
+        return true;
+    };
+    out = stateos_partial_view();
+    if (!take(&out.cell_count, 4) || (size_t) out.cell_count > (size - off) / 8) {
+        return false;
+    }
+    for (uint32_t i = 0; i < out.cell_count; ++i) {
+        int32_t  pos = 0;
+        uint32_t n_seq = 0;
+        if (!take(&pos, 4) || !take(&n_seq, 4) || n_seq != 0) {
+            return false;
+        }
+        out.pos_max = pos > out.pos_max ? pos : out.pos_max;
+    }
+    uint32_t v_state = 0, n_layer = 0;
+    if (!take(&v_state, 4) || !take(&n_layer, 4) || v_state > 2 || n_layer > 4096) {
+        return false;
+    }
+    for (uint32_t il = 0; il < n_layer; ++il) {
+        int32_t  type = 0;
+        uint64_t row = 0;
+        if (!take(&type, 4) || !take(&row, 8) || type != -1 || row != 0) {
+            return false; // a K row block: compacted layer or full state
+        }
+    }
+    for (uint32_t il = 0; v_state != 2 && il < n_layer; ++il) {
+        int32_t  type = 0;
+        uint64_t row = 0;
+        uint32_t el = 0, embd = 0;
+        const bool ok = v_state == 0 ? take(&type, 4) && take(&row, 8) && row == 0
+                                     : take(&type, 4) && take(&el, 4) && take(&embd, 4) && el == 0 && embd == 0;
+        if (!ok || type != -1) {
+            return false;
+        }
+    }
+    uint32_t qnext = 0;
+    if (!take(&qnext, 4) || qnext > 1) {
+        return false;
+    }
+    for (uint32_t il = 0; qnext == 1 && il < n_layer; ++il) {
+        stateos_row_view v;
+        if (!take(&v.type, 4) || !take(&v.row_size, 8) || !take(&v.n_rows, 4)) {
+            return false;
+        }
+        if (v.n_rows > 0 && (v.row_size == 0 || v.row_size > (size - off) / v.n_rows)) {
+            return false;
+        }
+        v.offset = off;
+        off += (size_t) v.n_rows * (size_t) v.row_size;
+        out.layers.push_back(v);
+    }
+    uint32_t dsa = 0;
+    return take(&dsa, 4) && off == size;
+}
+
+struct stateos_row_diff {
+    size_t n          = 0;    // compared elements (f32) or bytes (other types)
+    size_t n_bitequal = 0;
+    double rel_l2     = -1.0; // ||a - b|| / ||b|| for f32 rows, -1 otherwise
+};
+
+// Compare one layer's rows; b is the reference (the flag-off path). type 0 = GGML_TYPE_F32.
+inline stateos_row_diff stateos_compare_rows(const uint8_t * a, const uint8_t * b, size_t bytes, int32_t type) {
+    stateos_row_diff d;
+    if (type != 0 || bytes % 4 != 0) {
+        d.n = bytes;
+        for (size_t i = 0; i < bytes; ++i) {
+            d.n_bitequal += a[i] == b[i];
+        }
+        return d;
+    }
+    d.n = bytes / 4;
+    double num = 0.0, den = 0.0;
+    for (size_t i = 0; i < d.n; ++i) {
+        float x = 0.0f, y = 0.0f;
+        std::memcpy(&x, a + 4*i, 4);
+        std::memcpy(&y, b + 4*i, 4);
+        d.n_bitequal += std::memcmp(a + 4*i, b + 4*i, 4) == 0;
+        num += ((double) x - (double) y) * ((double) x - (double) y);
+        den += (double) y * (double) y;
+    }
+    d.rel_l2 = den > 0.0 ? std::sqrt(num / den) : (num > 0.0 ? 1.0 : 0.0);
+    return d;
 }
 
 // ---- SHA-256 (FIPS 180-4) --------------------------------------------------------------------

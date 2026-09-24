@@ -3789,6 +3789,8 @@ void server_context::apply_checkpoint(server_slot & slot) {
             llama_pos   stateos_chosen_pos_max = -1;
             double      stateos_restore_ms     = 0.0;
             const char * stateos_outcome       = "reset:no-checkpoint";
+            int         stateos_restored_origin  = -1;
+            llama_pos   stateos_restored_pos_max = -1;
 
             // search for a context checkpoint (newest with pos_max below the threshold). A tail snapshot
             // (LONGSPEAR_STATEOS_TAIL_SNAPSHOT=1 only) must still match the cached token prefix it was
@@ -3837,24 +3839,41 @@ void server_context::apply_checkpoint(server_slot & slot) {
                     stateos_outcome = "reset:verify-failed";
                 }
 
+                // the checkpoint whose state is live from here on; the diagnostic crosscheck
+                // (LONGSPEAR_STATEOS_TAIL_XCHECK=1) ends on the flag-off choice instead of the tail
+                auto use = it;
                 if (!do_reset) {
                     stateos_outcome    = "restored";
                     stateos_restore_ms = (ggml_time_us() - t_start) / 1000.0;
+                    if (it->origin == STATEOS_ORIGIN_TAIL && stateos_tail_xcheck()) {
+                        use = stateos_tail_xcheck_run(slot, it, stateos_d, is_dsv4 || is_openpangu ? pos_next : pos_min_thold);
+                        if (use == slot.server_cached_prompt.checkpoints.rend()) {
+                            do_reset = true;
+                            stateos_outcome = "reset:xcheck-flag-off";
+                        } else {
+                            stateos_outcome = "restored:xcheck-flag-off";
+                        }
+                    }
+                }
+
+                if (!do_reset) {
+                    stateos_restored_origin  = use->origin;
+                    stateos_restored_pos_max = use->pos_max;
                     if (is_dsv4 || is_openpangu) {
-                        pos_next = std::min(pos_next, it->pos_max + 1);
+                        pos_next = std::min(pos_next, use->pos_max + 1);
                     } else {
-                        pos_next = std::min(pos_next, std::max(it->pos_min + 1, it->pos_max));
+                        pos_next = std::min(pos_next, std::max(use->pos_min + 1, use->pos_max));
                     }
                     slot.n_past = slot.cache_tokens.size_up_to_pos(pos_next);
 
                     {
                         const llama_pos pos_next_prompt = std::min(
                             slot.prompt_tokens.pos_next(slot.n_past_prompt),
-                            it->pos_max_prompt + 1);
+                            use->pos_max_prompt + 1);
                         slot.n_past_prompt = slot.prompt_tokens.size_up_to_pos(pos_next_prompt);
                     }
 
-                    slot.checkpoint_pos = it->pos_max;
+                    slot.checkpoint_pos = use->pos_max;
 
                     // LONGSPEAR (Pro r3 §5.2): the restore above rewinds only the TARGET context; the MTP
                     // companion KV, its cached last token/embedding and hidden cache must be invalidated
@@ -3863,7 +3882,7 @@ void server_context::apply_checkpoint(server_slot & slot) {
                         common_speculative_mtp_invalidate(slot.spec, slot.id, pos_next);
                     }
 
-                    SLT_WRN(slot, "restored context checkpoint took  %.2f ms (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_past = %d, size = %.3f MiB)\n", (ggml_time_us() - t_start) / 1000.0, it->pos_min, it->pos_max, it->n_tokens, slot.n_past, (float)checkpoint_size / 1024 / 1024);
+                    SLT_WRN(slot, "restored context checkpoint took  %.2f ms (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_past = %d, size = %.3f MiB)\n", (ggml_time_us() - t_start) / 1000.0, use->pos_min, use->pos_max, use->n_tokens, slot.n_past, (float)use->data.size() / 1024 / 1024);
                 }
             }
 
@@ -3891,12 +3910,12 @@ void server_context::apply_checkpoint(server_slot & slot) {
             if (stateos_div_log()) {
                 // gap = common tokens that must be re-prefilled: D - (restored pos_max + 1), or all of D on a reset
                 const bool restored = !do_reset;
-                const int32_t gap = restored ? stateos_d - (stateos_chosen_pos_max + 1) : stateos_d;
+                const int32_t gap = restored ? stateos_d - (stateos_restored_pos_max + 1) : stateos_d;
                 fprintf(stderr, "%s chosen_origin=%s chosen_pos_max=%d gap=%d restore_ms=%.2f reason=%s outcome=%s%s\n",
                     stateos_head.c_str(),
                     stateos_chosen_origin < 0 ? "none" : stateos_origin_name(stateos_chosen_origin),
                     stateos_chosen_pos_max, gap, stateos_restore_ms,
-                    restored ? stateos_origin_name(stateos_chosen_origin) : "none",
+                    restored ? stateos_origin_name(stateos_restored_origin) : "none",
                     stateos_outcome, stateos_wins.c_str());
             }
         }
@@ -4101,6 +4120,126 @@ void server_context::create_tail_snapshot(server_slot & slot) {
     fprintf(stderr, "[stateos-div] event=create slot=%d task=%d origin=tail pos_min=%d pos_max=%d n_tokens=%" PRId64 " bytes=%zu ms=%.2f n_ckpt=%d cache_pos_max=%d\n",
         slot.id, slot.id_task, cur.pos_min, cur.pos_max, cur.n_tokens, cur.data.size(),
         (ggml_time_us() - t_start) / 1000.0, (int) ckpts.size(), in.cache_pos_max);
+}
+
+// ---- LONGSPEAR State-OS v2 tail crosscheck (LONGSPEAR_STATEOS_TAIL_XCHECK=1 only) ----------------
+
+// decode the cached tokens at positions [from, to]; the tail snapshot requires a text-only cache, so
+// cache index == position
+static bool stateos_decode_cached(llama_context * ctx, const server_slot & slot, llama_pos from, llama_pos to) {
+    if (to < from) {
+        return true;
+    }
+    const int32_t n_batch = (int32_t) llama_n_batch(ctx);
+    llama_batch b = llama_batch_init(n_batch, 0, 1);
+    bool ok = true;
+    for (llama_pos p0 = from; ok && p0 <= to; p0 += n_batch) {
+        common_batch_clear(b);
+        const llama_pos p1 = std::min<llama_pos>(to, p0 + n_batch - 1);
+        for (llama_pos p = p0; p <= p1; ++p) {
+            common_batch_add(b, slot.cache_tokens[(size_t) p], p, { slot.id }, p == p1);
+        }
+        ok = llama_decode(ctx, b) == 0;
+    }
+    llama_batch_free(b);
+    return ok;
+}
+
+static bool stateos_snapshot_partial(llama_context * ctx, llama_seq_id seq, std::vector<uint8_t> & out) {
+    const size_t size = llama_state_seq_get_size(ctx, seq, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+    out.resize(size);
+    return size > 0 && llama_state_seq_get_data(ctx, out.data(), size, seq, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) == size;
+}
+
+static bool stateos_restore_checkpoint(llama_context * ctx, const server_slot & slot, const server_prompt_checkpoint & c) {
+    const size_t n = llama_state_seq_set_data(ctx, c.data.data(), c.data.size(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+    return n == c.data.size() && llama_kv_cache_seq_pos_max(ctx, slot.id) == c.pos_max;
+}
+
+std::list<server_prompt_checkpoint>::reverse_iterator server_context::stateos_tail_xcheck_run(server_slot & slot,
+        std::list<server_prompt_checkpoint>::reverse_iterator tail, llama_pos d, llama_pos search_thold) {
+    auto & ckpts = slot.server_cached_prompt.checkpoints;
+    const llama_pos x = d - 1; // the last position both paths share before the divergence
+    const int64_t t_start = ggml_time_us();
+
+    // the flag-off choice: the newest non-tail checkpoint below the same threshold
+    const auto ref = stateos_find_restore(ckpts, search_thold,
+        [](const server_prompt_checkpoint & c) { return c.origin != STATEOS_ORIGIN_TAIL; });
+    const llama_pos ref_pos = ref == ckpts.rend() ? -1 : ref->pos_max;
+    const char * ref_origin = ref == ckpts.rend() ? "none" : stateos_origin_name(ref->origin);
+
+    auto report_skip = [&](const char * why) {
+        fprintf(stderr, "[ckpt-xcheck] origin=tail slot=%d task=%d skip=%s x=%d tail_pos=%d ref_origin=%s ref_pos=%d\n",
+            slot.id, slot.id_task, why, x, tail->pos_max, ref_origin, ref_pos);
+    };
+
+    if (ref == ckpts.rend()) {
+        // the flag-off path reprocesses from scratch: nothing to compare with, continue as it would
+        report_skip("flag-off-reset");
+        return ckpts.rend();
+    }
+
+    std::vector<uint8_t> a;
+    std::vector<uint8_t> b;
+    const char * why = nullptr;
+    if (!stateos_decode_cached(ctx, slot, tail->pos_max + 1, x)) {
+        why = "tail-decode";
+    } else if (!stateos_snapshot_partial(ctx, slot.id, a)) {
+        why = "tail-snapshot";
+    } else if (!stateos_restore_checkpoint(ctx, slot, *ref)) {
+        why = "ref-restore";
+    } else if (!stateos_decode_cached(ctx, slot, ref->pos_max + 1, x)) {
+        why = "ref-decode";
+    } else if (!stateos_snapshot_partial(ctx, slot.id, b)) {
+        why = "ref-snapshot";
+    }
+
+    if (why == nullptr) {
+        stateos_partial_view va;
+        stateos_partial_view vb;
+        if (!stateos_parse_partial(a.data(), a.size(), va) || !stateos_parse_partial(b.data(), b.size(), vb)) {
+            why = "parse";
+        } else if (va.cell_count != vb.cell_count || va.pos_max != x || vb.pos_max != x || va.layers.size() != vb.layers.size()) {
+            why = "meta-mismatch";
+        } else {
+            size_t n_layers = 0;
+            size_t n_equal_layers = 0;
+            double max_rel = 0.0;
+            for (size_t il = 0; il < va.layers.size() && why == nullptr; ++il) {
+                const auto & la = va.layers[il];
+                const auto & lb = vb.layers[il];
+                if (la.type != lb.type || la.row_size != lb.row_size || la.n_rows != lb.n_rows) {
+                    why = "layout-mismatch";
+                    break;
+                }
+                if (la.n_rows == 0) {
+                    continue;
+                }
+                const size_t bytes = (size_t) la.n_rows * (size_t) la.row_size;
+                const stateos_row_diff diff = stateos_compare_rows(a.data() + la.offset, b.data() + lb.offset, bytes, la.type);
+                ++n_layers;
+                n_equal_layers += diff.n_bitequal == diff.n;
+                max_rel = std::max(max_rel, diff.rel_l2);
+                fprintf(stderr, "[ckpt-xcheck] origin=tail slot=%d task=%d x=%d tail_pos=%d ref_origin=%s ref_pos=%d layer=%zu type=%d n_bitequal=%zu n=%zu relL2=%.6g\n",
+                    slot.id, slot.id_task, x, tail->pos_max, ref_origin, ref_pos, il, la.type, diff.n_bitequal, diff.n, diff.rel_l2);
+            }
+            if (why == nullptr) {
+                fprintf(stderr, "[ckpt-xcheck] origin=tail slot=%d task=%d summary x=%d tail_gap=%d ref_gap=%d layers=%zu bitequal_layers=%zu max_relL2=%.6g ms=%.2f\n",
+                    slot.id, slot.id_task, x, x - tail->pos_max, x - ref_pos, n_layers, n_equal_layers, max_rel,
+                    (ggml_time_us() - t_start) / 1000.0);
+            }
+        }
+    }
+    if (why != nullptr) {
+        report_skip(why);
+    }
+
+    // continue on the flag-off state: the older checkpoint, re-prefilled by the normal prompt path
+    if (!stateos_restore_checkpoint(ctx, slot, *ref)) {
+        report_skip("ref-restore-final");
+        return ckpts.rend();
+    }
+    return ref;
 }
 
 void server_context::batch_pending_prompt(const int32_t n_ubatch, const int32_t n_batch,  int32_t & batch_type) {

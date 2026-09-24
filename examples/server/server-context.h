@@ -415,5 +415,12 @@ struct server_context {
     // the speculative shadow (state before the final verify round) ahead of the release checkpoint
     void create_tail_snapshot(server_slot & slot);
 
+    // LONGSPEAR State-OS v2 (C1 diagnostic, LONGSPEAR_STATEOS_TAIL_XCHECK=1 only): after a tail restore,
+    // advance it to position d - 1, snapshot the recurrent rows, redo the flag-off path (older checkpoint
+    // + re-prefill to d - 1), snapshot again, print [ckpt-xcheck] per layer, then restore the flag-off
+    // checkpoint. Returns it (the live state on return), or rend() when the flag-off path would reset.
+    std::list<server_prompt_checkpoint>::reverse_iterator stateos_tail_xcheck_run(server_slot & slot,
+        std::list<server_prompt_checkpoint>::reverse_iterator tail, llama_pos d, llama_pos search_thold);
+
     void release_slot_after_final_response(server_slot & slot);
 };
