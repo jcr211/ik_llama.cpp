@@ -490,6 +490,9 @@ static void test_effective_model() {
     // no line-joining ambiguity: two items are not one item containing a separator
     CHECK(stateos_effective_model_value({ "x", "y" }) != stateos_effective_model_value({ "x\ny" }));
     CHECK(stateos_effective_model_value({ "xy" }) != stateos_effective_model_value({ "x", "y" }));
+    // a startup control vector (--control-vector) is its own item: a server with it is not a server without it
+    const std::string sv = stateos_effective_model_value({ "cvec-startup path=steer.gguf scale=1 layers=-1..-1" });
+    CHECK(sv != "none" && sv != stateos_effective_model_value({ "cvec path=steer.gguf scale=1 layers=-1..-1" }));
 
     // the verify path refuses a different adapter set by name
     stateos_fields saved   = server_like_fields();

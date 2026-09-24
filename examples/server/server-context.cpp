@@ -2793,6 +2793,13 @@ static std::string stateos_effective_model(const gpt_params & params, const std:
             parts.push_back(string_format("lora path=%s scale=%.9g", la.path.c_str(), la.scale));
         }
     }
+    // --control-vector / --control-vector-scaled / --control-vector-layer-range: applied at load, never in `cvs`
+    for (const auto & cv : params.control_vectors) {
+        if (cv.strength != 0.0f) {
+            parts.push_back(string_format("cvec-startup path=%s scale=%.9g layers=%d..%d", cv.fname.c_str(), cv.strength,
+                    params.control_vector_layer_start, params.control_vector_layer_end));
+        }
+    }
     for (const auto & cv : cvs) {
         if (cv.applied && cv.scale != 0.0f) {
             parts.push_back(string_format("cvec path=%s scale=%.9g layers=%d..%d", cv.path.c_str(), cv.scale, cv.layer_start, cv.layer_end));
