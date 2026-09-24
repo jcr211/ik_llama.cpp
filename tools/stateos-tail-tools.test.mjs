@@ -4,12 +4,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
   bucketOf,
   checkStep,
   feed,
+  feedFiles,
   newCensus,
   parseFields,
   summarize,
@@ -20,6 +23,7 @@ import {
   forcedPrompt,
   gateStatus,
   preScoreChecks,
+  preVerdict,
   matchRestores,
   score,
   tokensOf,
@@ -130,7 +134,11 @@ test("stateos-div lines: tail availability, hit rate, gaps, crosscheck rows", ()
   assert.deepEqual(s.xcheck.skips, { "flag-off-reset": 1 });
 });
 
+// the server's startup line (normally from <LogStem>.out.log) plus an armed PLE-history repair
+const LISTENING =
+  'INFO [                    main] HTTP server listening | tid="1" timestamp=1 hostname="0.0.0.0" port="8099"';
 const ARMED = [
+  LISTENING,
   "[ple-hist] set seq=0 next_pos=1996 n_prev=2 site=server-resume",
   "[ple-hist] reset seq=0 pos=0 next_pos=-1",
 ];
@@ -151,11 +159,13 @@ const census = (lines) => {
 };
 
 // the launcher's recorded flags ([stateos-flags], normally from the <LogStem>.flags sidecar)
-const flags = (div, tail, xcheck) =>
-  `[stateos-flags] LONGSPEAR_STATEOS_DIV_LOG=${div} LONGSPEAR_STATEOS_TAIL_SNAPSHOT=${tail} LONGSPEAR_STATEOS_TAIL_XCHECK=${xcheck} LONGSPEAR_PLE_HIST_REWIND=1 LONGSPEAR_PLE_HIST_LOG=1 logstem=x extra=''`;
-const F_OFF = flags(1, 0, 0); // step 1, P0, step-4 flag-off arms
+const flags = (div, tail, xcheck, extra = "") =>
+  `[stateos-flags] LONGSPEAR_STATEOS_DIV_LOG=${div} LONGSPEAR_STATEOS_TAIL_SNAPSHOT=${tail} LONGSPEAR_STATEOS_TAIL_XCHECK=${xcheck} LONGSPEAR_PLE_HIST_REWIND=1 LONGSPEAR_PLE_HIST_LOG=1 logstem=x extra='${extra}'`;
+const F_OFF = flags(1, 0, 0); // step 1, P0, step-4 A0/A1
 const F_PROBE = flags(1, 1, 1); // step 2
 const F_TAIL = flags(1, 1, 0); // T1, step-4 C
+const F_A5 = flags(1, 0, 0, "-no-fmoe -no-fug"); // step-4 benign A5
+const F_A3 = flags(1, 0, 0, "-fa 0"); // step-4 benign A3
 
 test("ple-hist lines, CUDA errors and the step-1/step-2 checks", () => {
   let s = census([F_OFF, ...ARMED, TAIL_CREATE, restore(TAIL_HIT)]);
@@ -694,8 +704,10 @@ const rawCensus = (lines) => {
   for (const l of lines) feed(c, l);
   return c;
 };
+const armFlags = (a, shell) =>
+  a === shell ? F_TAIL : a === "A5" ? F_A5 : a === "A3" ? F_A3 : F_OFF;
 const gateCensus = (arms, shell = "C") =>
-  Object.fromEntries(arms.map((a) => [a, rawCensus([a === shell ? F_TAIL : F_OFF])]));
+  Object.fromEntries(arms.map((a) => [a, rawCensus([armFlags(a, shell)])]));
 
 test("Opus repro: a C arm served by the crosscheck never scores (restored:xcheck-flag-off is no tail restore)", () => {
   const ids = Array.from({ length: 24 }, (_, i) => `p${i}`);
@@ -820,4 +832,152 @@ test("A1's request A differing from A0's is void-determinism, counted before any
   assert.equal(s.determinismFailures, 1);
   assert.equal(s.verdict, "void-determinism");
   assert.equal(gateStatus(s.verdict), "VOID");
+});
+// ---- round 6 ------------------------------------------------------------------------------------
+
+test("B2: C responses unreadable after strict tail restores are C diverging -> STOP (5/24 and 24/24)", () => {
+  const ids = Array.from({ length: 24 }, (_, i) => `p${i}`);
+  const mk = (arm, over = {}) => ({ arm, prompts: ids.map((id) => row(id, over[id] ?? {})) });
+  const parseFail = {
+    ok: false,
+    error: "23 logprobs ids for 24 completion tokens",
+    errorKind: "parse",
+  };
+  const run = (nBad) => {
+    const cOver = Object.fromEntries(ids.slice(0, nBad).map((id) => [id, { ...parseFail }]));
+    const records = [mk("A0"), mk("A1"), mk("C", cOver), mk("A5"), mk("A3")];
+    const restoresByArm = {
+      A0: ids.map(() => bLine()),
+      A1: ids.map(() => bLine()),
+      C: ids.map(() => tailLine()), // 24 strict tail restores in C's log
+      A5: [],
+      A3: [],
+    };
+    const pre = engagementAndDrops(records, restoresByArm, { shell: "C", minPrompts: 20 });
+    assert.equal(
+      preScoreChecks(records, gateCensus(["A0", "A1", "C", "A5", "A3"]), { shell: "C" }),
+      null,
+    );
+    return pre;
+  };
+  for (const nBad of [5, 24]) {
+    const pre = run(nBad);
+    // the parse-failed rows are bound through A0's fields: all 24 tails count as available and used
+    assert.equal(pre.tailAvailableAtB, 24);
+    assert.equal(pre.tailRestores, 24);
+    assert.equal(pre.unreadableAfterTail, nBad);
+    assert.equal(pre.slack, 4);
+    const v = preVerdict(pre, { shell: "C", minPrompts: 20 });
+    assert.equal(v.verdict, "shell-unreadable");
+    assert.equal(gateStatus(v.verdict), "STOP");
+  }
+  // within the slack (4/24): a counted drop, scoring proceeds
+  const ok = run(4);
+  assert.equal(preVerdict(ok, { shell: "C", minPrompts: 20 }), null);
+  assert.equal(ok.droppedCounts["C: response not parsed"], 4);
+});
+
+test("steps 1 and 2 are VOID when the log shows the server never served", () => {
+  const noServe = [
+    ...ARMED.filter((l) => l !== LISTENING),
+    TAIL_CREATE,
+    restore(TAIL_HIT),
+    XCHECK_ROW,
+  ];
+  assert.equal(checkStep("step2", census([F_PROBE, ...noServe])).verdict, "VOID");
+  assert.equal(checkStep("step1", census([F_OFF, ...noServe])).verdict, "VOID");
+  // another server held the port: bind failure
+  const bound = [
+    ...ARMED,
+    "couldn't bind to server socket: hostname=0.0.0.0 port=8099",
+    TAIL_CREATE,
+    restore(TAIL_HIT),
+    XCHECK_ROW,
+  ];
+  const r = checkStep("step2", census([F_PROBE, ...bound]));
+  assert.equal(r.verdict, "VOID");
+  assert.ok(r.checks.find((c) => /server served/.test(c.name) && !c.ok));
+  // a CUDA error still wins (STOP)
+  assert.equal(checkStep("step2", census([F_PROBE, ...noServe, "CUDA error: x"])).verdict, "STOP");
+});
+
+test("step 4: -ExtraArgs of the benign arms (and of C) are checked against the required values", () => {
+  const ids = ["p0"];
+  const mk = (arm) => ({ arm, prompts: ids.map((id) => row(id)) });
+  const records = ["A0", "A1", "C", "A5", "A3"].map(mk);
+  const arms = ["A0", "A1", "C", "A5", "A3"];
+  assert.equal(preScoreChecks(records, gateCensus(arms), { shell: "C" }), null);
+  // benign arms launched without their perturbation: identical to A0 -> mislaunched (VOID)
+  const noA5 = { ...gateCensus(arms), A5: rawCensus([F_OFF]) };
+  const r = preScoreChecks(records, noA5, { shell: "C" });
+  assert.equal(r.verdict, "mislaunched");
+  assert.ok(/extra=''/.test(r.voidReason));
+  const wrongA3 = { ...gateCensus(arms), A3: rawCensus([flags(1, 0, 0, "-fa 1")]) };
+  assert.equal(preScoreChecks(records, wrongA3, { shell: "C" }).verdict, "mislaunched");
+  // C launched with -fa 0 is mislaunched too
+  const cFa0 = { ...gateCensus(arms), C: rawCensus([flags(1, 1, 0, "-fa 0")]) };
+  assert.equal(preScoreChecks(records, cFa0, { shell: "C" }).verdict, "mislaunched");
+  // whitespace in the recorded extra does not matter
+  const spaced = { ...gateCensus(arms), A5: rawCensus([flags(1, 0, 0, "  -no-fmoe   -no-fug ")]) };
+  assert.equal(preScoreChecks(records, spaced, { shell: "C" }), null);
+});
+
+test("per-log flags records: every log needs its own, all must agree; sidecar vs header conflict is VOID", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stateos-flags-"));
+  try {
+    const writeLog = (stem, flagsLine, body = [LISTENING]) => {
+      fs.writeFileSync(path.join(dir, `${stem}.err.log`), `${body.join("\n")}\n`);
+      if (flagsLine) fs.writeFileSync(path.join(dir, `${stem}.flags`), `${flagsLine}\n`);
+      return path.join(dir, `${stem}.err.log`);
+    };
+    const probe = writeLog("probe", F_PROBE, ARMED);
+    const div = writeLog("div", F_OFF, ARMED);
+    const bare = writeLog("bare", null, ARMED);
+    // one file's flags never stand in for another's
+    const mixed = summarize(await feedFiles([probe, div]));
+    assert.equal(mixed.flags, null);
+    assert.ok(/inconsistent across logs/.test(mixed.flagsProblem));
+    assert.equal(checkStep("step1", mixed).verdict, "VOID");
+    const missing = summarize(await feedFiles([div, bare]));
+    assert.ok(/flags unknown for/.test(missing.flagsProblem));
+    assert.equal(checkStep("step1", missing).verdict, "VOID");
+    // two logs with the same record: accepted
+    const div2 = writeLog("div2", F_OFF, ARMED);
+    const same = summarize(await feedFiles([div, div2]));
+    assert.equal(same.flagsProblem, null);
+    assert.equal(same.flags.LONGSPEAR_STATEOS_DIV_LOG, "1");
+    // a header line in the log that differs from the sidecar
+    const conflict = writeLog("conflict", F_OFF, [F_PROBE, ...ARMED]);
+    const c = summarize(await feedFiles([conflict]));
+    assert.ok(/inconsistent within/.test(c.flagsProblem));
+    assert.equal(checkStep("step1", c).verdict, "VOID");
+    // the server's listening line is read from <LogStem>.out.log
+    const quiet = writeLog(
+      "quiet",
+      F_OFF,
+      ARMED.filter((l) => l !== LISTENING),
+    );
+    assert.equal(summarize(await feedFiles([quiet])).served.ok, false);
+    fs.writeFileSync(path.join(dir, "quiet.out.log"), `${LISTENING}\n`);
+    assert.equal(summarize(await feedFiles([quiet])).served.ok, true);
+    // a log with no sidecar at all: flags unknown (e.g. a server not started by the launcher)
+    const alone = summarize(await feedFiles([bare]));
+    assert.equal(checkStep("step1", alone).verdict, "VOID");
+    assert.ok(checkStep("step1", alone).checks.find((x) => /flags unknown/.test(x.detail)));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("step 3: a CUDA error only in the P0 log is STOP, even when a VOID check fails", () => {
+  const p0 = census([
+    F_OFF,
+    ...ARMED,
+    restore(FLAG_OFF),
+    "CUDA error: an illegal memory access was encountered",
+  ]);
+  const t1 = census([F_TAIL, ...ARMED, TAIL_CREATE, restore(TAIL_HIT)]); // too few events: VOID checks fail
+  const r = checkStep("step3", t1, p0);
+  assert.equal(r.verdict, "STOP");
+  assert.ok(r.checks.find((c) => /P0 CUDA/.test(c.name) && !c.ok));
 });

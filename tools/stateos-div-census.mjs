@@ -64,12 +64,14 @@ export const FLAG_NAMES = [
   "LONGSPEAR_PLE_HIST_LOG",
 ];
 
-const flagSet = (div, tail, xcheck) => ({
+// extra = the launcher's -ExtraArgs, whitespace-normalized ('' for every run but the benign gate arms)
+const flagSet = (div, tail, xcheck, extra = "") => ({
   LONGSPEAR_STATEOS_DIV_LOG: div,
   LONGSPEAR_STATEOS_TAIL_SNAPSHOT: tail,
   LONGSPEAR_STATEOS_TAIL_XCHECK: xcheck,
   LONGSPEAR_PLE_HIST_REWIND: "1",
   LONGSPEAR_PLE_HIST_LOG: "1",
+  extra,
 });
 
 /** The flags each W-SV2 run must have been launched with (merged plan section 4). */
@@ -78,17 +80,31 @@ export const REQUIRED_FLAGS = {
   step2: flagSet("1", "1", "1"), // mechanism probe: TAIL_SNAPSHOT + TAIL_XCHECK + DIV_LOG
   P0: flagSet("1", "0", "0"), // step 3 flag-off arm
   T1: flagSet("1", "1", "0"), // step 3 tail arm
-  gateOff: flagSet("1", "0", "0"), // step 4 A0, A1, A5, A3
+  gateOff: flagSet("1", "0", "0"), // step 4 A0, A1
+  gateA5: flagSet("1", "0", "0", "-no-fmoe -no-fug"), // step 4 benign A5
+  gateA3: flagSet("1", "0", "0", "-fa 0"), // step 4 benign A3
   gateTail: flagSet("1", "1", "0"), // step 4 C
 };
 
-/** null when the recorded flags equal the required set, else why not ("flags unknown" when absent). */
-export function flagsMismatch(flags, required) {
+export const normalizeExtra = (s) =>
+  String(s ?? "")
+    .trim()
+    .replace(/\s+/g, " ");
+
+/**
+ * null when the recorded flags equal the required set (env flags AND -ExtraArgs), else why not.
+ * problem: a record-level problem from feedFiles (flags unknown for one log, or inconsistent records).
+ */
+export function flagsMismatch(flags, required, problem = null) {
+  if (problem) return problem;
   if (!flags)
     return "flags unknown (no [stateos-flags] record: no <LogStem>.flags sidecar and no header line)";
   const bad = FLAG_NAMES.filter((k) => flags[k] !== required[k]).map(
     (k) => `${k}=${flags[k]} (need ${required[k]})`,
   );
+  if (normalizeExtra(flags.extra) !== normalizeExtra(required.extra)) {
+    bad.push(`extra='${flags.extra}' (need '${required.extra}')`);
+  }
   return bad.length ? `wrong flags: ${bad.join(", ")}` : null;
 }
 
@@ -147,6 +163,12 @@ export function newCensus() {
     // the launcher's recorded env flags ([stateos-flags] line, from the <LogStem>.flags sidecar or a
     // header line in the log); null = flags unknown
     flags: null,
+    flagsConflict: false, // two different records for one log (e.g. sidecar vs header line)
+    flagsProblem: null, // set by feedFiles: a log without a record, or logs with different records
+    // server start: "HTTP server listening" (stdout, <LogStem>.out.log) / "couldn't bind" (stderr)
+    serverListening: false,
+    serverBindFailed: false,
+    serversAll: null, // set by feedFiles: every log's server served
     cudaErrors: 0,
     _last: null,
     _tailPending: new Map(),
@@ -157,8 +179,21 @@ export function newCensus() {
 export function feed(c, line) {
   if (line.startsWith("[stateos-flags]")) {
     const f = parseFields(line);
-    c.flags = {};
-    for (const k of FLAG_NAMES) c.flags[k] = f[k] === "1" ? "1" : "0";
+    const flags = {};
+    for (const k of FLAG_NAMES) flags[k] = f[k] === "1" ? "1" : "0";
+    // extra='...' may hold spaces: its own pattern, not parseFields
+    const m = /extra='([^']*)'/.exec(line);
+    flags.extra = normalizeExtra(m ? m[1] : "");
+    if (c.flags && JSON.stringify(c.flags) !== JSON.stringify(flags)) c.flagsConflict = true;
+    c.flags = flags;
+    return;
+  }
+  if (/HTTP server listening/.test(line)) {
+    c.serverListening = true;
+    return;
+  }
+  if (/couldn't bind to server socket/.test(line)) {
+    c.serverBindFailed = true;
     return;
   }
   if (line.startsWith("[stateos-div]")) {
@@ -421,7 +456,21 @@ export function summarize(c) {
       bitEqualRows: V.xcheck.filter((x) => x.n !== null && x.nBitequal === x.n).length,
     },
   };
-  return { legacy, v2, ple: c.ple, cudaErrors: c.cudaErrors, flags: c.flags };
+  const served = c.serversAll ?? {
+    ok: c.serverListening && !c.serverBindFailed,
+    detail: `listening=${c.serverListening} bind-failed=${c.serverBindFailed}`,
+  };
+  return {
+    legacy,
+    v2,
+    ple: c.ple,
+    cudaErrors: c.cudaErrors,
+    flags: c.flags,
+    flagsProblem:
+      c.flagsProblem ??
+      (c.flagsConflict ? "flags inconsistent (two different records for one log)" : null),
+    served,
+  };
 }
 
 const miss = (name, ok, detail) => ({ name, ok: Boolean(ok), detail });
@@ -490,12 +539,23 @@ export function checkStep(step, s, p0 = null) {
     });
   };
   // mislaunch (VOID) is decided ONLY from the launcher's recorded flags, never from the lever's output
-  const launched = (who, flags, required) => {
-    const why = flagsMismatch(flags, required);
+  const launched = (who, run, required) => {
+    const why = flagsMismatch(run.flags, required, run.flagsProblem);
     checks.push(voidCheck(`mislaunched? ${who} flags`, why === null, why ?? "flags as required"));
   };
+  // steps 1 and 2: the log must show that this server served (build lines, not lever output):
+  // "HTTP server listening" present, no "couldn't bind" (another server held the port)
+  const servedCheck = () =>
+    checks.push(
+      voidCheck(
+        "server served (listening, no bind failure)",
+        s.served?.ok === true,
+        s.served?.detail ?? "unknown",
+      ),
+    );
   if (step === "step1") {
-    launched("step-1 run", s.flags, REQUIRED_FLAGS.step1);
+    launched("step-1 run", s, REQUIRED_FLAGS.step1);
+    servedCheck();
     checks.push(
       miss(
         "divergence events > 0 (new-conversation resets excluded)",
@@ -515,7 +575,8 @@ export function checkStep(step, s, p0 = null) {
     );
   } else if (step === "step2") {
     // the probe is TAIL_SNAPSHOT=1 TAIL_XCHECK=1 DIV_LOG=1 (launch-stateos-tail-xcheck-8099.ps1)
-    launched("step-2 probe", s.flags, REQUIRED_FLAGS.step2);
+    launched("step-2 probe", s, REQUIRED_FLAGS.step2);
+    servedCheck();
     checks.push(
       miss(
         "tail available on >= 1 last-token divergence",
@@ -553,8 +614,13 @@ export function checkStep(step, s, p0 = null) {
     const pe = P.lastToken.eligible;
     const te = T.eligible;
     // protocol (recorded flags) and traffic sanity: VOID, not a lever kill
-    launched("P0", p0.flags, REQUIRED_FLAGS.P0);
-    launched("T1", s.flags, REQUIRED_FLAGS.T1);
+    launched("P0", p0, REQUIRED_FLAGS.P0);
+    launched("T1", s, REQUIRED_FLAGS.T1);
+    // step 3 reads two logs: a CUDA error in the P0 log is a STOP as well (hard, beats VOID)
+    checks.push({
+      ...miss("P0 CUDA errors == 0", p0.cudaErrors === 0, `lines=${p0.cudaErrors}`),
+      hard: true,
+    });
     checks.push(
       voidCheck(
         `P0 eligible events >= ${STEP3_MIN_EVENTS}`,
@@ -646,17 +712,66 @@ export function checkStep(step, s, p0 = null) {
   };
 }
 
-/** Raw census state of log files; each log's <LogStem>.flags sidecar (if present) is read first. */
+/** <LogStem>.out.log next to <LogStem>.err.log (the server's stdout: "HTTP server listening"). */
+export function stdoutLogOf(logPath) {
+  return /\.err\.log$/i.test(logPath) ? logPath.replace(/\.err\.log$/i, ".out.log") : null;
+}
+
+/**
+ * Raw census state of log files. Per log: its <LogStem>.flags sidecar (if present) is read first, then
+ * the log, then the "HTTP server listening" line of its <LogStem>.out.log. Every log must carry its own
+ * flags record and all records must agree; one file's flags never stand in for another's (a missing or
+ * differing record sets flagsProblem, so every step check is VOID). Every log's server must have served.
+ */
 export async function feedFiles(files) {
   const c = newCensus();
+  const perFile = [];
   for (const f of files) {
+    c.flags = null;
+    c.flagsConflict = false;
+    c.serverListening = false;
+    c.serverBindFailed = false;
     const sidecar = flagsSidecarOf(f);
     if (fs.existsSync(sidecar)) {
       for (const line of fs.readFileSync(sidecar, "utf8").split(/\r?\n/)) feed(c, line);
     }
     const rl = readline.createInterface({ input: fs.createReadStream(f), crlfDelay: Infinity });
     for await (const line of rl) feed(c, line);
+    const out = stdoutLogOf(f);
+    if (out && fs.existsSync(out)) {
+      const ro = readline.createInterface({ input: fs.createReadStream(out), crlfDelay: Infinity });
+      for await (const line of ro) {
+        if (/HTTP server listening/.test(line)) c.serverListening = true;
+      }
+    }
+    perFile.push({
+      file: f,
+      flags: c.flags,
+      conflict: c.flagsConflict,
+      listening: c.serverListening,
+      bindFailed: c.serverBindFailed,
+    });
   }
+  const missing = perFile.filter((p) => !p.flags).map((p) => p.file);
+  const conflicting = perFile.filter((p) => p.conflict).map((p) => p.file);
+  const distinct = new Set(perFile.filter((p) => p.flags).map((p) => JSON.stringify(p.flags)));
+  c.flags = perFile.length && !missing.length && distinct.size === 1 ? perFile[0].flags : null;
+  c.flagsProblem = missing.length
+    ? `flags unknown for ${missing.join(", ")} (no <LogStem>.flags sidecar and no header line)`
+    : conflicting.length
+      ? `flags inconsistent within ${conflicting.join(", ")} (sidecar and header line differ)`
+      : distinct.size > 1
+        ? "flags inconsistent across logs (each log is checked against its own record; they differ)"
+        : null;
+  const notServed = perFile.filter((p) => !p.listening || p.bindFailed);
+  c.serversAll = {
+    ok: perFile.length > 0 && notServed.length === 0,
+    detail: notServed.length
+      ? notServed
+          .map((p) => `${p.file}: listening=${p.listening} bind-failed=${p.bindFailed}`)
+          .join("; ")
+      : "every log's server listened",
+  };
   return c;
 }
 

@@ -41,6 +41,9 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
 - [x] fix round 5 (final check of 1f0389b7): launcher flags sidecar, mislaunch from recorded flags only,
       A1 determinism before drops, hard tail-integrity misses, C parse errors drop, stale comments;
       node tools 20/20 (tools + launcher only)
+- [x] fix round 6 (check of acb9290f): bind parse-failed C rows via A0 (shell-unreadable STOP), chain rule
+      on stems, server-did-not-serve VOID (steps 1-2), benign ExtraArgs checked, per-log flags records,
+      P0 CUDA errors STOP in step 3 (Grok); node tools 25/25 (tools only)
 
 ## GPU-window assumptions (W-SV2)
 - Every arm (P0, T1, A0, A1, C, A5, A3, probe) launches via launch-stateos-tail-8099.ps1, so all run
@@ -65,8 +68,23 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
   step 1 DIV_LOG only; step 2 DIV_LOG + TAIL_SNAPSHOT + TAIL_XCHECK; step 3 P0 DIV_LOG only, T1 DIV_LOG +
   TAIL_SNAPSHOT; step 4 C DIV_LOG + TAIL_SNAPSHOT, all other arms DIV_LOG only. With the right flags
   recorded, every tail failure (verify failure, tail never chosen, sha mismatch, writer refusal) is STOP.
+  The record also carries `extra='<-ExtraArgs>'` (whitespace-normalized) and it is checked: '' for every
+  run except step-4 A5 ('-no-fmoe -no-fug') and A3 ('-fa 0'); wrong or missing extra = VOID "mislaunched".
+- CHAIN RULE (round 6): NEVER restart a server into an existing stem. Every launch, including a manual
+  restart after a crash, goes through launch-stateos-tail-8099.ps1 with a NEW -LogStem (the launcher refuses
+  an existing .err.log or .flags). A server not started by the launcher has no `[stateos-flags]` sidecar
+  for its stem, so the census and the gate say VOID "flags unknown" (confirmed: tested for a log with no
+  sidecar, and for a multi-log census where one log lacks its record).
+- Per-log records: when the census reads several logs in one run, every log must carry its own flags
+  record and all records must agree (each is checked against the step's required set); a log without a
+  record, differing records across logs, or a sidecar that differs from a header line inside the log =
+  VOID. One file's flags never stand in for another's.
+- Steps 1 and 2 are VOID ("server served" check) when the log shows the server never served: a
+  `couldn't bind to server socket` line (stderr), or no `HTTP server listening` line (read from the
+  sibling <LogStem>.out.log, the server's stdout). These are build lines, not lever output.
 - Tail-integrity misses (restore-failed / verify-failed / rewind-refused after a tail choice, tail sha
-  mismatch) are hard: STOP even when a VOID check also fails (steps 2 and 3), like CUDA errors.
+  mismatch) are hard: STOP even when a VOID check also fails (steps 2 and 3), like CUDA errors. Step 3
+  reads two logs: a CUDA error in EITHER the P0 or the T1 log is a hard STOP.
 - Step 1 denominator: restore-branch decisions MINUS new-conversation resets (outcome reset:no-checkpoint
   with common prefix < 64). Both counts are printed.
 - Steps 2 and 3: zero outcomes restore-failed / verify-failed / rewind-refused after a tail choice, and
@@ -102,8 +120,12 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
     (its cache, and C's tail, exist), then A0's B tokens (sha recorded per row).
   - Every arm launched with -DivLog (C with -Tail -DivLog). Token ids come from /v1/completions logprobs
     and their count must equal usage.completion_tokens (a UTF-8-split token has no logprobs entry).
+  - C responses that cannot be parsed (e.g. a UTF-8-split id-count mismatch): the row is bound to its
+    restore line with A0's row fields (same B prompt, same forced position), so engagement counts it. After
+    a strict tail restore such a failure is C DIVERGING (unreadable output): more of them than the drop
+    slack (prompts - min-prompts, 24 - 20 = 4) = `shell-unreadable` (STOP); up to the slack, a counted drop.
   - Drops: B sha differs across arms; C's request-A output differs from A0's; C's response could not be
-    parsed (e.g. a UTF-8-split id-count mismatch in a drifted continuation; counted and reported); the
+    parsed (within the slack above; counted and reported); the
     request-B restore line of A0, A1 or C is missing or lacks tail_dist=1, or C's is not a strict tail
     restore (chosen_origin=tail, outcome=restored, reason=tail) (benign arms reach the same B from their
     own cache and are not constrained).
@@ -119,7 +141,7 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
   - A1's request A differing from A0's is spec-on nondeterminism = void-determinism, counted BEFORE any
     drop (so it is not hidden when C's request A differs too).
   - Status: compatible-at-horizon PASS (exit 0); shellWorse, not-engaged:tails-not-used, cuda-errors,
-    shell-errors STOP (2); insufficient-sample, void-determinism, mislaunched,
+    shell-errors, shell-unreadable STOP (2); insufficient-sample, void-determinism, mislaunched,
     not-engaged:no-eligible-prompts VOID (3) - the gate did not answer, not a C1 kill.
   - Step 2 VOID ("mislaunched") when its recorded flags are not DIV_LOG + TAIL_SNAPSHOT + TAIL_XCHECK (+ PLE).
   - Step-3 floors (coordinator ruling): floor_T1 on the left, floor_P0 inside the bracket, each from its

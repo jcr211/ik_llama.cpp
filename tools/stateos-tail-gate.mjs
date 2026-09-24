@@ -43,13 +43,17 @@
 //     final rounds without an accepted draft), STOP when they were and C did not restore from them;
 //   - before that: CUDA error lines in any arm's log = `cuda-errors` (STOP: stops the window);
 //     an arm whose recorded flags differ from the required set (C: DIV_LOG + TAIL_SNAPSHOT; every other
-//     arm: DIV_LOG only; all: PLE_HIST_REWIND + PLE_HIST_LOG), or with no flags record, = `mislaunched`
-//     (VOID) - decided from the recorded flags only, never from the lever's own output; an HTTP or
-//     connection error on a C request where A0's row succeeded = `shell-errors` (STOP);
+//     arm: DIV_LOG only; all: PLE_HIST_REWIND + PLE_HIST_LOG; -ExtraArgs: A5 '-no-fmoe -no-fug', A3
+//     '-fa 0', all others none), or with no flags record, = `mislaunched` (VOID) - decided from the
+//     recorded flags only, never from the lever's own output; an HTTP or connection error on a C
+//     request where A0's row succeeded = `shell-errors` (STOP);
+//   - a C response that cannot be parsed is bound to its restore line with A0's row fields; after a
+//     strict tail restore it counts as C diverging (unreadable output): more of them than the drop
+//     slack (prompts - min-prompts) = `shell-unreadable` (STOP); up to the slack, a counted drop;
 //   - A1's request A differing from A0's is spec-on nondeterminism: void-determinism, counted before
 //     any drop;
 //   - verdicts: compatible-at-horizon = PASS (exit 0); shellWorse, not-engaged:tails-not-used,
-//     cuda-errors, shell-errors = STOP (exit 2); insufficient-sample, void-determinism, mislaunched and
+//     cuda-errors, shell-errors, shell-unreadable = STOP (exit 2); insufficient-sample, void-determinism, mislaunched and
 //     not-engaged:no-eligible-prompts = VOID (exit 3): the gate did not answer, not a C1 kill.
 //
 // Usage:
@@ -362,19 +366,27 @@ export function bindsTo(row, r) {
 }
 
 /**
- * Match each ok row of an arm record to its request-B restore line, in request order (the search
+ * Match each row of an arm record to its request-B restore line, in request order (the search
  * resumes after the previous match) and by content (bindsTo). Returns {promptId: restore | null}.
+ * A row whose request B reached the server but whose response could not be parsed (errorKind "parse")
+ * is bound with the reference (A0) row's fields: it sent A0's B prompt, so the forced position and the
+ * two marked tokens are A0's.
  */
-export function matchRestores(record, restores) {
+export function matchRestores(record, restores, reference = null) {
   const out = {};
   let j = 0;
   for (const row of record.prompts) {
-    if (!row.ok) {
+    let key = row.ok ? row : null;
+    if (!row.ok && row.errorKind === "parse" && reference) {
+      const ref = reference.prompts.find((p) => p.id === row.id);
+      if (ref?.ok) key = ref;
+    }
+    if (!key) {
       out[row.id] = null;
       continue;
     }
     let k = j;
-    while (k < restores.length && !bindsTo(row, restores[k])) k += 1;
+    while (k < restores.length && !bindsTo(key, restores[k])) k += 1;
     if (k < restores.length) {
       out[row.id] = restores[k];
       j = k + 1;
@@ -398,7 +410,7 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
   if (!a0) throw new Error("missing arm record arm-A0.json");
   const constrained = ["A0", "A1", shell].filter((a) => byArm.has(a));
   const matched = {};
-  for (const a of constrained) matched[a] = matchRestores(byArm.get(a), restoresByArm[a] ?? []);
+  for (const a of constrained) matched[a] = matchRestores(byArm.get(a), restoresByArm[a] ?? [], a0);
   const drop = new Map();
   const droppedCounts = {};
   const note = (id, reason) => {
@@ -408,6 +420,7 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
   const rowOf = (arm, id) => byArm.get(arm)?.prompts.find((p) => p.id === id);
   let tailRestores = 0;
   let tailAvailableAtB = 0;
+  let unreadableAfterTail = 0;
   for (const p of a0.prompts) {
     const id = p.id;
     // one B prompt for every arm
@@ -422,10 +435,16 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
     if (cRow?.ok && p.ok && !sameIds(cRow.generated, p.generated)) {
       note(id, `${shell}: request A output differs from A0's`);
     }
-    // a C response we could not read (e.g. a UTF-8-split id-count mismatch in a drifted continuation)
-    // is a drop, not a server failure (HTTP/connection errors are STOP in preScoreChecks)
-    if (cRow && !cRow.ok && cRow.errorKind === "parse" && p.ok) {
+    // a C response we could not read (e.g. a UTF-8-split id-count mismatch) is not a server failure
+    // (HTTP/connection errors are STOP in preScoreChecks). After a strict tail restore on a B that A0
+    // read fine it is evidence that C DIVERGED (corrupted output): counted as unreadable-after-tail;
+    // more than the drop slack (prompts - minPrompts) of them is STOP (preVerdict). Up to the slack it
+    // is a counted drop (benign drift).
+    const cParseFailed = Boolean(cRow && !cRow.ok && cRow.errorKind === "parse" && p.ok);
+    if (cParseFailed) {
       note(id, `${shell}: response not parsed`);
+      const m = matched[shell]?.[id];
+      if (m && isTailRestore(m)) unreadableAfterTail += 1;
     }
     const a1Row = rowOf("A1", id);
     const a1Diverged = Boolean(a1Row?.ok && p.ok && !sameIds(a1Row.generated, p.generated));
@@ -444,14 +463,42 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
     }
   }
   const engaged = tailRestores >= minPrompts;
+  const slack = Math.max(0, a0.prompts.length - minPrompts);
   return {
     engaged,
     tailRestores,
     tailAvailableAtB,
     eligibleExisted: tailAvailableAtB >= minPrompts,
+    unreadableAfterTail,
+    slack,
     drop,
     droppedCounts,
     droppedPrompts: drop.size,
+  };
+}
+
+/**
+ * The verdict before scoring, from engagementAndDrops' result, or null to score.
+ *   - C responses unreadable after a strict tail restore beyond the drop slack: `shell-unreadable` (STOP)
+ *   - not engaged: `not-engaged:tails-not-used` (STOP) or `not-engaged:no-eligible-prompts` (VOID)
+ */
+export function preVerdict(pre, { shell, minPrompts }) {
+  if (pre.unreadableAfterTail > pre.slack) {
+    return {
+      verdict: "shell-unreadable",
+      voidReason: `${pre.unreadableAfterTail} ${shell} responses could not be read after a strict tail restore on a B that A0 read (drop slack ${pre.slack}): the tail-restored state produced unreadable output`,
+    };
+  }
+  if (pre.engaged) return null;
+  if (pre.eligibleExisted) {
+    return {
+      verdict: "not-engaged:tails-not-used",
+      voidReason: `tails were available on ${pre.tailAvailableAtB} request-B divergences in ${shell} but restored on only ${pre.tailRestores} (< ${minPrompts}): the lever failed where it could act`,
+    };
+  }
+  return {
+    verdict: "not-engaged:no-eligible-prompts",
+    voidReason: `tails were available on only ${pre.tailAvailableAtB} request-B divergences in ${shell} (< ${minPrompts}; final rounds without an accepted draft leave no tail): no eligible prompts, the gate did not answer`,
   };
 }
 
@@ -578,11 +625,20 @@ export function gateStatus(verdict) {
     verdict === "shellWorse" ||
     verdict === "not-engaged:tails-not-used" ||
     verdict === "cuda-errors" ||
-    verdict === "shell-errors"
+    verdict === "shell-errors" ||
+    verdict === "shell-unreadable"
   ) {
     return "STOP";
   }
   return "VOID";
+}
+
+/** Required recorded flags per step-4 arm (env flags and -ExtraArgs). */
+export function requiredFlagsOfArm(arm, shell) {
+  if (arm === shell) return REQUIRED_FLAGS.gateTail;
+  if (arm === "A5") return REQUIRED_FLAGS.gateA5;
+  if (arm === "A3") return REQUIRED_FLAGS.gateA3;
+  return REQUIRED_FLAGS.gateOff;
 }
 
 /**
@@ -608,8 +664,12 @@ export function preScoreChecks(records, censusByArm, { shell }) {
   }
   const mislaunched = records
     .map((r) => {
-      const required = r.arm === shell ? REQUIRED_FLAGS.gateTail : REQUIRED_FLAGS.gateOff;
-      const why = flagsMismatch(censusByArm[r.arm]?.flags ?? null, required);
+      const c = censusByArm[r.arm];
+      const why = flagsMismatch(
+        c?.flags ?? null,
+        requiredFlagsOfArm(r.arm, shell),
+        c?.flagsProblem ?? null,
+      );
       return why ? `${r.arm}: ${why}` : null;
     })
     .filter(Boolean);
@@ -660,32 +720,19 @@ async function runScore(o) {
     minPrompts: o.minPrompts,
   });
   const horizon = records[0]?.horizon ?? o.horizon;
-  const refused = preScoreChecks(records, censusByArm, { shell: o.shell });
-  let result;
-  if (refused) {
-    result = { ...refused, rule: { outcome: "not-scored", reason: "" } };
-  } else if (pre.engaged) {
-    result = score(records, lib, {
-      shell: o.shell,
-      benign: o.benign,
-      horizon,
-      minPrompts: o.minPrompts,
-      nMin: o.nMin,
-      drop: pre.drop,
-    });
-  } else if (pre.eligibleExisted) {
-    result = {
-      verdict: "not-engaged:tails-not-used",
-      voidReason: `tails were available on ${pre.tailAvailableAtB} request-B divergences in ${o.shell} but restored on only ${pre.tailRestores} (< ${o.minPrompts}): the lever failed where it could act`,
-      rule: { outcome: "not-scored", reason: "" },
-    };
-  } else {
-    result = {
-      verdict: "not-engaged:no-eligible-prompts",
-      voidReason: `tails were available on only ${pre.tailAvailableAtB} request-B divergences in ${o.shell} (< ${o.minPrompts}; final rounds without an accepted draft leave no tail): no eligible prompts, the gate did not answer`,
-      rule: { outcome: "not-scored", reason: "" },
-    };
-  }
+  const refused =
+    preScoreChecks(records, censusByArm, { shell: o.shell }) ??
+    preVerdict(pre, { shell: o.shell, minPrompts: o.minPrompts });
+  const result = refused
+    ? { ...refused, rule: { outcome: "not-scored", reason: "" } }
+    : score(records, lib, {
+        shell: o.shell,
+        benign: o.benign,
+        horizon,
+        minPrompts: o.minPrompts,
+        nMin: o.nMin,
+        drop: pre.drop,
+      });
   const status = gateStatus(result.verdict);
   const file = path.join(o.out, "gate.json");
   const report = {
@@ -698,6 +745,8 @@ async function runScore(o) {
       tailAvailableAtB: pre.tailAvailableAtB,
       required: o.minPrompts,
       engaged: pre.engaged,
+      unreadableAfterTail: pre.unreadableAfterTail,
+      slack: pre.slack,
     },
     droppedPrompts: pre.droppedPrompts,
     droppedCounts: pre.droppedCounts,
