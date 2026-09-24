@@ -205,3 +205,42 @@ tampers `effective_model` among the hard fields.
   `.lane/build-f11.cmd` exit 0.
 - Tests: `.lane/test-f11.cmd` exit 0 with `CUDA_VISIBLE_DEVICES=-1`: `test-stateos-header` 264 checks, 0 failures;
   ctest 4/4.
+
+### F11-2 review round (REVIEW-F11-2 = FIX-FIRST)
+
+- `c5d66f76` **P2-A + P2-B, cached stamp.** `effective_model` is now a cached string (`stateos_effective_cur`).
+  - Only the main loop writes it: at startup, after SET_LORA, and before every return of
+    `apply_control_vectors_internal`. A failed apply writes the sentinel `unknown`.
+  - Save and restore read the cached string, never the live scales.
+  - The startup `cvec-startup` parts are dropped from the stamp after the first runtime control-vector change, which
+    replaces the startup vectors.
+  - `/lora-adapters` and `/control-vectors/apply` no longer mutate anything on the HTTP thread. They forward the request
+    in the task, and the task applies it all-or-nothing (`stateos_apply_scales`, which validates every id first). A bad
+    id answers 400 and leaves the scales, the generation and the cached stamp unchanged.
+  - Unit tests cover the helpers: the cvec parts with startup live and dropped, and a bad-id request leaving the
+    scales untouched.
+  - **Failed apply.** While the stamp is `unknown`, every save is refused with 409 `state_adapters_unknown`, and every
+    restore is refused as an `effective_model` mismatch (`current=unknown`). A later successful apply clears it.
+- `91579f16` **P3-1:** `/rename_prompt` runs `fs_validate_filename` on both names (400). The reserved-suffix check now
+  strips Windows trailing dots and spaces first, so `x.stateos.tmp.` and `x.stateos.tmp ` are refused too. It applies to
+  save and restore names and to both rename names.
+- `82c7b1b1` **P3-2:** `ckpt_ok` is a hard check in `gpu-verify-l1.ps1`: a dropped checkpoint fails that identity leg
+  (`fail_reason`), and the 4K KILL message names it.
+- `9729d763` **P3-4:** `system_prompt_update` records the generation its seq-0 KV was computed under. A slot that
+  starts from empty copies that KV in, so it is stamped with `stateos_slot_start_gen`:
+  - the current generation when there is no system prompt, or when the system prompt was computed under the current
+    set;
+  - otherwise `-1` (unknown), and the save is refused with `state_adapters_changed`. Unit-tested.
+- **P3-3, recovery for "unsaveable after an adapter change".** A slot whose KV predates the current adapter set answers
+  409 `state_adapters_changed`. The same happens for a RAM prompt-cache load after any adapter change, and for a start
+  from a stale system prompt (see P3-4). To recover:
+  1. Erase the slot: `POST /slots/{id}?action=erase`. This clears the KV and stamps the current generation.
+  2. Re-prefill the conversation with a normal request, then save again.
+  - A request whose prompt diverges at token 0 also re-prefills from empty and has the same effect.
+  - If the stamp itself is `unknown` (failed control-vector apply), fix the adapter set first with a successful
+    `/control-vectors/apply` or `/lora-adapters` call.
+- Build: before every build a process check showed no nvcc, cl, cmake or ninja from another lane.
+  `.lane/build-f11.cmd` exit 0.
+- Tests: `.lane/test-f11.cmd` exit 0 with `CUDA_VISIBLE_DEVICES=-1`: `test-stateos-header` 285 checks, 0 failures;
+  ctest 4/4.
+- Not verified on GPU: the handler forwarding, the failed-apply sentinel, and the system-prompt stamp.
