@@ -10,10 +10,27 @@ polls `http://127.0.0.1:8099/health` (prints `production-restored:200` or `produ
 to `build-stateos-f11\gpu-verify\`; lane 1's receipts (`D:\AI\worktrees\stateos-lane1\build-stateos-l1\gpu-verify\`,
 binary 7c77724b) are only read (dry run, and the real 7c77724b `id4k.state` for the effective_model refusal).
 
+Production safety: the preflight (files, disk, binary identity) runs before anything is stopped; the `llama-server`
+stop, the sleep and the `nvidia-smi` log are inside the protected `try`. The `finally` block stops the test server,
+clears the PLE switches and relaunches the standing server first — each step before the relaunch in its own
+`try/catch`, so none can skip it — then polls `:8099/health`, and only then saves `results.json` (in its own
+`try/catch`). HTTP calls carry their own timeouts (60 s for calls without prefill, 600 s for slot save/restore, 3600 s
+for completions), so a hung small call aborts the run into that `finally` instead of holding production down for the
+client's 60-minute bound.
+
+**Exit code:** 0 only when the run completed, every hard expectation held (Leg A identity legs PASS*, every `pass`
+field, every refusal, `ple_hist.all_ok`, a Leg B identity leg not `FAIL`) and production is back; otherwise 1, with
+the list in `results.json → hard_failures` and on the last console line.
+
 ## Preconditions
 
-1. Build exists: `D:\AI\worktrees\stateos-lane1-f11\build-stateos-f11\bin\llama-server.exe`, newer than every tracked
-   source file (see `.lane/REPORT.md` and `.lane/REPORT-acceptance-harness.md` for the build and its exit codes).
+1. Build exists: `D:\AI\worktrees\stateos-lane1-f11\build-stateos-f11\bin\llama-server.exe`. **Binary identity is
+   enforced** (`Assert-Binary`, in the preflight before anything is stopped and again before each launch): the exe's
+   SHA-256 and the worktree's `git rev-parse HEAD` are recorded (`results.json → binary.<preflight|specoff|specon>`, and
+   a `==== <time> attempt: exe sha256 …, HEAD … ====` separator plus a `<name> binary:` line per launch in
+   `launch-args.txt`); the run is refused when a tracked file outside `.lane/` is modified, when any tracked file outside
+   `.lane/` is newer than the exe (rebuild), or when the exe's hash changes between launches. `.lane/` is excluded
+   because it holds this script, its logs and notes, which are not build inputs. See `.lane/REPORT.md` for the build.
 2. `bench/gpu-justify/<YYYYMMDD>-stateos-lane1-f11.md` committed in the Longspear repo in the TEMPLATE headings (draft
    text at the end of this file), and posted to James at launch.
 3. Quiet box: no battery/campaign on the GPU; `nvidia-smi` shows nothing else resident; nobody else on `:8099`
@@ -69,9 +86,13 @@ live run uses (tokenize, completion incl. draft acceptance, save, restore, erase
 - the `[ple-hist]` counter on each recorded log pair and on known synthetic lines;
 - draft acceptance summed over the recorded completions, and on synthetic drafted/undrafted responses;
 - that a missing response field throws an error naming the field, and the F11 restore shape (`stateos.checkpoints`);
-- the identity verdict rule on all eight branches, then on every identity leg in the recorded `results.json`
-  (`recorded=… now=… [reason]`), with each leg's warm/round-1/round-2 draft acceptance read back from the recorded
-  responses (matched in order by text, `prompt_n` and `predicted_n`);
+- the identity verdict rule on ten branches, the mechanism rule (a good leg; zero checkpoints, short `n_saved`, short
+  `n_restored`, a skipped checkpoint status and an empty output each refused) and `First-Divergence`, then every
+  identity leg in the recorded `results.json` (`recorded=… now=… [reason]`, first divergence in characters), with each
+  leg's warm/round-1/round-2 draft acceptance read back from the recorded responses (matched in order by text,
+  `prompt_n` and `predicted_n`);
+- the binary identity of this worktree's build (read-only: SHA-256, HEAD, mtimes; the result is printed, nothing is
+  refused in a dry run);
 - the header readers on a recorded `slots\id4k.state` (and whether it carries `effective_model`).
 
 A restore recorded by a binary before `b29a940c` (lane 1's 7c77724b) has no `stateos.checkpoints` status, which the F11
@@ -128,8 +149,12 @@ tampered in a copy of `id4k.state` (`model_fingerprint_v2, effective_model, n_ct
 system_prompt_sha256, kv_geometry, n_tokens, token_sha256`) plus an unknown hard field, a fake and a real (lane-0 file
 head) legacy/unkeyed file, a truncated file, a junk file and a missing file must each answer **409** (missing =
 `state_missing`, legacy = `state_legacy_unkeyed`, truncated = `state_corrupt`, header = `state_refused` with
-`refused_field` = the tampered key) with `slot_untouched: true`. Then `/completion P+Z` must reproduce the warm output
-with the same `prompt_n` — the slot still held S0 through every refusal.
+`refused_field` = the tampered key). Every restore refusal (these, and the F11 `effective_model` / `state_unreadable`
+ones) must also carry `error.slot_untouched: true`, and each entry's `pass` requires it. The reserved-name refusals
+are answered by the HTTP handler before any slot task exists, so their bodies have no `slot_untouched`; for them, and
+for all the rest, the proof is the continuation: `/completion P+Z` must reproduce the warm output with the same
+`prompt_n` — the slot still held S0 through every refusal. A missing optional input (the lane-0 legacy file, lane 1's
+7c77724b `id4k.state`) is recorded as `skipped: missing input …` with `pass: false`, never silently dropped.
 
 Destructive paths (review MUST-3), oracle = the 4K cold output (a full prefill of `P+Z`):
 - **Empty-slot round trip:** `erase` → `save empty.state` (200, `n_saved` 0) → `/completion Q` → `restore empty.state` →
@@ -139,6 +164,8 @@ Destructive paths (review MUST-3), oracle = the 4K cold output (a full prefill o
 - **MAIN tamper:** a copy of `id4k.state` whose MAIN `cell_count` is +1 (container still well-formed, so verification
   passes) → `restore` → **500** with `slot_untouched: false` → `/health` ok → `/completion P+Z` re-prefills and equals
   the cold output.
+- Both are spec-off steps, so there is no nondeterminism allowance: a mechanism miss or an output that differs from
+  the cold run (the same full-prefill computation) is `FAIL`.
 - **Leg B, companion sub-header tamper:** a copy of `on32k.state` with one hex digit of `companion_kv_geometry` changed
   (same length) → **200** with `stateos.companion` = `skipped: companion field 'companion_kv_geometry' differs …`.
 
@@ -158,9 +185,20 @@ production context.
   completions from one cached prefix: a second `P+Z` request on a slot that already holds `P+Z+generated` would truncate
   the generated tail, which on this hybrid model goes through the checkpoint/rollback machinery, i.e. state again, and
   its `Z` would not be re-prefilled, so the batch shapes would differ from the warm run. Rebuilding S0 by prefill keeps
-  every computation of the warm run and removes only the restore. What still differs between the two warm runs is
-  decode-side: spec-decode draft/verify batch shapes and the server-wide ngram-mod table, which grew since the first warm
-  run (neither is slot state). `agrees_with_warm` records the outcome.
+  every computation of the warm run and removes only the restore. `agrees_with_warm` records the outcome.
+  - **Validity** (`warm_control.valid`, `invalid_reason`): the control's `prompt_n` must equal the warm run's (it
+    re-used exactly as much), neither the warm window (erase → warm continuation) nor the control window (erase →
+    control continuation) may contain a RAM prompt-cache line (`prompt cache load` or `MTP invalidate: prompt_load`,
+    either log), and the control must produce output. An invalid control counts as no control: a restored ≠ warm stays
+    `UNPROVEN`.
+  - **Uncontrolled variation, recorded not removed** (`warm_control.uncontrolled`): the server-wide ngram-mod table
+    and the MTP draft history grow with every request, so they differ between the first warm run and the control (and
+    between the restore rounds). A valid control that disagrees shows decode nondeterminism is present; it does not
+    exclude a state defect, which is why that outcome is `INCONCLUSIVE`, not a pass.
+- **First divergence** (`first_divergence.{restored1_vs_warm, restored2_vs_warm, warm2_vs_warm}`): the character index
+  where each output leaves the warm text, and the token index after re-tokenizing both texts via `/tokenize`
+  (`token_retokenized`; re-tokenization can differ from the generated ids, so it is a locator, not a proof); -1 = equal.
+  Lane 1's on32k: round 1 left warm at character 74, round 2 at 339 (from the recorded texts).
 - **Draft acceptance** comes from each `/completion` response: the server adds `timings.draft_n` and
   `timings.draft_n_accepted` (plus `draft_by_depth`) whenever the request drafted (`n_draft_total > 0`); absent means 0
   drafted. Recorded as `warm_acceptance`, `restored[].acceptance`, `warm_control.acceptance`,
@@ -180,30 +218,38 @@ production context.
   REUSE-INCONCLUSIVE` means identity held but the warm run itself re-prefilled (read `prompt_n` in results.json).
 - **Identity verdict rule, every identity leg** (`Get-IdentityVerdict`, shared by the live run and the dry run; the
   reason is in `verdict_reason`, and in `fail_reason` for a FAIL):
-  1. checkpoints not all restored (`ckpt_ok` false) → `FAIL`, whatever the outputs;
+  1. mechanism not met (`mechanism.ok` / `ckpt_ok` false, below) → `FAIL`, whatever the outputs;
   2. both restored outputs == warm → `PASS` (or `PASS-IDENTITY / REUSE-INCONCLUSIVE`, above);
-  3. restored ≠ warm and the warm-vs-warm control ran (Leg B): the two warm runs **also disagree** → `INCONCLUSIVE`
-     (attributed to decode nondeterminism); the two warm runs **agree** while restored differs → `FAIL` (a state-defect
-     signal: Leg B fails);
-  4. restored ≠ warm, no control (Leg A, and 190K when it was not needed): `restored_runs_agree` false →
-     `INCONCLUSIVE` (engine run-to-run nondeterminism); the two restored runs agree with each other → `FAIL`.
+  3. restored ≠ warm with **speculation off (Leg A)** → `FAIL`. No nondeterminism allowance: lane 1's receipts show
+     spec-off decode is deterministic (4K and 32K: both restored runs equal warm, and the destructive re-prefills equal
+     cold), and Leg A has no warm-vs-warm control;
+  4. restored ≠ warm with **speculation on (Leg B)**: no valid warm-vs-warm control → `UNPROVEN` (neither cleared nor
+     failed); a valid control whose two warm runs **agree** → `FAIL` (state-defect signal: Leg B fails); a valid control
+     whose two warm runs **also disagree** → `INCONCLUSIVE` (decode nondeterminism is present, a state defect is not
+     excluded).
 
-  Only a 4K `FAIL` stops the run. Lane 1's `on32k` (restored ≠ warm, the two restored runs different from each other,
-  no control) was labelled `FAIL` by the old script; under this rule it is `INCONCLUSIVE` (the dry run shows
-  `recorded=FAIL now=INCONCLUSIVE`), and the F11 run's control decides between rule 3's two outcomes.
-- `identity_*.ckpt_ok` (hard: `false` makes the leg's `verdict` FAIL, and at 4K the run stops): every restore round reports `stateos.checkpoints == "restored"` and
-  `checkpoints_restored == save.checkpoints_saved`. The rounds restore right after a short conversation (Q), which is
-  where a bound measured on the slot's current length wrongly refused or dropped checkpoints.
+  Lane 1's `on32k` (restored ≠ warm, no control) was labelled `FAIL` by the old script; under this rule it is
+  `UNPROVEN` (the dry run shows `recorded=FAIL now=UNPROVEN`). The F11 run's control can move it to `FAIL` or
+  `INCONCLUSIVE`; nothing in this harness can turn a spec-on mismatch into a pass.
+- **Kill:** the 4K identity leg not `PASS*` stops the run before 32K, and the 32K identity leg not `PASS*` stops it
+  before the refusals (both spec off).
+- `identity_*.mechanism` / `ckpt_ok` (hard, rule 1; `Test-IdentityMechanism`): the save covers exactly the prompt
+  (`n_saved` = |P|) with **at least one checkpoint** (`checkpoints_saved ≥ 1`, so the checkpoint restore cannot pass
+  vacuously; lane 1 saved 3 / 17 / 17 / 32); every restore round has `n_restored` = |P|, status
+  `stateos.checkpoints == "restored"` and `checkpoints_restored == checkpoints_saved` (≥ 1); and warm and both restored
+  runs produced output (`predicted_n > 0`, non-empty text). The rounds restore right after a short conversation (Q),
+  which is where a bound measured on the slot's current length wrongly refused or dropped checkpoints.
+- `identity_*.ple_ok` (hard) and `ple_hist.all_ok`: 0 `[ple-hist]` resets at pos > 0 and at least one
+  `site=server-resume` set in every identity restore round (see "PLE n-gram history" above).
 - `refusals`: every entry `pass: true`; `soft_build.pass: true`; `slot_untouched_after_refusals.pass: true`.
-- `empty_roundtrip.verdict` and `main_tamper.verdict` (Leg A) = `PASS`. Their mechanism conditions (status codes,
-  `slot_untouched`, server alive, full re-prefill) must hold in every case. If only the output differs from the cold
-  run while `identity_4k.restored_runs_agree` is false, the verdict is `INCONCLUSIVE` (engine nondeterminism, the same
-  rule as the identity legs), not `FAIL`.
+- `empty_roundtrip.verdict` and `main_tamper.verdict` (Leg A) = `PASS`: their mechanism conditions (status codes,
+  `slot_untouched`, server alive, full re-prefill, 0 PLE resets) hold and the output equals the cold run; otherwise
+  `FAIL` (spec off: no nondeterminism allowance).
 - `comp_tamper.verdict` (Leg B, report-only leg but a hard expectation) = `PASS`. If `on32k.state` carries no COMP
   section, the step records `FAIL` with the reason and the run continues to the 190K measurement.
 - Report-only: `identity_cold_vs_warm_report_only` (a cold/warm difference is the known batch-shape arithmetic effect,
-  not a state defect), everything in Leg B, `restored_runs_agree` (false = engine run-to-run nondeterminism: mark
-  INCONCLUSIVE, not FAIL — rule 4 above), `warm_control` (rule 3), the draft acceptance numbers.
+  not a state defect), Leg B apart from a `FAIL` verdict and `props_stateos` / `comp_tamper`, `restored_runs_agree`,
+  `first_divergence`, `warm_control.uncontrolled`, the draft acceptance numbers.
 - F11 (hard expectations, no kill; see the next section): `tmp_cleanup.pass`, the F11 entries of `refusals`
   (`<effective_model absent>`, `<7c77724b file>`, `<unreadable: directory>`, `<reserved name: save|restore|rename>`),
   `list_redacted.pass`, `adapter_generation.pass`; `effective_model_header.value` is report-only (expect `none`).
@@ -226,8 +272,10 @@ production context.
 | `/list` redaction and legacy range check (`4e1f27ca`) | `list_redacted`: the `id4k.state` entry is `stateos-v1`, `prompt: null`, `prompt_redacted`, `token_count` 4096, `token_sha256` = the save's | out-of-range legacy ids need a crafted legacy file; unit-tested |
 | layout-descriptor renderer (`14c84ffe`) | implicitly: `kv_geometry` matches on every same-binary restore | byte-identity with the 7c77724b text cannot show on the GPU (the 7c77724b file is refused earlier, on `effective_model`); goldens in `test-stateos-layout` |
 | N5/N6 nits (`9436d471`) | the empty-restore reply is recorded (`empty_roundtrip.restore`) | tokens > n_ctx and the post-commit reply need crafted files / faults: CPU tests |
-- **Kill (auto-stop in the script):** 4K identity FAIL stops the run before 32K (merged plan: "greedy identity fails at
-  4K/32K → do not ship v1 beyond lane 0"); the first hard-field refusal that is not a 409 naming its field stops the run.
+- **Kill (auto-stop in the script):** a 4K identity verdict other than `PASS*` stops the run before 32K, and a 32K one
+  stops it before the refusals (merged plan: "greedy identity fails at 4K/32K → do not ship v1 beyond lane 0"); the
+  first hard-field refusal that is not a 409 naming its field stops the run; a binary-identity refusal stops it before
+  the launch it guards.
 
 ## Measured state bytes (paste into the report/ledger)
 
@@ -261,13 +309,20 @@ The committed file must use the TEMPLATE headings (`## Decision this run can cha
 cannot answer`, `## Mechanism kill criteria`, `## Auto-stop`) or the guard refuses it. Content:
 
 1. **Decision it changes:** whether the F11 build replaces 7c77724b as the State-OS v1 engine (its restore path changed:
-   CKPT bound, `effective_model`, adapter stamp), and whether Leg B's spec-on restored ≠ warm is a state defect (warm-vs-
-   warm control) or decode nondeterminism — which decides if spec-on State-OS may ship.
+   CKPT bound, `effective_model`, adapter stamp). Secondary, report-only: evidence on Leg B's spec-on restored ≠ warm.
+   A valid warm-vs-warm control that agrees while restored differs is a state-defect signal (Leg B FAIL, blocks spec-on
+   State-OS); one that also disagrees only shows decode nondeterminism is present (the server-wide ngram-mod table and
+   MTP draft history are uncontrolled between the runs), so it cannot by itself clear spec-on State-OS to ship.
 2. **Why offline cannot answer:** the header codec, refusal logic, container parser and the F11 predicates are covered
    by `test-stateos-header` (291 checks) and `test-stateos-layout` (CPU); lane 1's receipts (7c77724b) cannot show the
    F11 restore path, and they carry no warm-vs-warm control. Whether an F11-restored qwen4exp slot continues
    byte-identically needs the real model on the GPU. No reviewer advised waiting.
-3. **Mechanism kill criteria:** (a) the first 4K identity round must show restored == in-memory output; a FAIL stops the
-   run before 32K; (b) the first tampered-header restore must answer 409 naming its field; otherwise stop. Read after
-   the probe and after every round from `verdict.txt`.
-4. **Auto-stop:** both criteria `throw` inside the script; the `finally` block restores `:8099` and polls its health.
+3. **Mechanism kill criteria:** (a) the 4K identity leg (spec off) must be `PASS*`: its mechanism (≥ 1 checkpoint saved
+   and every one restored, token counts = |P|, non-empty outputs) holds and both restored outputs equal the in-memory
+   output; anything else stops the run before 32K; (b) the same for 32K, else stop before the refusals; (c) the first
+   tampered-header restore must answer 409 naming its field; otherwise stop; (d) the exe must be the build of the
+   worktree's clean HEAD (SHA-256 recorded) before each launch; otherwise refuse. Read after the probe and after every
+   round from `verdict.txt`.
+4. **Auto-stop:** every criterion `throw`s inside the protected block; the `finally` block relaunches `:8099` first,
+   polls its health, then saves the receipts; the process exits 1 on any abort, failed hard expectation or failed
+   production restore.

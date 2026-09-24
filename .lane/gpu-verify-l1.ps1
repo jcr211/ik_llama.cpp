@@ -8,14 +8,21 @@
 # Leg A (spec OFF, the acceptance leg): greedy identity (temperature 0) across save -> pollute -> restore at 4K and 32K,
 #   one 409 refusal per hard header field + unknown-hard-field + legacy/unkeyed + corrupt + missing, a soft-field warning,
 #   a continuation proving the slot was untouched by every refusal, then the destructive paths: an empty-slot round trip
-#   and a MAIN-payload tamper (500, slot cleared, server alive, correct re-prefill). Auto-stops on the first identity
-#   FAIL or on a refusal that is not a 409 naming its field (mechanism kill criteria).
+#   and a MAIN-payload tamper (500, slot cleared, server alive, correct re-prefill). Auto-stops when the 4K or the 32K
+#   identity leg is anything but PASS* (spec off: restored != warm is FAIL, no nondeterminism allowance) or on a refusal
+#   that is not a 409 naming its field (mechanism kill criteria).
+# Before the preflight touches anything, and again before each launch, the exe must be the build of this worktree's
+#   clean HEAD (Assert-Binary: sha256 + HEAD recorded; newer than every tracked file outside .lane/). The production
+#   stop is inside the protected block; finally relaunches production before saving receipts. Exit code: 0 only when
+#   the run completed, every hard expectation held and production is back (hard_failures in results.json).
 #   F11 behaviours observable on the real model: the startup cleanup of stale *.stateos.tmp files, effective_model in
 #   the save header and its refusal (tampered, missing, and a real 7c77724b file), state_unreadable, the reserved
 #   .stateos.tmp names (save, restore, /rename_prompt), /list redaction, and the runtime adapter generation (an empty
 #   /control-vectors/apply makes the slot unsaveable until it re-prefills; a bad id changes nothing).
 # Leg B (spec ON = production flags, report-only): companion section saved/loaded at 32K with a warm-vs-warm control
-#   (two warm runs, no restore between them), a companion sub-header tamper (200, companion skipped), draft acceptance
+#   (two warm runs, no restore between them; valid only with equal prompt_n and no prompt-cache load; restored != warm
+#   is UNPROVEN without a valid control, FAIL when the valid control agrees, INCONCLUSIVE when it also disagrees),
+#   a companion sub-header tamper (200, companion skipped), draft acceptance
 #   (from each /completion response's timings) with the companion vs a companion-less file, and the state bytes +
 #   restore time at 190K tokens (production context 196608).
 #
@@ -65,8 +72,8 @@ foreach ($k in $ServerEnv.Keys) { Set-Item -Path "Env:$k" -Value $ServerEnv[$k] 
 if (-not $DryRun) { New-Item -ItemType Directory -Force -Path $Root, $SlotDir | Out-Null }
 Add-Type -AssemblyName System.Net.Http
 $Http = New-Object System.Net.Http.HttpClient
-$Http.Timeout = [TimeSpan]::FromMinutes(60)
-$Results = [ordered]@{ started = (Get-Date).ToUniversalTime().ToString('o'); legA = [ordered]@{}; legB = [ordered]@{} }
+$Http.Timeout = [TimeSpan]::FromMinutes(60)   # upper bound; each call carries its own, shorter timeout (Api -TimeoutSec)
+$Results = [ordered]@{ started = (Get-Date).ToUniversalTime().ToString('o'); binary = [ordered]@{}; legA = [ordered]@{}; legB = [ordered]@{} }
 
 function Log([string] $m) {
     $line = "[$((Get-Date).ToUniversalTime().ToString('HH:mm:ss'))] $m"
@@ -104,11 +111,20 @@ function Field($Resp, [string] $Path) {
 }
 function Save-Results { $Results | ConvertTo-Json -Depth 10 | Out-File -LiteralPath $ResultsJs -Encoding utf8 }
 
-function Api([string] $Method, [string] $Path, [string] $Json) {
+# Timeouts: 60 s for calls that do no prefill (props, tokenize, list, erase, adapters, rename), 600 s for slot save/
+# restore (lane 1: 190K save 23 s, restore 9 s), 3600 s for completions (190K prefill). A hung small call throws, the
+# run aborts, and the finally block relaunches production instead of waiting out the client's 60-minute bound.
+function Api([string] $Method, [string] $Path, [string] $Json, [int] $TimeoutSec = 60) {
     $req = New-Object System.Net.Http.HttpRequestMessage((New-Object System.Net.Http.HttpMethod($Method)), "$Base$Path")
     if ($Json) { $req.Content = New-Object System.Net.Http.StringContent($Json, [System.Text.Encoding]::UTF8, 'application/json') }
-    $resp = $Http.SendAsync($req).GetAwaiter().GetResult()
-    $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    $cts = New-Object System.Threading.CancellationTokenSource ([TimeSpan]::FromSeconds($TimeoutSec))
+    try {
+        $resp = $Http.SendAsync($req, $cts.Token).GetAwaiter().GetResult()
+        $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    } catch {
+        # PowerShell wraps the TaskCanceledException in a MethodInvocationException: test the token, not the type
+        if ($cts.IsCancellationRequested) { throw "$Method $Path timed out after $TimeoutSec s" } else { throw }
+    } finally { $cts.Dispose() }
     $obj = $null
     try { $obj = $text | ConvertFrom-Json } catch {}
     [pscustomobject]@{ Status = [int] $resp.StatusCode; Body = $obj; Raw = $text }
@@ -180,12 +196,12 @@ function New-SyntheticText([int] $Lines, [int] $Seed) {
 function Complete([int[]] $Ids, [int] $NPredict) {
     $json = '{"prompt":[' + ($Ids -join ',') + '],"n_predict":' + $NPredict +
             ',"temperature":0,"top_k":1,"top_p":1,"min_p":0,"seed":1234,"cache_prompt":true,"id_slot":0,"stream":false}'
-    Parse-Completion (Api 'POST' '/completion' $json)
+    Parse-Completion (Api 'POST' '/completion' $json 3600)
 }
 
 function Slot([string] $Action, [string] $File) {
     $json = if ($File) { '{"filename":"' + $File + '"}' } else { '{}' }
-    Api 'POST' "/slots/0?action=$Action" $json
+    Api 'POST' "/slots/0?action=$Action" $json $(if ($Action -eq 'erase') { 60 } else { 600 })
 }
 
 function Concat([int[]] $A, [int[]] $B) { $r = New-Object int[] ($A.Length + $B.Length); [Array]::Copy($A, $r, $A.Length); [Array]::Copy($B, 0, $r, $A.Length, $B.Length); return ,$r }
@@ -236,12 +252,51 @@ function Acceptance($C) {
     [pscustomobject]@{ accepted = $a; generated = $g; rate = $(if ($g) { [math]::Round($a / $g, 4) } else { $null }) }
 }
 
+# ---- binary identity: which exe runs, from which commit, and is it the build of that commit --------------------------
+# The exe must be newer than every tracked file outside .lane/ (the lane's script, logs and notes, which are not build
+# inputs), and the tracked tree outside .lane/ must be clean, so the exe is the build of HEAD. Recorded per launch.
+function Get-BinaryIdentity {
+    $ErrorActionPreference = 'Continue'   # local: in PS 5.1 a git warning on stderr must not become a terminating error
+    $b = [ordered]@{ exe = $PatchedExe; sha256 = $null; exe_mtime = $null; head = $null; dirty = @(); newest_source = $null; newest_source_mtime = $null; ok = $false; reason = '' }
+    if (-not (Test-Path -LiteralPath $PatchedExe)) { $b.reason = "missing exe $PatchedExe"; return $b }
+    $exe = Get-Item -LiteralPath $PatchedExe
+    $b.exe_mtime = $exe.LastWriteTime.ToString('o')
+    $b.sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $PatchedExe).Hash.ToLowerInvariant()
+    $b.head = [string] (& git -C $Worktree rev-parse HEAD 2>$null)
+    if (($LASTEXITCODE -ne 0) -or -not $b.head) { $b.reason = 'git rev-parse HEAD failed'; return $b }
+    $b.dirty = @(& git -C $Worktree status --porcelain --untracked-files=no -- . ':(exclude).lane' 2>$null)
+    if ($LASTEXITCODE -ne 0) { $b.reason = 'git status failed'; return $b }
+    $files = @(& git -C $Worktree ls-files -- . ':(exclude).lane' 2>$null)
+    if (($LASTEXITCODE -ne 0) -or ($files.Count -eq 0)) { $b.reason = 'git ls-files failed'; return $b }
+    $newest = $null
+    foreach ($f in $files) {
+        $it = Get-Item -LiteralPath (Join-Path $Worktree $f) -ErrorAction SilentlyContinue
+        if ($it -and (($null -eq $newest) -or ($it.LastWriteTime -gt $newest.LastWriteTime))) { $newest = $it }
+    }
+    $b.newest_source = $newest.FullName; $b.newest_source_mtime = $newest.LastWriteTime.ToString('o')
+    $reasons = @()
+    if ($b.dirty.Count) { $reasons += "tracked files modified outside .lane/: $($b.dirty -join ', ')" }
+    if ($newest.LastWriteTime -gt $exe.LastWriteTime) { $reasons += "$($newest.FullName) ($($b.newest_source_mtime)) is newer than the exe ($($b.exe_mtime)): rebuild" }
+    $b.reason = $reasons -join '; '
+    $b.ok = ($reasons.Count -eq 0)
+    return $b
+}
+function Assert-Binary([string] $When) {
+    $b = Get-BinaryIdentity
+    $Results.binary[$When] = $b
+    Log "binary ($When): sha256=$($b.sha256) HEAD=$($b.head) exe_mtime=$($b.exe_mtime) newest tracked=$($b.newest_source_mtime) ok=$($b.ok)"
+    if (-not $b.ok) { throw "REFUSED: binary identity ($When): $($b.reason)" }
+    if ($Results.binary.Contains('preflight') -and ($b.sha256 -ne $Results.binary.preflight.sha256)) { throw "REFUSED: the exe changed since the preflight ($When)" }
+}
+
 function Start-TestServer([string] $Name, [string[]] $Extra) {
+    Assert-Binary $Name
     $log = Join-Path $Root "$Name.log"; $err = Join-Path $Root "$Name.err.log"
     Remove-Item -LiteralPath $log, $err -ErrorAction SilentlyContinue
     # Start-Process joins ArgumentList with spaces and does not quote: paths with spaces carry their own quotes
     $argv = @('-m', ('"' + $Model + '"'), '--host', '127.0.0.1', '--port', "$Port", '--slot-save-path', ('"' + $SlotDir + '"'), '--verbose') + $CommonArgs + $Extra
     Add-Content -LiteralPath (Join-Path $Root 'launch-args.txt') -Value "$Name`: $PatchedExe $($argv -join ' ')" -Encoding utf8
+    Add-Content -LiteralPath (Join-Path $Root 'launch-args.txt') -Value "$Name binary: sha256=$($Results.binary[$Name].sha256) HEAD=$($Results.binary[$Name].head)" -Encoding utf8
     $envLine = ($ServerEnv.Keys | ForEach-Object { "$_=" + [Environment]::GetEnvironmentVariable($_) }) -join ' '
     Add-Content -LiteralPath (Join-Path $Root 'launch-args.txt') -Value "$Name env: $envLine" -Encoding utf8
     $p = Start-Process -FilePath $PatchedExe -ArgumentList $argv -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError $err
@@ -338,50 +393,81 @@ function Need-HeaderValue([string] $Path, [string] $Key) {
 }
 
 # ---- identity verdict (shared by the live run and -DryRun; GPU-VERIFY.md "Pass criteria") ----------------------
-#   checkpoints not all restored                         -> FAIL (hard, review F11-2 P3-2), whatever the outputs say
-#   both restored outputs == warm                        -> PASS, or PASS-IDENTITY / REUSE-INCONCLUSIVE if warm re-prefilled
-#   restored != warm, warm-vs-warm control run (spec on): the two warm runs disagree too -> INCONCLUSIVE (decode
-#                                                          nondeterminism); they agree -> FAIL (state-defect signal)
-#   restored != warm, no control: the two restored runs disagree with each other -> INCONCLUSIVE (engine run-to-run
-#                                                          nondeterminism); they agree -> FAIL
-# $WarmVsWarm: $null when the control did not run, else whether the two warm runs produced the same text.
-function Get-IdentityVerdict([bool] $CkptOk, [string] $Warm, [string] $Restored1, [string] $Restored2, [bool] $Reuse, $WarmVsWarm) {
+#   mechanism not met (Test-IdentityMechanism)            -> FAIL, whatever the outputs say
+#   both restored outputs == warm                         -> PASS, or PASS-IDENTITY / REUSE-INCONCLUSIVE if warm re-prefilled
+#   restored != warm, speculation OFF (Leg A)             -> FAIL: spec-off decode is deterministic (lane 1: both 4K and
+#                                                            32K restored runs agreed with warm), so no allowance
+#   restored != warm, speculation ON (Leg B):
+#       no valid warm-vs-warm control                     -> UNPROVEN (neither cleared nor failed)
+#       valid control, the two warm runs agree            -> FAIL (state-defect signal)
+#       valid control, the two warm runs also disagree    -> INCONCLUSIVE (decode nondeterminism is present; a state
+#                                                            defect is not excluded)
+# $WarmVsWarm: $null when no VALID control ran, else whether the two warm runs produced the same text.
+function Get-IdentityVerdict([bool] $MechOk, [string] $MechReason, [string] $Warm, [string] $Restored1, [string] $Restored2, [bool] $Reuse, $WarmVsWarm, [bool] $SpecOn) {
     $same = ($Restored1 -ceq $Warm) -and ($Restored2 -ceq $Warm)
-    $v = if (-not $CkptOk) { 'FAIL', 'checkpoints not all restored' }
+    $v = if (-not $MechOk) { 'FAIL', $MechReason }
          elseif ($same -and $Reuse) { 'PASS', '' }
          elseif ($same) { 'PASS-IDENTITY / REUSE-INCONCLUSIVE', 'identity held but the warm run re-prefilled' }
-         elseif ($null -ne $WarmVsWarm) {
-             if ([bool] $WarmVsWarm) { 'FAIL', 'restored != warm while two warm runs (no restore) agree: state-defect signal' }
-             else { 'INCONCLUSIVE', 'restored != warm, and two warm runs (no restore) also disagree: decode nondeterminism' }
-         }
-         elseif (-not ($Restored1 -ceq $Restored2)) { 'INCONCLUSIVE', 'restored != warm, and the two restored runs disagree with each other: engine run-to-run nondeterminism' }
-         else { 'FAIL', 'restored != warm, and the two restored runs agree with each other' }
+         elseif (-not $SpecOn) { 'FAIL', 'restored != warm with speculation off (no nondeterminism allowance in Leg A)' }
+         elseif ($null -eq $WarmVsWarm) { 'UNPROVEN', 'restored != warm with speculation on, and no valid warm-vs-warm control' }
+         elseif ([bool] $WarmVsWarm) { 'FAIL', 'restored != warm while two warm runs (no restore) agree: state-defect signal' }
+         else { 'INCONCLUSIVE', 'restored != warm, and two warm runs (no restore) also disagree: decode nondeterminism present, a state defect not excluded' }
     [pscustomobject]@{ verdict = $v[0]; reason = $v[1] }
 }
-# every saved checkpoint comes back, whatever the slot held before the restore (review F11 P1: the restores here follow
-# a short Q conversation, which a slot-length-dependent bound got wrong)
-function Test-CkptOk([int] $Saved, $Restores) {
+# The identity leg's mechanism, required before any PASS: the save and both restores cover exactly the prompt, at least
+# one checkpoint is saved and every one comes back with status "restored" (review F11 P1: the restores follow a short Q
+# conversation, where a slot-length-dependent bound got it wrong), and every compared run produced output.
+# $Restores: objects with n_restored, checkpoints (status; $null when -StatusUnknown), checkpoints_restored.
+# $Outs: parsed completions (content, predicted_n) of warm, round 1, round 2.
+function Test-IdentityMechanism([int] $NPrompt, $Save, $Restores, $Outs, [switch] $StatusUnknown) {
+    $why = @()
+    $saved = [int] $Save.checkpoints_saved
+    if ([int] $Save.n_saved -ne $NPrompt) { $why += "save n_saved=$($Save.n_saved), expected $NPrompt" }
+    if ($saved -lt 1) { $why += 'no checkpoint saved (the checkpoint restore would go unexercised)' }
+    $k = 0
     foreach ($rs in $Restores) {
-        $st = [string] $rs.checkpoints
-        $okStatus = if ($Saved -gt 0) { $st -eq 'restored' } else { ($st -eq 'restored') -or ($st -eq 'absent') }
-        if (-not $okStatus -or ([int] $rs.checkpoints_restored -ne $Saved)) { return $false }
+        $k++
+        if ([int] $rs.n_restored -ne $NPrompt) { $why += "round $k n_restored=$($rs.n_restored), expected $NPrompt" }
+        if (([int] $rs.checkpoints_restored -lt 1) -or ([int] $rs.checkpoints_restored -ne $saved)) { $why += "round $k checkpoints_restored=$($rs.checkpoints_restored) of $saved saved" }
+        if (-not $StatusUnknown -and ([string] $rs.checkpoints -ne 'restored')) { $why += "round $k checkpoints status '$($rs.checkpoints)'" }
     }
-    return $true
+    $names = @('warm', 'round 1', 'round 2')
+    for ($i = 0; $i -lt @($Outs).Count; $i++) {
+        $o = @($Outs)[$i]
+        if (([int] $o.predicted_n -le 0) -or [string]::IsNullOrEmpty([string] $o.content)) { $why += "$($names[$i]) produced no output (predicted_n=$($o.predicted_n))" }
+    }
+    [pscustomobject]@{ ok = ($why.Count -eq 0); reason = ($why -join '; ') }
+}
+# index of the first difference between two sequences (strings or int arrays), -1 when equal
+function First-Divergence($A, $B) {
+    $a = @($(if ($A -is [string]) { $A.ToCharArray() } else { $A })); $b = @($(if ($B -is [string]) { $B.ToCharArray() } else { $B }))
+    $n = [math]::Min($a.Count, $b.Count)
+    for ($i = 0; $i -lt $n; $i++) { if ($a[$i] -cne $b[$i]) { return $i } }
+    if ($a.Count -eq $b.Count) { return -1 } else { return $n }
 }
 
 # ---- one identity round: in-memory continuation vs restored continuation (x2) vs cold (report-only) ----
-# -WarmControl 'always' | 'if-differs': after the restore rounds, rebuild S0 by prefill (erase, P, no restore) and run
-# the same warm continuation again; 'if-differs' only when a restored output differs from warm (spend GPU time only
-# where the control can change the verdict).
-function Test-Identity([string] $Tag, [int[]] $P, [int[]] $Z, [int[]] $Q, [int] $NGen, [switch] $NoCold, [string] $LogPath, [string] $WarmControl) {
+# -WarmControl 'always' | 'if-differs' (Leg B only): after the restore rounds, rebuild S0 by prefill (erase, P, no
+# restore) and run the same warm continuation again; 'if-differs' only when a restored output differs from warm (spend
+# GPU time only where the control can change the verdict).
+# RAM prompt-cache activity in a window (a cached state loaded instead of a prefill): both logs, since LLAMA_LOG_INFO
+# and LOG_VERBOSE may land in different streams
+function Cache-Lines($Offsets) {
+    [string[]] $out = Read-LogSince $Offsets.OutPath $Offsets.Out
+    [string[]] $err = Read-LogSince $Offsets.ErrPath $Offsets.Err
+    @(@($out) + @($err) | Where-Object { ($null -ne $_) -and (($_ -like '*prompt cache load*') -or ($_ -like '*MTP invalidate: prompt_load*')) }).Count
+}
+function Test-Identity([string] $Tag, [int[]] $P, [int[]] $Z, [int[]] $Q, [int] $NGen, [switch] $NoCold, [string] $LogPath, [string] $WarmControl, [switch] $SpecOn) {
     $PZ = Concat $P $Z
-    $res = [ordered]@{ n_prompt = $P.Length; n_suffix = $Z.Length }
+    $res = [ordered]@{ n_prompt = $P.Length; n_suffix = $Z.Length; spec_on = [bool] $SpecOn }
+    $pw = Ple-Offsets $LogPath                                   # warm window: erase through the warm continuation
     [void] (Slot 'erase' $null)
     [void] (Complete $P 1)                                       # in-memory state S0: the slot holds P
     $res.save = Parse-Save (Slot 'save' "$Tag.state") $Tag
     $po = Ple-Offsets $LogPath
     $w = Complete $PZ $NGen                                      # continuation from the in-memory S0
     $res.warm = $w; $res.warm_acceptance = Acceptance $w; $res.warm_ple = Ple-Counts $po
+    $warmCache = Cache-Lines $pw
 
     $runs = @()
     foreach ($k in 1, 2) {
@@ -398,23 +484,47 @@ function Test-Identity([string] $Tag, [int[]] $P, [int[]] $Z, [int[]] $Q, [int] 
     $res.ple_resets_pos_gt0 = [int] $runs[0].ple.resets_pos_gt0 + [int] $runs[1].ple.resets_pos_gt0
     $res.ple_ok = ($res.ple_resets_pos_gt0 -eq 0) -and ($runs[0].ple.sets_server_resume -ge 1) -and ($runs[1].ple.sets_server_resume -ge 1)
     $saved = [int] $res.save.checkpoints_saved
-    $res.ckpt_ok = Test-CkptOk $saved @($runs[0].restore, $runs[1].restore)
-    Log "$Tag checkpoints: saved=$saved restored=$($runs[0].restore.checkpoints_restored)/$($runs[1].restore.checkpoints_restored) status='$($runs[0].restore.checkpoints)' ok=$($res.ckpt_ok)"
+    $mech = Test-IdentityMechanism $P.Length $res.save @($runs[0].restore, $runs[1].restore) @($w, $runs[0].out, $runs[1].out)
+    $res.ckpt_ok = $mech.ok
+    $res.mechanism = [ordered]@{ ok = $mech.ok; reason = $mech.reason }
+    Log "$Tag mechanism: saved n=$($res.save.n_saved) ckpt=$saved; restored n=$($runs[0].restore.n_restored)/$($runs[1].restore.n_restored) ckpt=$($runs[0].restore.checkpoints_restored)/$($runs[1].restore.checkpoints_restored) status='$($runs[0].restore.checkpoints)'; ok=$($mech.ok)$(if ($mech.reason) { " [$($mech.reason)]" })"
     $same1 = $runs[0].out.content -ceq $w.content
     $same2 = $runs[1].out.content -ceq $w.content
 
-    # warm-vs-warm control (report-only): S0 rebuilt by the same erase + P prefill as the warm run, no restore anywhere,
-    # so a difference between the two warm runs is decode nondeterminism (spec-decode draft/verify batch shapes, the
-    # server-wide ngram-mod table that grew since the first warm run), not the restored state.
+    # warm-vs-warm control (Leg B): S0 rebuilt by the same erase + P prefill as the warm run, no restore anywhere.
+    # Valid only when the control re-used exactly as much as the warm run (same prompt_n) and neither window shows a RAM
+    # prompt-cache load; otherwise $wvw stays $null and a restored != warm stays UNPROVEN. Uncontrolled even when valid:
+    # the server-wide ngram-mod table and the MTP draft history grew between the first warm run and the control.
     $wvw = $null
     if (($WarmControl -eq 'always') -or (($WarmControl -eq 'if-differs') -and -not ($same1 -and $same2))) {
+        $pc = Ple-Offsets $LogPath
         [void] (Slot 'erase' $null)
         [void] (Complete $P 1)
         $w2 = Complete $PZ $NGen
-        $wvw = ($w2.content -ceq $w.content)
-        $res.warm_control = [ordered]@{ out = $w2; acceptance = (Acceptance $w2); agrees_with_warm = $wvw }
-        Log "$Tag warm-vs-warm control (no restore): agrees=$wvw (warm2 prompt_n=$($w2.prompt_n), acc=$($res.warm_control.acceptance.accepted)/$($res.warm_control.acceptance.generated))"
+        $ctlCache = Cache-Lines $pc
+        $why = @()
+        if ($w2.prompt_n -ne $w.prompt_n) { $why += "control prompt_n=$($w2.prompt_n) != warm prompt_n=$($w.prompt_n)" }
+        if ($ctlCache -gt 0) { $why += "$ctlCache prompt-cache line(s) in the control window" }
+        if ($warmCache -gt 0) { $why += "$warmCache prompt-cache line(s) in the warm window" }
+        if (($w2.predicted_n -le 0) -or [string]::IsNullOrEmpty($w2.content)) { $why += 'control produced no output' }
+        $agrees = ($w2.content -ceq $w.content)
+        $valid = ($why.Count -eq 0)
+        if ($valid) { $wvw = $agrees }
+        $res.warm_control = [ordered]@{ out = $w2; acceptance = (Acceptance $w2); agrees_with_warm = $agrees; valid = $valid; invalid_reason = ($why -join '; ')
+                                        uncontrolled = 'server-wide ngram-mod table and MTP draft history differ between the first warm run and the control' }
+        Log "$Tag warm-vs-warm control (no restore): agrees=$agrees valid=$valid$(if ($why.Count) { " [$($why -join '; ')]" }) (warm2 prompt_n=$($w2.prompt_n), acc=$($res.warm_control.acceptance.accepted)/$($res.warm_control.acceptance.generated))"
     }
+    # where the outputs part: character index, and token index after re-tokenizing the texts (report-only)
+    $div = [ordered]@{}
+    $pairs = [ordered]@{ restored1_vs_warm = $runs[0].out.content; restored2_vs_warm = $runs[1].out.content }
+    if ($res.Contains('warm_control')) { $pairs.warm2_vs_warm = $res.warm_control.out.content }
+    $wt = $null; try { $wt = Get-Tokens $w.content } catch {}
+    foreach ($pk in $pairs.Keys) {
+        $tok = $null
+        if ($null -ne $wt) { try { $tok = First-Divergence $wt (Get-Tokens $pairs[$pk]) } catch {} }
+        $div[$pk] = [ordered]@{ char = (First-Divergence $w.content $pairs[$pk]); token_retokenized = $tok }
+    }
+    $res.first_divergence = $div
     if (-not $NoCold) {
         [void] (Slot 'erase' $null)
         $res.cold = Complete $PZ $NGen                           # full prefill of P+Z, report-only
@@ -424,7 +534,7 @@ function Test-Identity([string] $Tag, [int[]] $P, [int[]] $Z, [int[]] $Q, [int] 
     $res.no_reprefill = $reuse
     $res.restored_runs_agree = ($runs[0].out.content -ceq $runs[1].out.content)
     if (-not $NoCold) { $res.identity_cold_vs_warm_report_only = ($res.cold.content -ceq $w.content) }
-    $vd = Get-IdentityVerdict $res.ckpt_ok $w.content $runs[0].out.content $runs[1].out.content $reuse $wvw
+    $vd = Get-IdentityVerdict $mech.ok $mech.reason $w.content $runs[0].out.content $runs[1].out.content $reuse $wvw ([bool] $SpecOn)
     $res.verdict = $vd.verdict
     if ($vd.reason) { $res.verdict_reason = $vd.reason }
     if ($vd.verdict -eq 'FAIL') { $res.fail_reason = $vd.reason }
@@ -563,20 +673,46 @@ function Invoke-DryRun {
     }
     # the identity verdict rule on every branch (GPU-VERIFY.md "Pass criteria")
     & $check 'identity verdict rule' {
+        # mechanism ok, warm, round 1, round 2, reuse, warm-vs-warm (valid control; $null = none), spec on -> expected
         $cases = @(
-            @($false, 'w', 'w', 'w', $true, $null, 'FAIL'),
-            @($true, 'w', 'w', 'w', $true, $null, 'PASS'),
-            @($true, 'w', 'w', 'w', $false, $null, 'PASS-IDENTITY / REUSE-INCONCLUSIVE'),
-            @($true, 'w', 'a', 'b', $true, $null, 'INCONCLUSIVE'),
-            @($true, 'w', 'a', 'a', $true, $null, 'FAIL'),
-            @($true, 'w', 'a', 'b', $true, $true, 'FAIL'),
-            @($true, 'w', 'a', 'a', $true, $false, 'INCONCLUSIVE'),
-            @($true, 'w', 'w', 'w', $true, $false, 'PASS'))
+            @($false, 'w', 'w', 'w', $true, $null, $false, 'FAIL'),
+            @($true, 'w', 'w', 'w', $true, $null, $false, 'PASS'),
+            @($true, 'w', 'w', 'w', $false, $null, $false, 'PASS-IDENTITY / REUSE-INCONCLUSIVE'),
+            @($true, 'w', 'a', 'b', $true, $null, $false, 'FAIL'),
+            @($true, 'w', 'a', 'a', $true, $null, $false, 'FAIL'),
+            @($true, 'w', 'a', 'b', $true, $null, $true, 'UNPROVEN'),
+            @($true, 'w', 'a', 'a', $true, $true, $true, 'FAIL'),
+            @($true, 'w', 'a', 'b', $true, $false, $true, 'INCONCLUSIVE'),
+            @($true, 'w', 'w', 'w', $true, $false, $true, 'PASS'),
+            @($false, 'w', 'w', 'w', $true, $false, $true, 'FAIL'))
         foreach ($c in $cases) {
-            $got = (Get-IdentityVerdict $c[0] $c[1] $c[2] $c[3] $c[4] $c[5]).verdict
-            if ($got -ne $c[6]) { throw "ckpt=$($c[0]) restored=$($c[2])/$($c[3]) reuse=$($c[4]) warm-vs-warm=$($c[5]): got '$got', expected '$($c[6])'" }
+            $got = (Get-IdentityVerdict $c[0] 'mechanism' $c[1] $c[2] $c[3] $c[4] $c[5] $c[6]).verdict
+            if ($got -ne $c[7]) { throw "mech=$($c[0]) restored=$($c[2])/$($c[3]) reuse=$($c[4]) warm-vs-warm=$($c[5]) spec_on=$($c[6]): got '$got', expected '$($c[7])'" }
         }
         "$($cases.Count) cases"
+    }
+    & $check 'identity mechanism rule' {
+        $save = [pscustomobject]@{ n_saved = 4096; checkpoints_saved = 3 }
+        $rsOk = [pscustomobject]@{ n_restored = 4096; checkpoints = 'restored'; checkpoints_restored = 3 }
+        $out = [pscustomobject]@{ content = 'x'; predicted_n = 64 }
+        $bad = @(
+            @{ n = 'zero checkpoints'; s = [pscustomobject]@{ n_saved = 4096; checkpoints_saved = 0 }; r = [pscustomobject]@{ n_restored = 4096; checkpoints = 'absent'; checkpoints_restored = 0 }; o = $out },
+            @{ n = 'n_saved short'; s = [pscustomobject]@{ n_saved = 4000; checkpoints_saved = 3 }; r = $rsOk; o = $out },
+            @{ n = 'n_restored short'; s = $save; r = [pscustomobject]@{ n_restored = 10; checkpoints = 'restored'; checkpoints_restored = 3 }; o = $out },
+            @{ n = 'status skipped'; s = $save; r = [pscustomobject]@{ n_restored = 4096; checkpoints = 'skipped: over budget'; checkpoints_restored = 3 }; o = $out },
+            @{ n = 'empty output'; s = $save; r = $rsOk; o = [pscustomobject]@{ content = ''; predicted_n = 0 } })
+        if (-not (Test-IdentityMechanism 4096 $save @($rsOk, $rsOk) @($out, $out, $out)).ok) { throw 'a good leg was refused' }
+        foreach ($b in $bad) { if ((Test-IdentityMechanism 4096 $b.s @($b.r, $b.r) @($b.o, $b.o, $b.o)).ok) { throw "'$($b.n)' passed" } }
+        "good leg ok; $($bad.Count) bad legs refused"
+    }
+    & $check 'First-Divergence' {
+        if ((First-Divergence 'abc' 'abd') -ne 2 -or (First-Divergence 'abc' 'abc') -ne -1 -or (First-Divergence 'ab' 'abc') -ne 2 -or (First-Divergence @(1, 2, 3) @(1, 5)) -ne 1) { throw 'wrong index' }
+        'abc/abd=2 equal=-1 prefix=2 tokens=1'
+    }
+    # binary identity of this worktree's build (read-only: hash, git, mtimes; nothing refused in a dry run)
+    & $check 'binary identity (this worktree)' {
+        $b = Get-BinaryIdentity
+        "sha256=$($b.sha256) HEAD=$($b.head) exe_mtime=$($b.exe_mtime) newest tracked=$($b.newest_source_mtime) ok=$($b.ok)$(if ($b.reason) { " [$($b.reason)]" })"
     }
 
     # the verdict rule on the recorded identity legs, and each leg's draft acceptance read back from the recorded
@@ -596,24 +732,28 @@ function Invoke-DryRun {
                 & $check "verdict $name" {
                     $rs = @($v.restored)
                     if ($rs.Count -ne 2) { throw "$($rs.Count) restore rounds recorded, expected 2" }
-                    $saved = [int] $v.save.checkpoints_saved
+                    # restores normalised: an F11 recording has checkpoints/checkpoints_restored at the top; a pre-F11 one
+                    # (7c77724b) only stateos.checkpoints_restored and no status (mechanism on the counts only)
                     $ckNote = ''
-                    $ck = if (@($v.PSObject.Properties.Name) -contains 'ckpt_ok') { [bool] $v.ckpt_ok } else {
-                        # recorded by a binary before the checkpoints status field: compare the counts only
-                        $ckNote = ' (ckpt: counts only)'
-                        $ok = $true
-                        foreach ($x in $rs) { $n = if (@($x.restore.PSObject.Properties.Name) -contains 'checkpoints_restored') { $x.restore.checkpoints_restored } else { $x.restore.stateos.checkpoints_restored }; if ([int] $n -ne $saved) { $ok = $false } }
-                        $ok
+                    $norm = foreach ($x in $rs) {
+                        $top = @($x.restore.PSObject.Properties.Name) -contains 'checkpoints'
+                        if (-not $top) { $ckNote = ' (ckpt status: pre-F11 recording, counts only)' }
+                        [pscustomobject]@{ n_restored = $x.restore.n_restored; checkpoints = $(if ($top) { $x.restore.checkpoints } else { $null })
+                                           checkpoints_restored = $(if (@($x.restore.PSObject.Properties.Name) -contains 'checkpoints_restored') { $x.restore.checkpoints_restored } else { $x.restore.stateos.checkpoints_restored }) }
                     }
                     $w = $v.warm
+                    $mech = Test-IdentityMechanism ([int] $v.n_prompt) $v.save @($norm) @($w, $rs[0].out, $rs[1].out) -StatusUnknown:([bool] $ckNote)
                     $reuse = ($rs[0].out.prompt_n -eq $w.prompt_n) -and ($rs[1].out.prompt_n -eq $w.prompt_n) -and ($w.prompt_n -le ([int] $v.n_suffix + 1))
-                    $wvw = if (@($v.PSObject.Properties.Name) -contains 'warm_control') { [bool] $v.warm_control.agrees_with_warm } else { $null }
-                    $vd = Get-IdentityVerdict $ck ([string] $w.content) ([string] $rs[0].out.content) ([string] $rs[1].out.content) $reuse $wvw
+                    $hasCtl = @($v.PSObject.Properties.Name) -contains 'warm_control'
+                    $wvw = if ($hasCtl -and (@($v.warm_control.PSObject.Properties.Name) -contains 'valid') -and [bool] $v.warm_control.valid) { [bool] $v.warm_control.agrees_with_warm } else { $null }
+                    $specOn = if (@($v.PSObject.Properties.Name) -contains 'spec_on') { [bool] $v.spec_on } else { $legName -eq 'legB' }
+                    $vd = Get-IdentityVerdict $mech.ok $mech.reason ([string] $w.content) ([string] $rs[0].out.content) ([string] $rs[1].out.content) $reuse $wvw $specOn
+                    $dv = "first divergence (chars) r1=$(First-Divergence ([string] $w.content) ([string] $rs[0].out.content)) r2=$(First-Divergence ([string] $w.content) ([string] $rs[1].out.content))"
                     # acceptance: the next recorded completions whose text and length match warm, round 1, round 2
                     $acc = @()
                     if ($comps) {
                         $targets = @($w, $rs[0].out, $rs[1].out)
-                        if ($null -ne $wvw) { $targets += $v.warm_control.out }
+                        if ($hasCtl) { $targets += $v.warm_control.out }
                         foreach ($t in $targets) {
                             $hit = $null
                             for ($i = $pos.cursor; $i -lt $comps.Count; $i++) {
@@ -622,7 +762,7 @@ function Invoke-DryRun {
                             $acc += $(if ($hit) { $a = Acceptance $hit; "$($a.accepted)/$($a.generated)" } else { 'not found' })
                         }
                     }
-                    "recorded=$($v.verdict) now=$($vd.verdict)$(if ($vd.reason) { " [$($vd.reason)]" })$ckNote; draft acceptance warm/r1/r2$(if ($null -ne $wvw) { '/control' }) = $($acc -join ' ')"
+                    "recorded=$($v.verdict) now=$($vd.verdict)$(if ($vd.reason) { " [$($vd.reason)]" })$ckNote; $dv; draft acceptance warm/r1/r2$(if ($hasCtl) { '/control' }) = $($acc -join ' ')"
                 }
             }
         }
@@ -653,13 +793,18 @@ foreach ($f in @($PatchedExe, $Model, $Standing)) { if (-not (Test-Path -Literal
 $free = (Get-PSDrive -Name ($Root.Substring(0, 1))).Free
 Log ("free space on {0}: {1:N1} GB" -f $Root.Substring(0, 1), ($free / 1GB))
 if ($free -lt 25GB) { throw 'need >= 25 GB free for the 190K state files' }
+# refuse before production is touched: the exe must be the build of this worktree's clean HEAD
+Assert-Binary 'preflight'
+Add-Content -LiteralPath (Join-Path $Root 'launch-args.txt') -Encoding utf8 -Value "==== $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')) attempt: exe sha256 $($Results.binary.preflight.sha256), HEAD $($Results.binary.preflight.head) ===="
 
-# ---- take the slot --------------------------------------------------------------------------------
-Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Seconds 4
-Log "gpu after stop: $(nvidia-smi --query-gpu=memory.used --format=csv,noheader)"
 $proc = $null
+$prodOk = $false
 try {
+    # ---- take the slot (inside the protected block: whatever fails from here on, finally relaunches production) ----
+    Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Seconds 4
+    Log "gpu after stop: $(nvidia-smi --query-gpu=memory.used --format=csv,noheader)"
+
     # ================= Leg A: speculation OFF (acceptance) =================
     # F11 (842e16f6): at startup with --slot-save-path the server removes *.stateos.tmp files older than 1 h (only that
     # suffix, regular files). Plant a 2-hour-old one and a fresh one before the start.
@@ -686,9 +831,11 @@ try {
 
     $Results.legA.identity_4k = Test-Identity 'id4k' (Head $all 4096) $Z $Q 64 -LogPath $logA
     Save-Results
-    if ($Results.legA.identity_4k.verdict -eq 'FAIL') { throw "KILL: 4K identity leg failed ($(if ($Results.legA.identity_4k.fail_reason) { $Results.legA.identity_4k.fail_reason } else { 'restored != in-memory continuation' })); stopping before 32K" }
+    # Leg A kill: anything but PASS* stops the run (spec off has no nondeterminism allowance)
+    if ([string] $Results.legA.identity_4k.verdict -notlike 'PASS*') { throw "KILL: 4K identity leg $($Results.legA.identity_4k.verdict) ($($Results.legA.identity_4k.verdict_reason)); stopping before 32K" }
     $Results.legA.identity_32k = Test-Identity 'id32k' (Head $all 32768) $Z $Q 64 -LogPath $logA
     Save-Results
+    if ([string] $Results.legA.identity_32k.verdict -notlike 'PASS*') { throw "KILL: 32K identity leg $($Results.legA.identity_32k.verdict) ($($Results.legA.identity_32k.verdict_reason)); stopping before the refusals" }
 
     # --- refusals: establish a known slot state (the 4K S0), then every refusal must leave it in place
     $good = Join-Path $SlotDir 'id4k.state'
@@ -734,18 +881,21 @@ try {
     }
     New-TamperedCopy $good (Join-Path $SlotDir 'hard-unknown.state') { param($t) $t + "H future_field=x`n" }
     $r = Slot 'restore' 'hard-unknown.state'
-    $ref['<unknown hard field>'] = [ordered]@{ status = $r.Status; refused_field = (Field $r 'error.refused_field'); pass = (($r.Status -eq 409) -and ((Field $r 'error.refused_field') -eq 'future_field')) }
+    $ref['<unknown hard field>'] = [ordered]@{ status = $r.Status; refused_field = (Field $r 'error.refused_field'); pass = (($r.Status -eq 409) -and ((Field $r 'error.refused_field') -eq 'future_field') -and ((Field $r 'error.slot_untouched') -eq $true)) }
 
     [System.IO.File]::WriteAllBytes((Join-Path $SlotDir 'legacy-fake.state'), [byte[]] (0x71,0x73,0x67,0x67, 4,0,0,0, 0,0,0,0, 0,0,0,0))
     $r = Slot 'restore' 'legacy-fake.state'
-    $ref['<legacy fake>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); message = (Field $r 'error.message'); pass = (($r.Status -eq 409) -and ((Field $r 'error.type') -eq 'state_legacy_unkeyed')) }
+    $ref['<legacy fake>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); message = (Field $r 'error.message'); pass = (($r.Status -eq 409) -and ((Field $r 'error.type') -eq 'state_legacy_unkeyed') -and ((Field $r 'error.slot_untouched') -eq $true)) }
     if (Test-Path -LiteralPath $Lane0Slot) {
         $src = [System.IO.File]::OpenRead($Lane0Slot)
         try { $buf = New-Object byte[] 65536; $n = $src.Read($buf, 0, 65536) } finally { $src.Dispose() }
         if ($n -le 0) { throw "lane-0 legacy file is empty: $Lane0Slot" }
         [System.IO.File]::WriteAllBytes((Join-Path $SlotDir 'legacy-real.state'), [byte[]] $buf[0..($n - 1)])
         $r = Slot 'restore' 'legacy-real.state'
-        $ref['<legacy real, lane-0 file head>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); pass = (($r.Status -eq 409) -and ((Field $r 'error.type') -eq 'state_legacy_unkeyed')) }
+        $ref['<legacy real, lane-0 file head>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); pass = (($r.Status -eq 409) -and ((Field $r 'error.type') -eq 'state_legacy_unkeyed') -and ((Field $r 'error.slot_untouched') -eq $true)) }
+    } else {
+        # recorded, not dropped: a missing input is a check that did not run, which fails the expectation
+        $ref['<legacy real, lane-0 file head>'] = [ordered]@{ skipped = "missing input $Lane0Slot"; pass = $false }
     }
     $trunc = Join-Path $SlotDir 'truncated.state'
     $in = [System.IO.File]::OpenRead($good)
@@ -757,12 +907,12 @@ try {
         } finally { $out.Dispose() }
     } finally { $in.Dispose() }
     $r = Slot 'restore' 'truncated.state'
-    $ref['<truncated>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); message = (Field $r 'error.message'); pass = (($r.Status -eq 409) -and ((Field $r 'error.type') -eq 'state_corrupt')) }
+    $ref['<truncated>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); message = (Field $r 'error.message'); pass = (($r.Status -eq 409) -and ((Field $r 'error.type') -eq 'state_corrupt') -and ((Field $r 'error.slot_untouched') -eq $true)) }
     [System.IO.File]::WriteAllBytes((Join-Path $SlotDir 'junk.state'), [byte[]] (0x4A,0x55,0x4E,0x4B, 1,2,3,4))
     $r = Slot 'restore' 'junk.state'
-    $ref['<unrecognized>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); pass = (($r.Status -eq 409) -and ((Field $r 'error.refused_field') -eq 'format')) }
+    $ref['<unrecognized>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); pass = (($r.Status -eq 409) -and ((Field $r 'error.refused_field') -eq 'format') -and ((Field $r 'error.slot_untouched') -eq $true)) }
     $r = Slot 'restore' 'does-not-exist.state'
-    $ref['<missing>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); pass = (($r.Status -eq 409) -and ((Field $r 'error.type') -eq 'state_missing')) }
+    $ref['<missing>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); pass = (($r.Status -eq 409) -and ((Field $r 'error.type') -eq 'state_missing') -and ((Field $r 'error.slot_untouched') -eq $true)) }
 
     # F11 refusals. effective_model absent (what every 7c77724b file looks like): fail closed, naming the field.
     New-TamperedCopy $good (Join-Path $SlotDir 'no-effective-model.state') { param($t) (($t -split "`n") | Where-Object { $_ -notmatch '^[HSI] effective_model=' }) -join "`n" }
@@ -773,11 +923,16 @@ try {
         $r = Slot 'restore' 'lane1-7c77724b.state'
         $ref['<7c77724b file>'] = [ordered]@{ status = $r.Status; refused_field = (Field $r 'error.refused_field'); message = (Field $r 'error.message'); pass = (($r.Status -eq 409) -and ((Field $r 'error.refused_field') -eq 'effective_model') -and ((Field $r 'error.slot_untouched') -eq $true)) }
         Remove-Item -LiteralPath (Join-Path $SlotDir 'lane1-7c77724b.state') -Force -ErrorAction SilentlyContinue
+    } else {
+        $ref['<7c77724b file>'] = [ordered]@{ skipped = "missing input $Lane1Slot"; pass = $false }
     }
     # a path that exists but is not a regular file: state_unreadable, not state_missing (a3ff750d)
-    New-Item -ItemType Directory -Force -Path (Join-Path $SlotDir 'dir-not-file.state') | Out-Null
-    $r = Slot 'restore' 'dir-not-file.state'
-    $ref['<unreadable: directory>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); pass = (($r.Status -eq 409) -and ((Field $r 'error.type') -eq 'state_unreadable') -and ((Field $r 'error.slot_untouched') -eq $true)) }
+    $dirState = Join-Path $SlotDir 'dir-not-file.state'
+    New-Item -ItemType Directory -Force -Path $dirState | Out-Null
+    try {
+        $r = Slot 'restore' 'dir-not-file.state'
+        $ref['<unreadable: directory>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); pass = (($r.Status -eq 409) -and ((Field $r 'error.type') -eq 'state_unreadable') -and ((Field $r 'error.slot_untouched') -eq $true)) }
+    } finally { Remove-Item -LiteralPath $dirState -Force -ErrorAction SilentlyContinue }
     # the in-progress-save suffix is reserved (fea27876, 91579f16), case-insensitively, for save, restore and rename
     $r = Slot 'save' 'reserved.stateos.tmp'
     $ref['<reserved name: save>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); pass = (($r.Status -eq 409) -and ((Field $r 'error.type') -eq 'state_name_reserved')) }
@@ -806,14 +961,13 @@ try {
     Log "GET /list id4k.state: status=$($ls.Status) format=$(Field $e0r 'format') prompt_redacted=$(Field $e0r 'stateos.prompt_redacted') token_count=$(Field $e0r 'token_count') pass=$listOk"
     Save-Results
 
-    # --- destructive paths (review M3). Oracle for "correct re-prefill": the 4K cold output (full prefill of P+Z).
-    # Same rule as the identity legs: an output difference while the 4K restored runs disagreed with each other is
-    # engine run-to-run nondeterminism -> INCONCLUSIVE, not FAIL. Every mechanism condition must hold regardless.
+    # --- destructive paths (review M3). Oracle for "correct re-prefill": the 4K cold output (full prefill of P+Z, the
+    # same computation). Speculation is off here, so there is no nondeterminism allowance: a mechanism miss or an output
+    # difference is FAIL.
     $PZ4 = Concat (Head $all 4096) $Z
     $cold4 = $Results.legA.identity_4k.cold
-    $engineDeterministic = [bool] $Results.legA.identity_4k.restored_runs_agree
     function Destructive-Verdict([bool] $Mechanism, [bool] $SameOutput) {
-        if (-not $Mechanism) { 'FAIL' } elseif ($SameOutput) { 'PASS' } elseif (-not $engineDeterministic) { 'INCONCLUSIVE' } else { 'FAIL' }
+        if ($Mechanism -and $SameOutput) { 'PASS' } else { 'FAIL' }
     }
 
     # (a) empty-slot round trip: a state saved right after erase restores as an erase (no loader call), server stays up
@@ -899,7 +1053,7 @@ try {
         $Results.legB.props_stateos = [ordered]@{ value = (Field $props 'stateos'); pass = $propsOk }
         Log "GET /props stateos (spec on, expect companion=true): $((Field $props 'stateos') | ConvertTo-Json -Compress) pass=$propsOk"
         # the warm-vs-warm control always runs here: it decides whether a spec-on restored != warm is a state defect
-        $Results.legB.companion_32k = Test-Identity 'on32k' (Head $all 32768) $Z $Q 128 -NoCold -LogPath $logB -WarmControl 'always'
+        $Results.legB.companion_32k = Test-Identity 'on32k' (Head $all 32768) $Z $Q 128 -NoCold -LogPath $logB -WarmControl 'always' -SpecOn
         # the spec-off 32K file has no COMP section: restore it here to see acceptance without the companion
         [void] (Slot 'erase' $null); [void] (Complete $Q 8)
         $poNc = Ple-Offsets $logB
@@ -953,7 +1107,7 @@ try {
         Save-Results
 
         if (-not $Skip192K) {
-            $Results.legB.bytes_190k = Test-Identity 'on190k' (Head $all 190000) $Z $Q 16 -NoCold -LogPath $logB -WarmControl 'if-differs'
+            $Results.legB.bytes_190k = Test-Identity 'on190k' (Head $all 190000) $Z $Q 16 -NoCold -LogPath $logB -WarmControl 'if-differs' -SpecOn
             Save-Results
         }
         Stop-TestServer $proc; $proc = $null
@@ -980,21 +1134,46 @@ try {
     $Results.ple_hist = [ordered]@{ rounds = $pleRounds; all_ok = (@($pleRounds.Values | Where-Object { -not $_.ok }).Count -eq 0) }
     Log "[ple-hist] identity rounds: $(($pleRounds.Keys | ForEach-Object { "$_=$($pleRounds[$_].resets_pos_gt0)" }) -join ' ') all_ok=$($Results.ple_hist.all_ok)"
 } catch {
-    Log "ABORTED: $($_.Exception.Message)"
     $Results.aborted = $_.Exception.Message
+    try { Log "ABORTED: $($_.Exception.Message)" } catch {}
 } finally {
-    Save-Results
-    if ($proc) { Stop-TestServer $proc }
-    # restore the standing server no matter what (detached; never block on it). The test-only PLE switches must not
-    # leak into the standing server's inherited environment.
-    Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    Remove-Item Env:LONGSPEAR_PLE_HIST_REWIND, Env:LONGSPEAR_PLE_HIST_LOG -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 3
-    Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$Standing -WindowStyle Hidden | Out-Null
-    Log 'restore launcher started'
-    $ok = $false
-    for ($i = 0; $i -lt 90 -and -not $ok; $i++) { Start-Sleep -Seconds 10; try { $h = Invoke-RestMethod -Uri 'http://127.0.0.1:8099/health' -TimeoutSec 5; $ok = ($h.status -eq 'ok') } catch {} }
-    Log ('production-restored:' + $(if ($ok) { '200' } else { 'FAILED' }))
+    # Production first: every step before the relaunch is wrapped so none can skip it. The test-only PLE switches must
+    # not leak into the standing server's inherited environment. Receipts are saved after the relaunch.
+    try { if ($proc) { Stop-TestServer $proc } } catch {}
+    try { Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
+    try { Remove-Item Env:LONGSPEAR_PLE_HIST_REWIND, Env:LONGSPEAR_PLE_HIST_LOG -ErrorAction SilentlyContinue } catch {}
+    try { Start-Sleep -Seconds 3 } catch {}
+    $launchErr = $null
+    try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$Standing -WindowStyle Hidden | Out-Null }
+    catch { $launchErr = $_.Exception.Message }
+    try { Log $(if ($launchErr) { "restore launcher FAILED to start: $launchErr" } else { 'restore launcher started' }) } catch {}
+    if (-not $launchErr) {
+        for ($i = 0; $i -lt 90 -and -not $prodOk; $i++) { Start-Sleep -Seconds 10; try { $h = Invoke-RestMethod -Uri 'http://127.0.0.1:8099/health' -TimeoutSec 5; $prodOk = ($h.status -eq 'ok') } catch {} }
+    }
+    try { Log ('production-restored:' + $(if ($prodOk) { '200' } else { 'FAILED' })) } catch {}
+    try { $Results.production_restored = $prodOk; Save-Results } catch { try { Write-Host "Save-Results failed: $($_.Exception.Message)" } catch {} }
     # the 190K files are ~4-5 GB each; keep the small ones as receipts
-    Get-ChildItem -LiteralPath $SlotDir -Filter 'on190k*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    try { Get-ChildItem -LiteralPath $SlotDir -Filter 'on190k*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue } catch {}
 }
+
+# ---- exit code: 0 only when the run completed, every hard expectation held and production is back ----------------
+$hardFail = @()
+if ($Results.aborted) { $hardFail += "aborted: $($Results.aborted)" }
+if (-not $prodOk) { $hardFail += 'production not restored' }
+foreach ($leg in 'legA', 'legB') {
+    foreach ($key in @($Results[$leg].Keys)) {
+        $v = $Results[$leg][$key]
+        if (-not ($v -is [System.Collections.IDictionary])) { continue }
+        # Leg A identity legs must PASS*; a Leg B identity leg fails the run only on FAIL (UNPROVEN/INCONCLUSIVE are reported)
+        if ($v.Contains('restored') -and $v.Contains('verdict')) {
+            if ((($leg -eq 'legA') -and ([string] $v.verdict -notlike 'PASS*')) -or ([string] $v.verdict -eq 'FAIL')) { $hardFail += "$leg.$key verdict $($v.verdict)" }
+            continue
+        }
+        if ($key -eq 'refusals') { foreach ($rk in @($v.Keys)) { if (-not $v[$rk].pass) { $hardFail += "$leg.refusals[$rk]" } }; continue }
+        if ($v.Contains('pass') -and -not $v.pass) { $hardFail += "$leg.$key" }
+    }
+}
+if ($Results.Contains('ple_hist') -and -not $Results.ple_hist.all_ok) { $hardFail += 'ple_hist' }
+try { $Results.hard_failures = $hardFail; Save-Results } catch {}
+Write-Host ("exit: " + $(if ($hardFail.Count) { "1 (" + ($hardFail -join '; ') + ")" } else { '0' }))
+exit $(if ($hardFail.Count) { 1 } else { 0 })
