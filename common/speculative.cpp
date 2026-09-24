@@ -2821,7 +2821,10 @@ bool common_speculative_checkpoint_restore(
     // now describes a target state that no longer exists, so invalidate it here. The
     // accepted-prefix commit below re-populates it from the restored rows.
     common_speculative_mtp_invalidate(spec, seq_id, ckpt.n_past);
-    common_speculative_ple_resume(ckpt, ctx, seq_id, ids, restore_result == LLAMA_SPEC_CKPT_RESTORE_DIRECT);
+    // the PLE n-gram history follows the path the round actually continues on: after the accepted
+    // drafts for a direct restore, at the checkpoint for a replay (the crosscheck's included, so its
+    // oracle is decoded with the same history the verify pass had)
+    common_speculative_ple_resume(ckpt, ctx, seq_id, ids, path_result == LLAMA_SPEC_CKPT_RESTORE_DIRECT);
 
     if (path_result == LLAMA_SPEC_CKPT_RESTORE_DIRECT) {
         if (ckpt.sampler != nullptr && sampler_dst != nullptr) {

@@ -4,6 +4,7 @@
 #   -Arm P0  production gpu-fallback, flags unset except [spec-host] (same telemetry cost as A2)
 #   -Arm A0  speculation off (no --spec-type), control arm
 #   -Crosscheck (A2 only) adds LONGSPEAR_SPEC_CKPT_CROSSCHECK=1 for the step-1 probe
+# Every arm also sets LONGSPEAR_PLE_HIST_REWIND=1 and LONGSPEAR_PLE_HIST_LOG=1.
 # Logs go to D:\AI\ik_llama-qwen4exp\ik-serve-8099.{out,err}.log, where native-replay.sh and
 # bench-decode.sh read them (they take a launcher basename in that directory and pass no arguments:
 # use the per-arm wrappers launch-perstep-{p0,a0,xcheck}-8099.ps1, or this file for A2).
@@ -40,9 +41,15 @@ $env:LONGSPEAR_VERIFY_TIMING = '1'
 $env:LONGSPEAR_CG_REVIVE = '1'
 foreach ($name in @('LONGSPEAR_OP_CENSUS', 'LONGSPEAR_CG_DEBUG', 'LONGSPEAR_CG_DEBUG2',
                     'LONGSPEAR_PER_STEP_PLE_TAIL', 'LONGSPEAR_SPEC_CKPT_MAX_TOKENS', 'LONGSPEAR_SPEC_CLAMP_TO_CKPT',
-                    'LONGSPEAR_SPEC_CKPT_LEAN', 'LONGSPEAR_SPEC_HOST_TIMING', 'LONGSPEAR_SPEC_CKPT_CROSSCHECK')) {
+                    'LONGSPEAR_SPEC_CKPT_LEAN', 'LONGSPEAR_SPEC_HOST_TIMING', 'LONGSPEAR_SPEC_CKPT_CROSSCHECK',
+                    'LONGSPEAR_PLE_HIST_REWIND', 'LONGSPEAR_PLE_HIST_LOG')) {
     Remove-Item "Env:$name" -ErrorAction SilentlyContinue
 }
+
+# every arm keeps the PLE n-gram history exact across rewinds (lane/ple-hist-rewind), so the arms
+# differ only in the lever; [ple-hist] lines let the gate count mid-sequence history resets
+$env:LONGSPEAR_PLE_HIST_REWIND = '1'
+$env:LONGSPEAR_PLE_HIST_LOG    = '1'
 
 $spec = '--spec-type ngram-mod:n_min=4 --spec-type mtp:n_max=4'
 switch ($Arm) {
