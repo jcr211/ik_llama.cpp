@@ -272,6 +272,9 @@ static void test_container() {
 
     const stateos_scan_result r = stateos_scan_file(good);
     CHECK(r.status == STATEOS_SCAN_OK);
+    // the save's pre-commit size check predicts the writer's output exactly
+    CHECK(stateos_container_size(header.size(), { toks.size(), main_payload.size(), ckpt.size() }) == r.file_size);
+    CHECK(stateos_container_size(header.size(), { toks.size(), main_payload.size() }) != r.file_size);
     CHECK(r.version == STATEOS_CONTAINER_VERSION);
     CHECK(r.header_text == header);
     CHECK(r.sections.size() == 3);

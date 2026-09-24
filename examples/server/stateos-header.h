@@ -193,6 +193,11 @@ size_t stateos_cleanup_stale_tmp(const std::string & dir, int64_t min_age_second
 // retries; the previous `dst` is never deleted first, so a transient lock cannot destroy the last good state.
 bool stateos_replace_file(const std::string & src, const std::string & dst, std::string * err);
 
+// Exact byte size of a container with this header and these section payloads (plus the END section): the save checks
+// its finished temp file against it before the commit, so a temp file that vanished and was recreated mid-save
+// (without its header) can never replace the last good state.
+uint64_t stateos_container_size(uint64_t header_len, const std::vector<uint64_t> & section_sizes);
+
 // Writers over a stdio FILE* opened in binary mode. All return false on a short write.
 bool stateos_write_preamble(std::FILE * f, const std::string & header_text);
 bool stateos_write_section_header(std::FILE * f, uint32_t tag, uint64_t size);

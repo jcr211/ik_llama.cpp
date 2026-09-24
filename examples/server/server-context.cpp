@@ -2955,7 +2955,11 @@ void server_context::stateos_slot_save(const server_task & task, server_slot & s
                 { "filename",  task.data.at("filename") },
                 { "n_saved",   slot.cache_tokens.size() },
                 { "n_written", (uint64_t) std::filesystem::file_size(stateos_path(filepath), ec) },
-                { "stateos",   { { "reply", "minimal: the full reply could not be built (" + what + ")" } } },
+                { "stateos",   {
+                    // the save did not modify the slot, so its tokens are the saved ones
+                    { "token_sha256", stateos_token_sha256(slot.cache_tokens.data(), slot.cache_tokens.size()) },
+                    { "reply", "minimal: the full reply could not be built (" + what + ")" },
+                } },
             };
             queue_results.send(result);
             return;
@@ -3164,6 +3168,21 @@ void server_context::stateos_slot_save_impl(const server_task & task, server_slo
         return;
     }
 
+    // the finished temp file must be exactly what this save wrote (a temp deleted and recreated mid-save, e.g. by
+    // another instance's cleanup, would be headerless)
+    {
+        std::vector<uint64_t> sections = { toks.size(), main_bytes, ckpt_bytes.size() };
+        if (ctx_mtp != nullptr) {
+            sections.push_back(comp_prefix.size() + comp_bytes);
+        }
+        const uint64_t expected = stateos_container_size(header_text.size(), sections);
+        std::error_code ec_sz;
+        const uint64_t actual = (uint64_t) std::filesystem::file_size(stateos_path(tmppath), ec_sz);
+        if (ec_sz || actual != expected) {
+            fail(string_format("the temp file holds %llu bytes, %llu expected", (unsigned long long) actual, (unsigned long long) expected));
+            return;
+        }
+    }
     // durable before it becomes visible under its name
     if (!stateos_flush_file(tmppath, &err)) {
         fail("cannot flush the finished file to disk: " + err);

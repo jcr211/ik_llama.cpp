@@ -692,6 +692,14 @@ bool stateos_replace_file(const std::string & src, const std::string & dst, std:
 #endif
 }
 
+uint64_t stateos_container_size(uint64_t header_len, const std::vector<uint64_t> & section_sizes) {
+    uint64_t n = 12 + header_len;
+    for (const uint64_t s : section_sizes) {
+        n += 16 + s;
+    }
+    return n + 16; // END
+}
+
 bool stateos_write_bytes(std::FILE * f, const void * data, size_t size) {
     return size == 0 || std::fwrite(data, 1, size, f) == size;
 }
