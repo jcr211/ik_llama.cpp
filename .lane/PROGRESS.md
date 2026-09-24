@@ -51,6 +51,11 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
       rows = control failures (insufficient-control VOID), one row-validity rule for engagement and score
       (0-token responses invalid), all five arm records required (exit 1), port evidence from the .port
       sidecar only (validated vs .pid), ngram-mod shared-state note; node tools 35/35 (tools only)
+- [x] fix round 9 (check of b45110a1): one consistent run of records (exit 1 otherwise; logStem ties
+      every arm to its log), insufficient-control before the C slack, B continuations must reach the
+      horizon (EOS recorded, invalid for all arms), A1 request-B failure = control failure (its request A
+      still checked for determinism), -SpecOff launcher switch + all-arms spec-off fallback, corrected
+      ngram-mod note, full precedence list + pairwise test; node tools 41/41 (tools + launcher only)
 
 ## GPU-window assumptions (W-SV2)
 - Every arm (P0, T1, A0, A1, C, A5, A3, probe) launches via launch-stateos-tail-8099.ps1, so all run
@@ -131,53 +136,70 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
     g_A0[G-2], prompt-window marked token == X). A C row whose request B reached the server but failed
     (parse or HTTP, recorded `failedAt: "B"`) is bound with A0's row fields. Benign arms reach the same B
     from their own cache and are not constrained.
-  - ORDER (round 8, coordinator ruling), all in `gateRefusal`:
-    0. every arm record (A0, A1, C, A5, A3) must exist, else the gate refuses with an error (exit 1, not
-       0/2/3);
-    1. pre-score log checks: CUDA error lines in ANY arm's log = cuda-errors (STOP); recorded flags
-       differ from the arm's required set, or no record = mislaunched (VOID); a `[ple-hist] reset` at
-       pos > 0 in any arm = ple-hist (STOP); the port record (below) missing or invalid in any arm =
-       mislaunched (VOID); no `[ple-hist] set` line in an arm = ple-hist (STOP). The PLE checks (N10) are
-       the same as steps 1-3 and are STOP because the flags check has already confirmed REWIND=1 and LOG=1;
-    2. DETERMINISM, before any C attribution: A1 differing from A0 on ANY prompt where both rows are
-       valid (request A ids, or B's continuation when both sent the same B) = void-determinism (VOID;
-       the plan's fallback is one rerun with speculation off in all arms). Spec-on nondeterminism would
-       also make C's request A differ, so it must never reach the slack;
-    3. C attribution and the shared slack (below).
-  - ONE VALIDITY RULE (round 8, `rowProblem`), shared by engagement, the determinism check and `score`: a
-    row is invalid when a request failed (HTTP/connection, unparsed, not sent) or succeeded with fewer
-    than 2 request-A tokens or 0 request-B tokens. `score` never rejects a continuation that engagement
-    counted as valid.
-  - CONTROL FAILURES (round 8): an invalid A0 or A1 row is a control failure, checked BEFORE C, and is
-    never charged to C even if C also failed (e.g. a common outage). More control failures than the slack,
-    with fewer than 20 scorable prompts left = insufficient-control (VOID), never STOP.
+  - VERDICT PRECEDENCE (round 9; the first rule that fires decides; `gateRefusal`, then `score`; the
+    same list heads tools/stateos-tail-gate.mjs; one table-driven test feeds every adjacent pair):
+    0. inconsistent or missing records = error, exit 1 (`checkRecords`): exactly one record per arm A0,
+       A1, C, A5, A3 and no other (a stale `arm-A0-attempt1.json` is refused, never picked); the same
+       horizon, nFirst and receipt in every record; A0's ordered prompt-id list in every record; each
+       record's url on port 8099; each record's logStem (from `run --log-stem`) == its --arm-log stem ==
+       that log's .flags `logstem=` (this ties A5 and A3, like A0/A1/C, to their own server logs);
+    1. CUDA error lines in any arm's log = cuda-errors (STOP);
+    2. flags/spec mismatch = mislaunched (VOID): recorded flags differ from the arm's required set, no
+       record, or the arms' `spec=` states are mixed or unknown;
+    3. a `[ple-hist] reset` at pos > 0 in any arm = ple-hist (STOP);
+    4. the port record (below) missing or invalid in any arm = mislaunched (VOID);
+    5. no `[ple-hist] set` line in an arm = ple-hist (STOP). The PLE checks (N10) are STOP because rule 2
+       has already confirmed REWIND=1 and LOG=1;
+    6. DETERMINISM, before any C attribution: A1 differs from A0 on request A where both request As
+       succeeded (even if a request B then failed), or on the B continuation where both rows are valid
+       with the same B = void-determinism (VOID; fallback: one rerun with every arm -SpecOff);
+    7. invalid A0/A1 rows (control failures) > slack = insufficient-control (VOID) - checked BEFORE C's
+       exclusions, so VOID wins over shell-diverged;
+    8. C-attributable exclusions > the shared slack = shell-diverged (STOP);
+    9. fewer than 20 scorable strict tail restores = not-engaged:no-eligible-prompts (VOID);
+    10. score (v2 rule): compatible-at-horizon PASS (0); shellWorse STOP (2); insufficient-sample VOID (3).
+  - ONE VALIDITY RULE (`rowProblem(row, horizon)`), shared by engagement, the determinism check and
+    `score`: a row is invalid when a request failed (HTTP/connection, unparsed, not sent), request A
+    returned < 2 tokens, or request B returned fewer tokens than the record's horizon (round 9). A B that
+    ended on EOS before the horizon is recorded (`eosAt`, `bFinish`) and is ALSO invalid, for every arm:
+    the v2 lib cannot express a genuine end (it scores a shorter vector as a divergence at its length and
+    an equal short pair as surviving to the horizon). A0/A1 EOS rows are control failures, so frequent
+    early EOS shows up as insufficient-control (VOID), never as a pass.
+  - CONTROL FAILURES: an invalid A0 or A1 row (including A1's request B failing, round 9) is a control
+    failure, checked BEFORE C, and is never charged to C even if C also failed.
   - ONE SHARED SLACK (round 7, structural): every prompt is scorable or excluded once with one reason, and
     every exclusion attributable to arm C, WHATEVER the reason, counts against one slack (prompts -
     min-prompts, 24 - 20 = 4). C reasons (checked only where A0's and A1's rows are valid and A1
-    reproduced A0's request A): C's row is invalid by the rule above (request A or B not parsed, HTTP/
-    connection error, too few tokens - e.g. 0 tokens on B); C's request A output differs from A0's; C's B
-    differs; on a prompt A0's line shows as eligible (prev_round=drafted, prev_n_acc >= 1) C's
-    request-B line is missing, not at tail_dist=1, or not a strict tail restore (chosen_origin=tail,
+    reproduced A0's request A): C's row is invalid by the rule above; C's request A output differs from
+    A0's; C's B differs; on a prompt A0's line shows as eligible (prev_round=drafted, prev_n_acc >= 1)
+    C's request-B line is missing, not at tail_dist=1, or not a strict tail restore (chosen_origin=tail,
     outcome=restored, reason=tail; restored:xcheck-flag-off is not one). Each is recorded with its
     prompt, the request that failed (A or B) and why (gate.json `engagement.shellExclusions`, printed one
-    per line). More C exclusions than the slack = `shell-diverged` (STOP, with the per-reason breakdown);
-    up to the slack = counted drops, then score.
+    per line). Up to the slack = counted drops, then score.
   - N11 (by design): up to 4 C-attributable exclusions are TOLERATED; each is still reported with its
     reason. A 5th stops the window.
-  - NOT C: control failures (above); A1's request A differs (unreachable after step 2); A0's or A1's
-    request-B line is missing or not at tail_dist=1; a benign arm answered a different B; A0's line shows
-    no eligible tail (final round without an accepted draft) and C did not restore from a tail. If these
-    leave fewer than 20 scorable strict tail restores (with C within the slack) =
-    `not-engaged:no-eligible-prompts` (VOID). Only non-C exclusions can produce this VOID.
-  - Shared draft state (round 8, Opus nit): the ngram-mod draft table is SERVER-LIFETIME shared state (fed
-    every request's prompt and output), so after a harmless B divergence C's later request-A drafts, and
-    its verify batch shapes, can differ from A0's. Spec-on outputs are still greedy-exact in principle
-    (drafts change speed only); if they are not, A1 vs A0 shows it and step 2 of the order returns
-    void-determinism.
+  - NOT C: control failures; A0's or A1's request-B line missing or not at tail_dist=1; a benign arm
+    answered a different B; A0's line shows no eligible tail and C did not restore from a tail.
+  - Shared draft state (round 9 correction of the round-8 note, Opus N2): the ngram-mod draft table is
+    server-lifetime state fed every request's prompt and output. A0 and A1 see the same history, so
+    their tables stay identical; only C's changes, after any benign difference in C's B continuation.
+    C's later request-A drafts can then differ, and if greedy is not batch-invariant C's request A can
+    differ: that is charged to C (against the slack), NOT caught by the A1-vs-A0 determinism control.
+    Low probability (a chained n_min=4 hit on one of a few hundred differing buckets out of 4M).
+  - SPEC-OFF FALLBACK (round 9, Opus N4): `launch-stateos-tail-8099.ps1 -SpecOff` drops both
+    `--spec-type` drafters and records `spec=off` in `<LogStem>.flags` (every launch records spec=on|off;
+    a record without it is "unknown"). Steps 1-3 require spec=on. Step 4 accepts all arms spec=on (the
+    standard run) or all spec=off (the fallback, verdict labelled "spec-off fallback" in gate.json `run`
+    and on stdout); mixed or unknown = mislaunched (VOID). CAVEAT for the coordinator: the tail is taken
+    from the gpu-fallback SPEC SHADOW and is eligible only after a drafted round with >= 1 accepted
+    draft, so with speculation off A0 shows no eligible prompt and C writes no tail: the fallback run
+    will end `not-engaged:no-eligible-prompts` (VOID) by construction. It can confirm spec-off
+    determinism, not C1 fidelity. Also untested: whether `--spec-ckpt-mode gpu-fallback` (kept) is
+    accepted without any --spec-type.
+  - `run` now requires `--log-stem <the server's -LogStem>` and records `logStem`, `bFinish`, `eosAt`.
   - Status: compatible-at-horizon PASS (exit 0); shellWorse, cuda-errors, ple-hist, shell-diverged STOP
     (2); insufficient-sample, void-determinism, mislaunched, insufficient-control,
-    not-engaged:no-eligible-prompts VOID (3) - the gate did not answer, not a C1 kill; a missing arm
-    record = exit 1.
+    not-engaged:no-eligible-prompts VOID (3) - the gate did not answer, not a C1 kill; refusal = exit 1.
 - PORT CHECK (round 7, N8; round 8: sidecar only): httplib binds with SO_REUSEADDR, so on Windows a second
   server can bind :8099 while an old one still listens and the bind-failure line is unreliable. The
   launcher writes `<LogStem>.pid` (the launched PID). After EVERY launch, once the server answers and

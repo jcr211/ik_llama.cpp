@@ -169,8 +169,8 @@ const census = (lines, port = [PORT_OK, PID]) => {
 };
 
 // the launcher's recorded flags ([stateos-flags], normally from the <LogStem>.flags sidecar)
-const flags = (div, tail, xcheck, extra = "") =>
-  `[stateos-flags] LONGSPEAR_STATEOS_DIV_LOG=${div} LONGSPEAR_STATEOS_TAIL_SNAPSHOT=${tail} LONGSPEAR_STATEOS_TAIL_XCHECK=${xcheck} LONGSPEAR_PLE_HIST_REWIND=1 LONGSPEAR_PLE_HIST_LOG=1 logstem=x extra='${extra}'`;
+const flags = (div, tail, xcheck, extra = "", stem = "x", spec = "on") =>
+  `[stateos-flags] LONGSPEAR_STATEOS_DIV_LOG=${div} LONGSPEAR_STATEOS_TAIL_SNAPSHOT=${tail} LONGSPEAR_STATEOS_TAIL_XCHECK=${xcheck} LONGSPEAR_PLE_HIST_REWIND=1 LONGSPEAR_PLE_HIST_LOG=1 spec=${spec} logstem=${stem} extra='${extra}'`;
 const F_OFF = flags(1, 0, 0); // step 1, P0, step-4 A0/A1
 const F_PROBE = flags(1, 1, 1); // step 2
 const F_TAIL = flags(1, 1, 0); // T1, step-4 C
@@ -500,6 +500,15 @@ test("forcedPrompt replaces the last cached generated token with an unrelated on
 // ---- step 4: one B prompt for every arm, drops, engagement ---------------------------------------
 
 const B = [1, 2, 3, 10, 11, 99];
+// record-level fields of one consistent run (checkRecords); horizon 8 = row()'s continuation length
+const recMeta = (arm) => ({
+  arm,
+  horizon: 8,
+  nFirst: 64,
+  receipt: "receipt.json",
+  url: "http://127.0.0.1:8099",
+  logStem: `stem-${arm}`,
+});
 const row = (id, over = {}) => ({
   id,
   ok: true,
@@ -548,7 +557,10 @@ test("restore lines bind by request order and content, not position alone", () =
 
 test("engagement and drops: B built once from A0, constraints on A0/A1/C only", () => {
   const ids = ["p0", "p1", "p2", "p3"];
-  const mk = (arm, over = {}) => ({ arm, prompts: ids.map((id) => row(id, over[id] ?? {})) });
+  const mk = (arm, over = {}) => ({
+    ...recMeta(arm),
+    prompts: ids.map((id) => row(id, over[id] ?? {})),
+  });
   const records = [
     mk("A0"),
     mk("A1"),
@@ -721,15 +733,22 @@ const rawCensus = (lines, port = [PORT_OK, PID]) => {
   if (port) setPortRecord(c, port[0], port[1]);
   return c;
 };
-const armFlags = (a, shell) =>
-  a === shell ? F_TAIL : a === "A5" ? F_A5 : a === "A3" ? F_A3 : F_OFF;
+// each arm's recorded flags, with its own logstem (recMeta's logStem) and speculation state
+const armFlags = (a, shell, spec = "on") =>
+  a === shell
+    ? flags(1, 1, 0, "", `stem-${a}`, spec)
+    : a === "A5"
+      ? flags(1, 0, 0, "-no-fmoe -no-fug", `stem-${a}`, spec)
+      : a === "A3"
+        ? flags(1, 0, 0, "-fa 0", `stem-${a}`, spec)
+        : flags(1, 0, 0, "", `stem-${a}`, spec);
 // every arm: its recorded flags, the port check and an armed PLE-history repair
-const gateCensus = (arms, shell = "C") =>
-  Object.fromEntries(arms.map((a) => [a, rawCensus([armFlags(a, shell), ...ARMED])]));
+const gateCensus = (arms, shell = "C", spec = "on") =>
+  Object.fromEntries(arms.map((a) => [a, rawCensus([armFlags(a, shell, spec), ...ARMED])]));
 
 test("Opus repro: a C arm served by the crosscheck never scores (restored:xcheck-flag-off is no tail restore)", () => {
   const ids = Array.from({ length: 24 }, (_, i) => `p${i}`);
-  const mk = (arm) => ({ arm, prompts: ids.map((id) => row(id)) });
+  const mk = (arm) => ({ ...recMeta(arm), prompts: ids.map((id) => row(id)) });
   const records = ["A0", "A1", "C", "A5", "A3"].map(mk);
   const xLine = () =>
     bLine({
@@ -758,7 +777,10 @@ test("Opus repro: a C arm served by the crosscheck never scores (restored:xcheck
 
 test("pre-score: flags per arm, CUDA errors in any arm, C HTTP failures STOP, C parse failures drop", () => {
   const ids = ["p0", "p1"];
-  const mk = (arm, over = {}) => ({ arm, prompts: ids.map((id) => row(id, over[id] ?? {})) });
+  const mk = (arm, over = {}) => ({
+    ...recMeta(arm),
+    prompts: ids.map((id) => row(id, over[id] ?? {})),
+  });
   const records = [mk("A0"), mk("A1"), mk("C"), mk("A5"), mk("A3")];
   const arms = ["A0", "A1", "C", "A5", "A3"];
   assert.equal(preScoreChecks(records, gateCensus(arms), { shell: "C" }), null);
@@ -827,7 +849,7 @@ test("pre-score: flags per arm, CUDA errors in any arm, C HTTP failures STOP, C 
 test("N10/N8: step 4 PLE checks (STOP) and the port check (VOID) per arm", () => {
   const ids = ["p0"];
   const records = ["A0", "A1", "C", "A5", "A3"].map((arm) => ({
-    arm,
+    ...recMeta(arm),
     prompts: ids.map((id) => row(id)),
   }));
   const arms = ["A0", "A1", "C", "A5", "A3"];
@@ -911,7 +933,10 @@ test("round 8 (Sol nit): port evidence is ONLY the .port sidecar, validated agai
 // ---- round 7: one shared slack for every exclusion attributable to C ----------------------------
 
 const ids24 = Array.from({ length: 24 }, (_, i) => `p${i}`);
-const mk24 = (arm, over = {}) => ({ arm, prompts: ids24.map((id) => row(id, over[id] ?? {})) });
+const mk24 = (arm, over = {}) => ({
+  ...recMeta(arm),
+  prompts: ids24.map((id) => row(id, over[id] ?? {})),
+});
 const lines24 = (c = ids24.map(() => tailLine())) => ({
   A0: ids24.map(() => bLine()),
   A1: ids24.map(() => bLine()),
@@ -1039,7 +1064,7 @@ test("round 8 (Opus S1/S1b/S3): A1 != A0 is void-determinism BEFORE any C attrib
   // hard checks still come first: a CUDA error in any arm is STOP even with A1 != A0
   const cuda = gateRefusal(
     ARMS.map((a) => mk24(a, a === "A1" ? { p0: OTHER_A } : {})),
-    { ...gateCensus(ARMS), C: rawCensus([F_TAIL, ...ARMED, "CUDA error: x"]) },
+    { ...gateCensus(ARMS), C: rawCensus([armFlags("C", "C"), ...ARMED, "CUDA error: x"]) },
     lines24(),
     OPTS,
   ).refused;
@@ -1068,11 +1093,11 @@ test("round 8 (Sol bug 1): zero-token responses are invalid by the one rule shar
   // C returns 0 tokens on all 24 eligible B prompts (with strict tail restores in its log) -> STOP
   const empty = refuse24({ C: onIds(ids24, { continuation: [] }) });
   assert.equal(empty.pre.cExcluded, 24);
-  assert.deepEqual(empty.pre.cReasons, { "request B returned < 1 tokens": 24 });
+  assert.deepEqual(empty.pre.cReasons, { "request B returned fewer tokens than the horizon": 24 });
   assert.equal(empty.refused.verdict, "shell-diverged");
   assert.equal(gateStatus(empty.refused.verdict), "STOP");
   // a 1-token request A from C is invalid too
-  assert.equal(rowProblem(row("p0", { generated: [10] })).request, "A");
+  assert.equal(rowProblem(row("p0", { generated: [10] }), 8).request, "A");
   // A0/A1 returning 0 tokens is a control failure
   const a0Empty = refuse24({ A0: onIds(ids24, { continuation: [] }) });
   assert.equal(a0Empty.pre.cExcluded, 0);
@@ -1105,6 +1130,189 @@ test("round 8 (Opus nit): refuse to score unless A0, A1, C, A5 and A3 records al
   }
 });
 
+// ---- round 9: one consistent run, horizon-length continuations, spec-off fallback, precedence ------
+
+const recs24 = (over = {}) => ARMS.map((a) => mk24(a, over[a] ?? {}));
+const rec = (records, arm) => records.find((r) => r.arm === arm);
+
+test("round 9 (Opus E1: S1, S2, S2b, S3): inconsistent arm records are refused (exit 1)", () => {
+  const refuse = (records, census = gateCensus(ARMS)) =>
+    assert.throws(() => gateRefusal(records, census, lines24(), OPTS), /refusing to score/);
+  // S1: a stale second A0 record (every row failed) next to the real one
+  const stale = { ...mk24("A0", onIds(ids24, { ok: false, error: "x", errorKind: "http" })) };
+  refuse([stale, ...recs24()]);
+  // S2: C run with a shorter horizon than the others; S2b: the benign arms with a shorter horizon
+  const s2 = recs24();
+  rec(s2, "C").horizon = 4;
+  refuse(s2);
+  const s2b = recs24();
+  rec(s2b, "A5").horizon = 4;
+  rec(s2b, "A3").horizon = 4;
+  refuse(s2b);
+  // S3: C's record from a --limit 20 run
+  const s3 = recs24();
+  rec(s3, "C").prompts = rec(s3, "C").prompts.slice(0, 20);
+  refuse(s3);
+  // nFirst, receipt, url port, an extra arm, a record tied to another log
+  for (const mutate of [
+    (r) => (rec(r, "A1").nFirst = 32),
+    (r) => (rec(r, "A3").receipt = "other.json"),
+    (r) => (rec(r, "A5").url = "http://127.0.0.1:8101"),
+    (r) => r.push({ ...mk24("A0"), arm: "A0-attempt1" }),
+    (r) => (rec(r, "A5").logStem = "stem-A0"), // N3: A5's record must name A5's own server log
+  ]) {
+    const r = recs24();
+    mutate(r);
+    refuse(r);
+  }
+  // a consistent run passes the record check
+  assert.equal(gateRefusal(recs24(), gateCensus(ARMS), lines24(), OPTS).refused, null);
+});
+
+test("round 9 (Sol): control failures beyond the slack win over C's exclusions (VOID, not STOP)", () => {
+  const http = { ok: false, error: "x", errorKind: "http", failedAt: "A" };
+  const r = refuse24({
+    A1: onIds(ids24.slice(0, 5), http),
+    C: onIds(ids24.slice(10, 15), OTHER_A),
+  });
+  assert.equal(r.pre.controlExcluded, 5);
+  assert.equal(r.pre.cExcluded, 5);
+  assert.equal(r.refused.verdict, "insufficient-control");
+  assert.equal(gateStatus(r.refused.verdict), "VOID");
+});
+
+test("round 9 (Sol): a B continuation must reach the horizon; EOS before it is invalid for every arm", {
+  skip: !fs.existsSync(DEFAULT_LIB),
+}, async () => {
+  const lib = await import(pathToFileURL(DEFAULT_LIB).href);
+  // 24 identical one-token B responses in every arm: never compatible-at-horizon
+  const short = Object.fromEntries(ARMS.map((a) => [a, onIds(ids24, { continuation: [5] })]));
+  const g = refuse24(short);
+  assert.equal(g.refused.verdict, "insufficient-control");
+  const s = score(recs24(short), lib, { ...OPTS, horizon: 8, nMin: 1 });
+  assert.notEqual(s.verdict, "compatible-at-horizon");
+  // an EOS end is named as such, and is invalid (the v2 lib cannot express a genuine end)
+  const eos = rowProblem(row("p0", { continuation: [1, 2, 3], eosAt: 3, bFinish: "stop" }), 8);
+  assert.equal(eos.request, "B");
+  assert.equal(eos.reason, "request B ended on EOS before the horizon");
+  assert.equal(rowProblem(row("p0"), 8), null);
+});
+
+test("round 9 (Opus N1/S4): A1's request-B failure is a control failure; its request A still counts for determinism", () => {
+  const bFail = { ok: false, error: "HTTP 500", errorKind: "http", failedAt: "B" };
+  // A1's B fails on p0: excluded as a control failure, never a C exclusion (even if C also failed)
+  const one = refuse24({ A1: { p0: bFail }, C: { p0: bFail } });
+  assert.equal(one.pre.cExcluded, 0);
+  assert.equal(one.pre.controlExcluded, 1);
+  assert.equal(one.refused, null);
+  // S4: A1's request A differs on p0 and then its B fails; C's request A differs on p1-p5
+  const s4 = refuse24({
+    A1: { p0: { ...bFail, generated: [42, 42, 42, 42] } },
+    C: onIds(ids24.slice(1, 6), OTHER_A),
+  });
+  assert.equal(s4.refused.verdict, "void-determinism");
+});
+
+test("round 9 (Opus N4): the spec-off fallback runs when EVERY arm is spec=off; mixed = mislaunched", () => {
+  const off = gateRefusal(recs24(), gateCensus(ARMS, "C", "off"), lines24(), OPTS);
+  assert.equal(off.specOff, true);
+  assert.equal(off.refused, null);
+  assert.equal(gateRefusal(recs24(), gateCensus(ARMS), lines24(), OPTS).specOff, false);
+  const mixed = { ...gateCensus(ARMS), A3: rawCensus([armFlags("A3", "C", "off"), ...ARMED]) };
+  const m = gateRefusal(recs24(), mixed, lines24(), OPTS).refused;
+  assert.equal(m.verdict, "mislaunched");
+  assert.ok(/speculation states differ/.test(m.voidReason));
+  // a flags record without spec= is "unknown": mislaunched in step 4, and steps 1-3 need spec=on
+  const noSpec = armFlags("A1", "C").replace(" spec=on", "");
+  const u = gateRefusal(
+    recs24(),
+    { ...gateCensus(ARMS), A1: rawCensus([noSpec, ...ARMED]) },
+    lines24(),
+    OPTS,
+  );
+  assert.equal(u.refused.verdict, "mislaunched");
+  assert.equal(
+    checkStep("step1", census([flags(1, 0, 0, "", "x", "off"), ...ARMED])).verdict,
+    "VOID",
+  );
+});
+
+test("round 9: verdict precedence, one case per adjacent pair of rules (the first rule wins)", () => {
+  const setRow = (s, arm, i, over) => {
+    rec(s.records, arm).prompts[i] = row(ids24[i], over);
+  };
+  // each rule's injection touches its own arm / prompts so any two can be combined
+  const RULES = [
+    ["records", (s) => (rec(s.records, "A5").horizon = 4), "throw", null],
+    ["cuda", (s) => feed(s.census.A0, "CUDA error: x"), "cuda-errors", null],
+    [
+      "flags",
+      (s) => (s.census.A5.flags = { ...s.census.A5.flags, extra: "" }),
+      "mislaunched",
+      /recorded launch flags/,
+    ],
+    [
+      "ple-reset",
+      (s) => feed(s.census.A3, "[ple-hist] reset seq=0 pos=1996 next_pos=2001"),
+      "ple-hist",
+      /unrepaired/,
+    ],
+    ["port", (s) => setPortRecord(s.census.A1, null, PID), "mislaunched", /port ownership/],
+    ["ple-set", (s) => (s.census.C.ple.sets = 0), "ple-hist", /never logged a set/],
+    ["determinism", (s) => setRow(s, "A1", 0, OTHER_A), "void-determinism", null],
+    [
+      "control",
+      (s) => {
+        for (const i of [10, 11, 12, 13, 14])
+          setRow(s, "A1", i, { ok: false, error: "x", errorKind: "http", failedAt: "B" });
+      },
+      "insufficient-control",
+      null,
+    ],
+    [
+      "c-slack",
+      (s) => {
+        for (const i of [15, 16, 17, 18, 19]) setRow(s, "C", i, OTHER_A);
+      },
+      "shell-diverged",
+      null,
+    ],
+    [
+      "not-engaged",
+      (s) => {
+        for (const i of [5, 6, 7, 8, 9]) {
+          s.restores.A0[i] = bLine({ prevRound: "root-only", prevNAcc: 0 });
+          s.restores.C[i] = bLine();
+        }
+      },
+      "not-engaged:no-eligible-prompts",
+      null,
+    ],
+    ["score", () => {}, null, null],
+  ];
+  const run = (injectors) => {
+    const s = { records: recs24(), census: gateCensus(ARMS), restores: lines24() };
+    for (const inject of injectors) inject(s);
+    return gateRefusal(s.records, s.census, s.restores, OPTS).refused;
+  };
+  const expectRule = ([name, , verdict, re], got, label) => {
+    if (verdict === null) return assert.equal(got, null, `${label}: expected scoring`);
+    assert.equal(got?.verdict, verdict, `${label}: expected ${name}`);
+    if (re) assert.ok(re.test(got.voidReason), `${label}: ${got.voidReason}`);
+  };
+  for (let i = 0; i < RULES.length; i += 1) {
+    const label = i + 1 < RULES.length ? `${RULES[i][0]} + ${RULES[i + 1][0]}` : RULES[i][0];
+    const injectors = i + 1 < RULES.length ? [RULES[i][1], RULES[i + 1][1]] : [RULES[i][1]];
+    if (RULES[i][2] === "throw") {
+      assert.throws(() => run(injectors), /refusing to score/, label);
+      continue;
+    }
+    expectRule(RULES[i], run(injectors), label);
+    // and each rule alone fires its own verdict
+    expectRule(RULES[i], run([RULES[i][1]]), `${RULES[i][0]} alone`);
+  }
+});
+
 test("N9: feedFiles resets per-log parser state (a pending tail at the end of log 1 never reaches log 2)", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stateos-reset-"));
   try {
@@ -1133,7 +1341,7 @@ test("A1's request A differing from A0's is void-determinism, counted before any
   const lib = await import(pathToFileURL(DEFAULT_LIB).href);
   const ids = ["p0", "p1"];
   const mk = (arm, over = {}) => ({
-    arm,
+    ...recMeta(arm),
     horizon: 8,
     prompts: ids.map((id) => row(id, over[id] ?? {})),
   });
@@ -1198,7 +1406,7 @@ test("steps 1 and 2 are VOID when the log shows the server never served", () => 
 
 test("step 4: -ExtraArgs of the benign arms (and of C) are checked against the required values", () => {
   const ids = ["p0"];
-  const mk = (arm) => ({ arm, prompts: ids.map((id) => row(id)) });
+  const mk = (arm) => ({ ...recMeta(arm), prompts: ids.map((id) => row(id)) });
   const records = ["A0", "A1", "C", "A5", "A3"].map(mk);
   const arms = ["A0", "A1", "C", "A5", "A3"];
   assert.equal(preScoreChecks(records, gateCensus(arms), { shell: "C" }), null);

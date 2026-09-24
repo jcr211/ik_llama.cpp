@@ -8,6 +8,8 @@
 #   -DivLog  LONGSPEAR_STATEOS_DIV_LOG=1        [stateos-div] telemetry
 #   -Tail    LONGSPEAR_STATEOS_TAIL_SNAPSHOT=1  tail snapshot at release (C1)
 #   -Xcheck  LONGSPEAR_STATEOS_TAIL_XCHECK=1    diagnostic cross-check (use launch-stateos-tail-xcheck-8099.ps1)
+# -SpecOff drops both --spec-type drafters (the step-4 spec-off fallback after void-determinism; every
+#   step-4 arm must then be launched with it) and records spec=off in <LogStem>.flags (else spec=on).
 # -ExtraArgs is appended last (later flags win), e.g. '-no-fmoe -no-fug' or '-fa 0' for the benign gate arms.
 # -LogStem is MANDATORY and must be new: every arm writes its own D:\AI\ik_llama-qwen4exp\<LogStem>.out.log /
 # .err.log (e.g. 'ik-serve-8099-wsv2-step3-P0'); an existing .err.log is refused, never truncated.
@@ -23,6 +25,7 @@ param(
     [switch]$DivLog,
     [switch]$Tail,
     [switch]$Xcheck,
+    [switch]$SpecOff,
     [string]$ExtraArgs = '',
     [Parameter(Mandatory = $true)][string]$LogStem,
     [string]$LockOwner = 'W-SV2 chain'
@@ -79,10 +82,13 @@ $flagParts = foreach ($n in $flagNames) {
     $v = [Environment]::GetEnvironmentVariable($n)
     if ($v -eq '1') { $n + '=1' } else { $n + '=0' }
 }
-$flagsLine = '[stateos-flags] ' + ($flagParts -join ' ') + ' logstem=' + $LogStem + " extra='" + $ExtraArgs + "'"
+$spec = if ($SpecOff) { 'off' } else { 'on' }
+$flagsLine = '[stateos-flags] ' + ($flagParts -join ' ') + ' spec=' + $spec + ' logstem=' + $LogStem + " extra='" + $ExtraArgs + "'"
 Set-Content -Path $flagsPath -Value $flagsLine -Encoding ascii
 
-$argsx = '-m "D:\AI\LLM Models\custom\Qwen3.8-Flash-Next-MXFP4moe-ngramQ8-MTP.gguf" --api-key "' + $key + '" -ngl 999 -ncmoe 37 -fa 1 -c 196608 -ub 512 -ctk q8_0 -ctv q8_0 -np 1 -t 24 -tb 32 --jinja --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --host 0.0.0.0 --port 8099 --spec-type ngram-mod:n_min=4 --spec-type mtp:n_max=4 --reasoning-budget 1024 --spec-ckpt-mode gpu-fallback -rtr -muge'
+# -SpecOff (the step-4 spec-off fallback, merged plan section 4 step 4) drops both --spec-type drafters
+$specArgs = if ($SpecOff) { '' } else { ' --spec-type ngram-mod:n_min=4 --spec-type mtp:n_max=4' }
+$argsx = '-m "D:\AI\LLM Models\custom\Qwen3.8-Flash-Next-MXFP4moe-ngramQ8-MTP.gguf" --api-key "' + $key + '" -ngl 999 -ncmoe 37 -fa 1 -c 196608 -ub 512 -ctk q8_0 -ctv q8_0 -np 1 -t 24 -tb 32 --jinja --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --host 0.0.0.0 --port 8099' + $specArgs + ' --reasoning-budget 1024 --spec-ckpt-mode gpu-fallback -rtr -muge'
 if ($ExtraArgs -ne '') { $argsx = $argsx + ' ' + $ExtraArgs }
 
 $proc = Start-Process -FilePath $exe -ArgumentList $argsx -WindowStyle Hidden -PassThru `
@@ -90,4 +96,4 @@ $proc = Start-Process -FilePath $exe -ArgumentList $argsx -WindowStyle Hidden -P
     -RedirectStandardError $errLog
 # the launched PID, for check-stateos-port-8099.ps1 (run it once the server is up, before any traffic)
 Set-Content -Path ('D:\AI\ik_llama-qwen4exp\' + $LogStem + '.pid') -Value ([string]$proc.Id) -Encoding ascii
-Write-Output ("stateos-tail-8099-launched pid=" + $proc.Id + " divlog=" + [int][bool]$DivLog + " tail=" + [int][bool]$Tail + " xcheck=" + [int][bool]$Xcheck + " ple_hist_rewind=1 ple_hist_log=1 extra='" + $ExtraArgs + "' log=" + $LogStem)
+Write-Output ("stateos-tail-8099-launched pid=" + $proc.Id + " divlog=" + [int][bool]$DivLog + " tail=" + [int][bool]$Tail + " xcheck=" + [int][bool]$Xcheck + " spec=" + $spec + " ple_hist_rewind=1 ple_hist_log=1 extra='" + $ExtraArgs + "' log=" + $LogStem)

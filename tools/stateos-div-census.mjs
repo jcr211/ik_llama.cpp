@@ -64,14 +64,17 @@ export const FLAG_NAMES = [
   "LONGSPEAR_PLE_HIST_LOG",
 ];
 
-// extra = the launcher's -ExtraArgs, whitespace-normalized ('' for every run but the benign gate arms)
-const flagSet = (div, tail, xcheck, extra = "") => ({
+// extra = the launcher's -ExtraArgs, whitespace-normalized ('' for every run but the benign gate arms);
+// spec = the launcher's speculation state ('on', or 'off' with -SpecOff); null = either, checked
+// elsewhere (step 4: every arm must share one state, see tools/stateos-tail-gate.mjs)
+const flagSet = (div, tail, xcheck, extra = "", spec = "on") => ({
   LONGSPEAR_STATEOS_DIV_LOG: div,
   LONGSPEAR_STATEOS_TAIL_SNAPSHOT: tail,
   LONGSPEAR_STATEOS_TAIL_XCHECK: xcheck,
   LONGSPEAR_PLE_HIST_REWIND: "1",
   LONGSPEAR_PLE_HIST_LOG: "1",
   extra,
+  spec,
 });
 
 /** The flags each W-SV2 run must have been launched with (merged plan section 4). */
@@ -80,10 +83,10 @@ export const REQUIRED_FLAGS = {
   step2: flagSet("1", "1", "1"), // mechanism probe: TAIL_SNAPSHOT + TAIL_XCHECK + DIV_LOG
   P0: flagSet("1", "0", "0"), // step 3 flag-off arm
   T1: flagSet("1", "1", "0"), // step 3 tail arm
-  gateOff: flagSet("1", "0", "0"), // step 4 A0, A1
-  gateA5: flagSet("1", "0", "0", "-no-fmoe -no-fug"), // step 4 benign A5
-  gateA3: flagSet("1", "0", "0", "-fa 0"), // step 4 benign A3
-  gateTail: flagSet("1", "1", "0"), // step 4 C
+  gateOff: flagSet("1", "0", "0", "", null), // step 4 A0, A1
+  gateA5: flagSet("1", "0", "0", "-no-fmoe -no-fug", null), // step 4 benign A5
+  gateA3: flagSet("1", "0", "0", "-fa 0", null), // step 4 benign A3
+  gateTail: flagSet("1", "1", "0", "", null), // step 4 C
 };
 
 export const normalizeExtra = (s) =>
@@ -104,6 +107,9 @@ export function flagsMismatch(flags, required, problem = null) {
   );
   if (normalizeExtra(flags.extra) !== normalizeExtra(required.extra)) {
     bad.push(`extra='${flags.extra}' (need '${required.extra}')`);
+  }
+  if (required.spec != null && flags.spec !== required.spec) {
+    bad.push(`spec=${flags.spec} (need ${required.spec})`);
   }
   return bad.length ? `wrong flags: ${bad.join(", ")}` : null;
 }
@@ -214,6 +220,7 @@ export function newCensus() {
     port: null,
     portProblem: null, // set by feedFiles: a log without a port record, or a record that is not ok
     cudaErrors: 0,
+    logStem: null, // the flags record's logstem= (one log); feedFiles: null unless exactly one log
     _last: null,
     _tailPending: new Map(),
   };
@@ -228,6 +235,13 @@ export function feed(c, line) {
     // extra='...' may hold spaces: its own pattern, not parseFields
     const m = /extra='([^']*)'/.exec(line);
     flags.extra = normalizeExtra(m ? m[1] : "");
+    // spec=on|off (launcher -SpecOff); a record without it is "unknown", never assumed on
+    const s = / spec=(on|off)\b/.exec(line);
+    flags.spec = s ? s[1] : "unknown";
+    // the launcher's -LogStem: ties an arm record to its own server log (not part of the flag set, so
+    // two logs of one census can agree on flags while naming different stems)
+    const ls = / logstem=(\S+)/.exec(line);
+    c.logStem = ls ? ls[1] : null;
     if (c.flags && JSON.stringify(c.flags) !== JSON.stringify(flags)) c.flagsConflict = true;
     c.flags = flags;
     return;
@@ -805,6 +819,7 @@ export async function feedFiles(files) {
     c.serverListening = false;
     c.serverBindFailed = false;
     c.port = null;
+    c.logStem = null;
     c._last = null;
     c._tailPending = new Map();
     const sidecar = flagsSidecarOf(f);
@@ -830,8 +845,10 @@ export async function feedFiles(files) {
       listening: c.serverListening,
       bindFailed: c.serverBindFailed,
       port: c.port,
+      logStem: c.logStem,
     });
   }
+  c.logStem = perFile.length === 1 ? perFile[0].logStem : null;
   const portBad = perFile.filter((p) => !p.port || !p.port.ok);
   c.port =
     perFile.length && !portBad.length

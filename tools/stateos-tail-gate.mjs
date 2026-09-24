@@ -11,9 +11,13 @@
 //      generation, and A diverges near the prompt start), and A0, A1 and C take the same restore path
 //      for A (same prompts in the same order); the tail writer's extra eviction cannot change C's list
 //      below the 32-checkpoint cap. Every arm sends the same request sequence. Caveat: the ngram-mod
-//      draft table is server-lifetime shared state, so after a harmless B divergence C's later
-//      request-A drafts can differ from A0's; outputs stay greedy-exact in principle (drafts affect
-//      speed only), and if they do not, the determinism control (A1 vs A0) returns void-determinism;
+//      draft table is server-lifetime state, fed every request's prompt and output. A0 and A1 see
+//      the same history, so their tables stay identical; only C's table changes, after any benign
+//      difference in C's B continuation. C's later request-A drafts (and verify batch shapes) can then
+//      differ from A0's, and if greedy is not batch-invariant C's request A can differ: that is
+//      charged to C ("request A output differs", against the shared slack), NOT caught by the A1 vs A0
+//      determinism control. Low probability: it needs a chained n_min=4 hit on one of the few hundred
+//      differing buckets out of 4M;
 //   2. request A: greedy, max_tokens = --n-first, cache_prompt: true -> generated ids g[0..G-1].
 //      After A the slot caches prompt + g[0..G-2] (the last sampled token is never decoded);
 //   3. request B: the forced prompt, built ONCE from arm A0's request-A output:
@@ -31,51 +35,57 @@
 //   A0 flag off (RUN FIRST: the other arms read its record), A1 flag-off repeat (determinism control),
 //   C = -Tail -DivLog, benign A5 (-ExtraArgs '-no-fmoe -no-fug') and A3 (-ExtraArgs '-fa 0') flag off.
 //
-// Scoring (needs every arm's record and server log, --arm-log ARM=path; each log's <LogStem>.flags
-// sidecar, written by the launcher, records the arm's effective flags, and its <LogStem>.port sidecar,
-// written by check-stateos-port-8099.ps1, the listener check):
-//   - log checks first (preScoreChecks): CUDA error lines in any arm's log = `cuda-errors` (STOP);
-//     an arm whose recorded flags differ from the required set (C: DIV_LOG + TAIL_SNAPSHOT; every other
-//     arm: DIV_LOG only; all: PLE_HIST_REWIND + PLE_HIST_LOG; -ExtraArgs: A5 '-no-fmoe -no-fug', A3
-//     '-fa 0', all others none), or with no flags record, = `mislaunched` (VOID) - decided from the
-//     recorded flags only, never from the lever's own output; a `[ple-hist] reset` at pos > 0 in any
-//     arm = `ple-hist` (STOP); a <LogStem>.port record that is missing or does not name the model port
-//     with exactly one listener PID equal to <LogStem>.pid = `mislaunched` (VOID; log lines are never
-//     port evidence); no `[ple-hist] set` line in an arm = `ple-hist` (STOP);
-//   - missing arm records (A0, A1, C, A5, A3 are all required): refuse with an error (exit 1);
-//   - then the determinism control, BEFORE any C attribution: A1 differing from A0 on ANY prompt where
-//     both rows are valid (request A ids, or B's continuation) = `void-determinism` (VOID);
-//   - one validity rule (rowProblem) for engagement, determinism and scoring: a failed request, or a
-//     successful one with fewer than 2 request-A / 1 request-B tokens, is an invalid row;
-//   - every prompt is scorable or excluded once (engagementAndDrops). Invalid A0/A1 rows are control
-//     failures, checked before C and never charged to C; more of them than the slack, with too few
-//     scorable prompts left, = `insufficient-control` (VOID). A restore line binds to a row by
-//     request order AND content: n_past == the forced index, the cache window's marked token ==
-//     g_A0[G-2] and the prompt window's marked token == X. A C row whose request B reached the server
-//     but failed is bound with A0's row fields. Benign arms reach the same B from their own cache, so
-//     their restore lines are not constrained;
-//   - ONE shared slack (prompts - min-prompts, 24 - 20 = 4) for every exclusion attributable to arm C,
-//     whatever the reason: C's request A differs from A0's (where A1 reproduced A0), C's row is invalid
-//     (request A or B not parsed, HTTP/connection error, too few tokens), C's B differs, or, on a prompt A0's
-//     line shows as eligible (prev_round=drafted, prev_n_acc >= 1), C's request-B restore line is
-//     missing, not at tail_dist=1, or not a strict tail restore (chosen_origin=tail, outcome=restored,
-//     reason=tail). Each is reported with its prompt, request (A or B) and reason. More than the slack =
-//     `shell-diverged` (STOP); up to the slack they are counted drops (tolerated by design);
-//   - exclusions NOT attributable to C (A0 or A1 problems, A0 showing no eligible tail, a benign arm's
-//     different B) leaving fewer than --min-prompts scorable strict tail restores =
-//     `not-engaged:no-eligible-prompts` (VOID);
-//   - verdicts: compatible-at-horizon = PASS (exit 0); shellWorse, cuda-errors, ple-hist,
-//     shell-diverged = STOP (exit 2); insufficient-sample, void-determinism, mislaunched,
-//     insufficient-control and not-engaged:no-eligible-prompts = VOID (exit 3): the gate did not
-//     answer, not a C1 kill. A missing arm record or any other refusal to run = exit 1.
+// Arm records: `run` needs --log-stem <the server's launcher -LogStem>; the record carries it with url,
+// horizon, nFirst, receipt and per row: generated (request A ids), continuation (request B ids), bSha,
+// bFinish, eosAt (B ended on EOS before the horizon), failedAt/errorKind on failure.
+//
+// Scoring needs every arm's record and server log (--arm-log ARM=path). Each log's <LogStem>.flags
+// sidecar (launcher) records the effective flags, spec=on|off and logstem=; <LogStem>.port (written
+// by check-stateos-port-8099.ps1) and <LogStem>.pid are the only port evidence.
+//
+// ONE validity rule (rowProblem) for engagement, determinism and scoring: a row is invalid when a
+// request failed, request A returned < 2 tokens, or request B returned fewer tokens than the horizon -
+// including an EOS before the horizon (row.eosAt), for every arm, because the v2 lib cannot express a
+// genuine end. A restore line binds to a row by request order AND content (n_past == the forced index,
+// cache-window marked token == g_A0[G-2], prompt-window marked token == X); a C row whose request B
+// reached the server but failed is bound with A0's row fields. Benign arms reach the same B from their
+// own cache, so their restore lines are not constrained.
+//
+// VERDICT PRECEDENCE (the first rule that fires decides; tested pairwise in the tools test):
+//   0. inconsistent or missing records - error, exit 1 (checkRecords): exactly one record per arm A0,
+//      A1, C, A5, A3 and no other; one horizon, nFirst and receipt; A0's prompt-id list in every
+//      record; url on port 8099; each record's logStem == its --arm-log stem == that .flags logstem=;
+//   1. CUDA error lines in any arm's log - `cuda-errors` STOP;
+//   2. flags/spec mismatch - `mislaunched` VOID: recorded flags differ from the arm's required set
+//      (C: DIV_LOG + TAIL_SNAPSHOT; others DIV_LOG only; all PLE_HIST_REWIND + PLE_HIST_LOG; ExtraArgs
+//      A5 '-no-fmoe -no-fug', A3 '-fa 0', others none), no flags record, or the arms' spec states are
+//      mixed/unknown. All spec=off = the plan's spec-off fallback run (verdict labelled so);
+//   3. a `[ple-hist] reset` at pos > 0 in any arm - `ple-hist` STOP;
+//   4. a .port record missing or not (ok, port 8099, exactly one listener == .pid) - `mislaunched` VOID;
+//   5. no `[ple-hist] set` line in an arm - `ple-hist` STOP;
+//   6. A1 differs from A0 (request A where both As succeeded; B continuation where both rows are valid
+//      with the same B) - `void-determinism` VOID;
+//   7. invalid A0/A1 rows (control failures, never charged to C) > slack - `insufficient-control` VOID;
+//   8. C-attributable exclusions > the ONE shared slack (prompts - min-prompts, 24 - 20 = 4) -
+//      `shell-diverged` STOP. C reasons (only where A0's and A1's rows are valid and A1 reproduced A0's
+//      request A): C's row invalid; C's request A differs from A0's; C's B differs; on a prompt A0's line
+//      shows as eligible (prev_round=drafted, prev_n_acc >= 1), C's request-B line missing, not at
+//      tail_dist=1, or not a strict tail restore (chosen_origin=tail, outcome=restored, reason=tail).
+//      Each is reported with prompt, request (A or B) and reason; up to the slack = counted drops;
+//   9. fewer than --min-prompts scorable strict tail restores (the shortfall is not C's: A0/A1 lines,
+//      A0 showing no eligible tail, a benign arm's different B) - `not-engaged:no-eligible-prompts` VOID;
+//  10. score (v2 rule): compatible-at-horizon PASS; shellWorse STOP; insufficient-sample VOID.
+// Exit codes: PASS 0, STOP 2, VOID 3 (the gate did not answer; not a C1 kill), refusal 1.
 //
 // Usage:
-//   node tools/stateos-tail-gate.mjs run --arm A0 --out <dir> [--url http://127.0.0.1:8099]
-//        [--receipt <v2 receipt.json>] [--n-first 64] [--horizon 256] [--limit N]
-//   node tools/stateos-tail-gate.mjs run --arm C --out <dir> [--reference <dir>/arm-A0.json] ...
+//   node tools/stateos-tail-gate.mjs run --arm A0 --log-stem <stem> --out <dir>
+//        [--url http://127.0.0.1:8099] [--receipt <v2 receipt.json>] [--n-first 64] [--horizon 256]
+//   node tools/stateos-tail-gate.mjs run --arm C --log-stem <stem> --out <dir> [--reference <dir>/arm-A0.json] ...
 //   node tools/stateos-tail-gate.mjs score --out <dir> --arm-log A0=<log> --arm-log A1=<log>
 //        --arm-log C=<log> --arm-log A5=<log> --arm-log A3=<log> [--lib <noise-floor-lib.mjs>]
 //        [--shell C] [--benign A5,A3] [--min-prompts 20] [--n-min 6]
+//   (--limit N exists for smoke runs only: a limited record set is refused by score unless every arm
+//   used the same limit)
 // The API key comes from LONGSPEAR_API_KEY, else from the --api-key line of
 // D:/AI/llama-swap/config.yaml; it is never printed or written.
 
@@ -84,7 +94,13 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { REQUIRED_FLAGS, feedFiles, flagsMismatch, portProblemOf } from "./stateos-div-census.mjs";
+import {
+  MODEL_PORT,
+  REQUIRED_FLAGS,
+  feedFiles,
+  flagsMismatch,
+  portProblemOf,
+} from "./stateos-div-census.mjs";
 
 export const DEFAULT_RECEIPT =
   "D:/AI/worktrees/starfighter-trace-validation/.lanes/noise-floor-v2-20260908T022117Z/receipt.json";
@@ -103,6 +119,7 @@ export function parseArgs(argv) {
     url: "http://127.0.0.1:8099",
     receipt: DEFAULT_RECEIPT,
     reference: undefined,
+    logStem: undefined,
     lib: DEFAULT_LIB,
     nFirst: 64,
     horizon: 256,
@@ -125,6 +142,7 @@ export function parseArgs(argv) {
     else if (flag === "--url") o.url = value();
     else if (flag === "--receipt") o.receipt = value();
     else if (flag === "--reference") o.reference = path.resolve(value());
+    else if (flag === "--log-stem") o.logStem = value();
     else if (flag === "--lib") o.lib = value();
     else if (flag === "--n-first") o.nFirst = Number(value());
     else if (flag === "--horizon") o.horizon = Number(value());
@@ -144,6 +162,8 @@ export function parseArgs(argv) {
   if (!o.out) throw new Error("--out is required");
   if (o.cmd === "run" && !/^[A-Za-z][A-Za-z0-9_-]*$/.test(o.arm ?? ""))
     throw new Error("--arm is required");
+  if (o.cmd === "run" && !/^[A-Za-z0-9._-]+$/.test(o.logStem ?? ""))
+    throw new Error("--log-stem <the server's launcher -LogStem> is required");
   if (o.cmd === "run" && o.arm !== "A0" && o.reference === undefined)
     o.reference = path.join(o.out, "arm-A0.json");
   if (!(o.nFirst >= 4) || !(o.horizon >= 1))
@@ -270,7 +290,8 @@ async function complete(o, key, prompt, n) {
     throw e;
   }
   try {
-    return tokensOf(resp);
+    // finish: "length" (max_tokens reached) or "stop" (EOS / a stop string)
+    return { ...tokensOf(resp), finish: resp?.choices?.[0]?.finish_reason ?? null };
   } catch (e) {
     e.kind = "parse";
     throw e;
@@ -296,6 +317,8 @@ async function runArm(o) {
     startedAt: new Date().toISOString(),
     receipt: o.receipt,
     reference: reference ? o.reference : null,
+    // the server's launcher -LogStem: score ties this record to that log and its .flags record
+    logStem: o.logStem,
     nFirst: o.nFirst,
     horizon: o.horizon,
     candidates,
@@ -346,6 +369,10 @@ async function runArm(o) {
         bSha: tokensSha(forced.tokens),
         ...(reference ? {} : { bTokens: forced.tokens }),
         continuation: b.ids,
+        bFinish: b.finish,
+        // a genuine end before the horizon (EOS): recorded; rowProblem counts the row invalid because
+        // the v2 lib scores a short vector as a divergence / an equal short pair as the full horizon
+        ...(b.ids.length < o.horizon && b.finish === "stop" ? { eosAt: b.ids.length } : {}),
       });
     } catch (e) {
       row.error = String(e.message ?? e).slice(0, 300);
@@ -421,17 +448,27 @@ export function matchRestores(record, restores, reference = null) {
 const sameIds = (a, b) =>
   Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => v === b[i]);
 
-// request A must return >= 2 tokens (B replaces the second-to-last one); request B >= 1 (the v2 lib's
-// firstDivergence is invalid on an empty continuation)
+// request A must return >= 2 tokens (B replaces the second-to-last one); request B must reach the
+// record's horizon (rowProblem)
 export const MIN_A_TOKENS = 2;
-export const MIN_B_TOKENS = 1;
+
+const requireHorizon = (horizon) => {
+  if (!Number.isInteger(horizon) || horizon < 1)
+    throw new Error(`the arm records carry no valid horizon (${horizon})`);
+  return horizon;
+};
 
 /**
  * THE validity rule for an arm's row, shared by engagementAndDrops, the determinism check and score
  * (so score never rejects a continuation that engagement counted as valid). null when valid, else
- * {request: "A" | "B", reason, detail}. A successful response with too few tokens is invalid.
+ * {request: "A" | "B", reason, detail}. Invalid: a failed request; a request A with fewer than 2 tokens;
+ * a request-B continuation shorter than the requested horizon. A continuation that ended on EOS before
+ * the horizon (row.eosAt) is invalid too, for EVERY arm: the v2 lib cannot express a genuine end (it
+ * scores a shorter vector as a divergence at its length, and an equal short pair as surviving to the
+ * full horizon).
  */
-export function rowProblem(row) {
+export function rowProblem(row, horizon) {
+  requireHorizon(horizon);
   if (!row) return { request: "A", reason: "no row in the arm record", detail: "" };
   if (!row.ok) {
     const request = row.failedAt ?? (row.errorKind === "parse" ? "B" : "A");
@@ -456,33 +493,51 @@ export function rowProblem(row) {
     };
   }
   const nB = Array.isArray(row.continuation) ? row.continuation.length : 0;
-  if (nB < MIN_B_TOKENS) {
+  if (nB < horizon) {
     return {
       request: "B",
-      reason: `request B returned < ${MIN_B_TOKENS} tokens`,
-      detail: `${nB} tokens`,
+      reason:
+        row.eosAt != null
+          ? "request B ended on EOS before the horizon"
+          : "request B returned fewer tokens than the horizon",
+      detail: `${nB} of ${horizon} tokens`,
     };
   }
   return null;
 }
 
+// request A alone is usable (for the determinism control) when it succeeded with >= 2 tokens, whatever
+// happened to request B
+const requestAUsable = (row) =>
+  Boolean(row) &&
+  (row.ok || row.failedAt === "B") &&
+  Array.isArray(row.generated) &&
+  row.generated.length >= MIN_A_TOKENS;
+
 /**
- * Determinism control (merged plan section 4 step 4): A1 must reproduce A0 on every prompt where both
- * rows are valid - request A's ids, and B's continuation where both sent the same B. Returns the
- * failing prompts [{id, request}]. Checked BEFORE any C attribution or slack: spec-on nondeterminism
- * would otherwise show up as C differences.
+ * Determinism control (merged plan section 4 step 4): A1 must reproduce A0 - request A's ids on every
+ * prompt where both request As succeeded (even when a request B then failed), and B's continuation
+ * where both rows are valid and sent the same B. Returns the failing prompts [{id, request}]. Checked
+ * BEFORE any C attribution or slack: spec-on nondeterminism would otherwise show up as C differences.
  */
 export function determinismFailures(records) {
   const a0 = records.find((r) => r.arm === "A0");
   const a1 = records.find((r) => r.arm === "A1");
   if (!a0 || !a1) return [];
+  const horizon = requireHorizon(a0.horizon);
   const out = [];
   for (const p of a0.prompts) {
     const q = a1.prompts.find((x) => x.id === p.id);
-    if (rowProblem(p) || rowProblem(q)) continue;
-    if (!sameIds(p.generated, q.generated)) out.push({ id: p.id, request: "A" });
-    else if (p.bSha === q.bSha && !sameIds(p.continuation, q.continuation))
+    if (requestAUsable(p) && requestAUsable(q) && !sameIds(p.generated, q.generated)) {
+      out.push({ id: p.id, request: "A" });
+    } else if (
+      !rowProblem(p, horizon) &&
+      !rowProblem(q, horizon) &&
+      p.bSha === q.bSha &&
+      !sameIds(p.continuation, q.continuation)
+    ) {
       out.push({ id: p.id, request: "B" });
+    }
   }
   return out;
 }
@@ -518,6 +573,8 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
     matched[a] = matchRestores(byArm.get(a), restoresByArm[a] ?? [], a0);
   }
   const rowOf = (arm, id) => byArm.get(arm)?.prompts.find((p) => p.id === id);
+  const horizon = requireHorizon(a0.horizon);
+  const rowProblemOf = (row) => rowProblem(row, horizon);
   const drop = new Map();
   const droppedCounts = {};
   const cExclusions = [];
@@ -549,14 +606,14 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
     const a0Line = matched.A0[id];
     if (a0Line && a0Line.tailDist === 1 && eligibleInA0(a0Line)) eligible += 1;
     // the controls first: a prompt without a valid A0 AND A1 row is a control failure, never C's
-    const a0Bad = rowProblem(p);
+    const a0Bad = rowProblemOf(p);
     if (a0Bad) {
       controlExcluded += 1;
       exclude(id, false, null, `A0: invalid control row (${a0Bad.reason})`, a0Bad.detail);
       continue;
     }
     const a1Row = rowOf("A1", id);
-    const a1Bad = rowProblem(a1Row);
+    const a1Bad = rowProblemOf(a1Row);
     if (a1Bad) {
       controlExcluded += 1;
       exclude(id, false, null, `A1: invalid control row (${a1Bad.reason})`, a1Bad.detail);
@@ -568,7 +625,7 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
     }
     // C, row level: whatever went wrong on C's own requests (same validity rule as score)
     const cRow = rowOf(shell, id);
-    const cBad = rowProblem(cRow);
+    const cBad = rowProblemOf(cRow);
     if (cBad) {
       exclude(id, true, cBad.request, cBad.reason, cBad.detail);
       continue;
@@ -645,18 +702,26 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
 }
 
 /**
- * The verdict before scoring, from engagementAndDrops' result, or null to score.
+ * The verdict before scoring, from engagementAndDrops' result, or null to score. In order:
+ *   - more invalid A0/A1 control rows than the slack: `insufficient-control` (VOID);
  *   - more C-attributable exclusions than the shared slack: `shell-diverged` (STOP), with the
  *     per-reason breakdown and each prompt's failed request;
- *   - fewer than minPrompts scorable strict tail restores, with the C exclusions within the slack: the
- *     shortfall is not C's: `insufficient-control` (VOID) when invalid A0/A1 rows alone exceed the
- *     slack, else `not-engaged:no-eligible-prompts` (VOID).
+ *   - fewer than minPrompts scorable strict tail restores: the shortfall is not C's,
+ *     `not-engaged:no-eligible-prompts` (VOID).
  */
 export function preVerdict(pre, { shell, minPrompts }) {
   const breakdown = (o) =>
     Object.entries(o)
       .map(([k, v]) => `${k}: ${v}`)
       .join("; ");
+  // control failures first: with more invalid A0/A1 rows than the slack the gate cannot attribute
+  // anything to C (round 9: VOID wins over shell-diverged)
+  if (pre.controlExcluded > pre.slack) {
+    return {
+      verdict: "insufficient-control",
+      voidReason: `${pre.controlExcluded} prompt(s) without a valid A0/A1 control row (slack ${pre.slack}): ${breakdown(pre.nonCReasons)}; the gate did not answer`,
+    };
+  }
   if (pre.cExcluded > pre.slack) {
     const which = pre.cExclusions.map((e) => `${e.id}@${e.request}`).join(", ");
     return {
@@ -665,12 +730,6 @@ export function preVerdict(pre, { shell, minPrompts }) {
     };
   }
   if (pre.engaged) return null;
-  if (pre.controlExcluded > pre.slack) {
-    return {
-      verdict: "insufficient-control",
-      voidReason: `${pre.controlExcluded} prompt(s) without a valid A0/A1 control row (slack ${pre.slack}): ${breakdown(pre.nonCReasons)}; the gate did not answer`,
-    };
-  }
   return {
     verdict: "not-engaged:no-eligible-prompts",
     voidReason: `only ${pre.tailRestores} scorable strict tail restores in ${shell} (< ${minPrompts}); ${pre.nonCExcluded} exclusion(s) not attributable to ${shell} (${breakdown(pre.nonCReasons)}), ${pre.cExcluded} attributable to ${shell} within the slack: the gate did not answer`,
@@ -678,37 +737,93 @@ export function preVerdict(pre, { shell, minPrompts }) {
 }
 
 /**
- * Everything before scoring, in the coordinator's order (round 8). Throws (exit 1) unless the records of
- * A0, A1, the shell arm and every benign arm all exist. Then:
- *   1. preScoreChecks (CUDA STOP, flags VOID, PLE STOP, port VOID);
- *   2. determinism: A1 differing from A0 on ANY prompt with valid rows (request A, or B's continuation)
- *      = `void-determinism` (VOID; the plan's fallback is one rerun with speculation off) - BEFORE any C
- *      attribution, so spec-on nondeterminism is never charged to C;
- *   3. preVerdict (C exclusions vs the shared slack, engagement).
- * Returns {pre, refused}: refused is a verdict object, or null to score with pre.drop.
+ * Rule 0 (round 9): the five arm records must be ONE consistent run, else refuse to score (throws;
+ * exit 1). Exactly one record per arm A0, A1, the shell arm and every benign arm, and no other record
+ * (a stale `arm-A0-attempt1.json` is refused, never picked); the same horizon, nFirst and receipt in
+ * every record; every record has A0's ordered prompt-id list; every record's url is on the model port;
+ * every record names the launcher -LogStem of its server, equal to the logstem= of the arm log's
+ * .flags record (censusByArm[arm].logStem), which ties every arm, benign ones included, to its own log.
  */
-export function gateRefusal(records, censusByArm, restoresByArm, { shell, benign, minPrompts }) {
-  const have = new Set(records.map((r) => r.arm));
-  const missing = ["A0", "A1", shell, ...benign].filter((a) => !have.has(a));
-  if (missing.length) {
+export function checkRecords(records, censusByArm, { shell, benign }) {
+  const expected = ["A0", "A1", shell, ...benign];
+  const bad = [];
+  const count = {};
+  for (const r of records) count[r.arm] = (count[r.arm] ?? 0) + 1;
+  const missing = expected.filter((a) => !count[a]);
+  if (missing.length)
+    bad.push(`missing arm record(s) ${missing.map((a) => `arm-${a}.json`).join(", ")}`);
+  const dup = expected.filter((a) => count[a] > 1);
+  if (dup.length) bad.push(`more than one record for arm(s) ${dup.join(", ")}`);
+  const extra = Object.keys(count).filter((a) => !expected.includes(a));
+  if (extra.length) bad.push(`unexpected arm record(s) ${extra.join(", ")}`);
+  if (!bad.length) {
+    const a0 = records.find((r) => r.arm === "A0");
+    const ids = JSON.stringify(a0.prompts.map((p) => p.id));
+    for (const r of records) {
+      for (const k of ["horizon", "nFirst", "receipt"]) {
+        if (r[k] !== a0[k])
+          bad.push(`${r.arm}: ${k}=${JSON.stringify(r[k])} (A0: ${JSON.stringify(a0[k])})`);
+      }
+      if (JSON.stringify(r.prompts.map((p) => p.id)) !== ids)
+        bad.push(
+          `${r.arm}: prompt ids differ from A0's (${r.prompts.length} vs ${a0.prompts.length})`,
+        );
+      let port = null;
+      try {
+        port = new URL(r.url).port;
+      } catch {
+        port = null;
+      }
+      if (port !== String(MODEL_PORT))
+        bad.push(`${r.arm}: url ${JSON.stringify(r.url)} is not on port ${MODEL_PORT}`);
+      const logStem = censusByArm?.[r.arm]?.logStem ?? null;
+      if (!r.logStem || r.logStem !== logStem)
+        bad.push(
+          `${r.arm}: record logStem ${JSON.stringify(r.logStem ?? null)} != its log's .flags logstem ${JSON.stringify(logStem)}`,
+        );
+    }
+    if (!Number.isInteger(a0.horizon) || a0.horizon < 1)
+      bad.push(`A0: horizon ${a0.horizon} invalid`);
+  }
+  if (bad.length) {
     throw new Error(
-      `refusing to score: missing arm record(s) ${missing.map((a) => `arm-${a}.json`).join(", ")} (A0, A1, ${shell} and ${benign.join(", ")} are all required)`,
+      `refusing to score: the arm records are not one consistent run: ${bad.join("; ")}`,
     );
   }
+}
+
+/**
+ * Everything before scoring, in the full precedence order (round 9; see the header):
+ *   0. checkRecords (throws: exit 1);
+ *   1-5. preScoreChecks (CUDA STOP, flags/spec VOID, PLE reset STOP, port VOID, PLE set STOP);
+ *   6. determinism: A1 differing from A0 = `void-determinism` (VOID) - BEFORE any C attribution, so
+ *      spec-on nondeterminism is never charged to C;
+ *   7-9. preVerdict (insufficient-control VOID, C slack STOP, not-engaged VOID).
+ * Returns {pre, refused, specOff}: refused is a verdict object, or null to score with pre.drop; specOff
+ * is true when every arm was launched with -SpecOff (the plan's spec-off fallback run).
+ */
+export function gateRefusal(records, censusByArm, restoresByArm, { shell, benign, minPrompts }) {
+  checkRecords(records, censusByArm, { shell, benign });
+  const specOff = records.every((r) => censusByArm?.[r.arm]?.flags?.spec === "off");
   const pre = engagementAndDrops(records, restoresByArm, { shell, minPrompts });
   const checks = preScoreChecks(records, censusByArm, { shell });
-  if (checks) return { pre, refused: checks };
+  if (checks) return { pre, refused: checks, specOff };
   const nd = determinismFailures(records);
   if (nd.length) {
     return {
       pre,
+      specOff,
       refused: {
         verdict: "void-determinism",
-        voidReason: `A1 differed from A0 on ${nd.length} prompt(s) (${nd.map((f) => `${f.id}@${f.request}`).join(", ")}): spec-on greedy is not deterministic; rerun once with speculation off in all arms (merged plan section 4 step 4)`,
+        voidReason: `A1 differed from A0 on ${nd.length} prompt(s) (${nd.map((f) => `${f.id}@${f.request}`).join(", ")}): ${
+          specOff
+            ? "greedy is not deterministic even with speculation off"
+            : "spec-on greedy is not deterministic; rerun once with speculation off in all arms (launcher -SpecOff; merged plan section 4 step 4)"
+        }`,
       },
     };
   }
-  return { pre, refused: preVerdict(pre, { shell, minPrompts }) };
+  return { pre, refused: preVerdict(pre, { shell, minPrompts }), specOff };
 }
 
 /** Pure scoring over arm records, mirroring the v2 campaign's per-prompt pairing. */
@@ -724,7 +839,7 @@ export function score(
   const rowOf = (arm, promptId) => byArm.get(arm).prompts.find((p) => p.id === promptId);
   const contOf = (arm, promptId) => {
     const row = rowOf(arm, promptId);
-    return rowProblem(row) ? null : row.continuation; // the same validity rule as engagement
+    return rowProblem(row, horizon) ? null : row.continuation; // the same validity rule as engagement
   };
   const promptIds = byArm.get("A0").prompts.map((p) => p.id);
   const rows = [];
@@ -736,8 +851,8 @@ export function score(
     const a0RowA = rowOf("A0", id);
     const a1RowA = rowOf("A1", id);
     if (
-      !rowProblem(a0RowA) &&
-      !rowProblem(a1RowA) &&
+      !rowProblem(a0RowA, horizon) &&
+      !rowProblem(a1RowA, horizon) &&
       !sameIds(a1RowA.generated, a0RowA.generated)
     ) {
       determinismFailures += 1;
@@ -752,7 +867,7 @@ export function score(
     const shas = new Set(
       ["A0", "A1", shell, ...benign]
         .map((a) => rowOf(a, id))
-        .filter((r) => !rowProblem(r))
+        .filter((r) => !rowProblem(r, horizon))
         .map((r) => r.bSha ?? null),
     );
     if (shas.size > 1 || shas.has(null)) {
@@ -890,6 +1005,16 @@ export function preScoreChecks(records, censusByArm, { shell }) {
       voidReason: `recorded launch flags do not match the step-4 arms: ${mislaunched.join("; ")}`,
     };
   }
+  // one speculation state for all arms: all 'on' (the standard run) or all 'off' (the spec-off
+  // fallback); mixed or unknown = mislaunched
+  const specs = records.map((r) => `${r.arm}=${censusByArm[r.arm]?.flags?.spec ?? "unknown"}`);
+  const specValues = new Set(records.map((r) => censusByArm[r.arm]?.flags?.spec ?? "unknown"));
+  if (specValues.size !== 1 || !(specValues.has("on") || specValues.has("off"))) {
+    return {
+      verdict: "mislaunched",
+      voidReason: `the arms' recorded speculation states differ or are unknown (${specs.join(", ")}): every arm must be spec=on, or every arm spec=off (the fallback)`,
+    };
+  }
   const resets = perArm((c) =>
     c.ple.resetsAfterPos0 > 0 ? `[ple-hist] reset at pos > 0 = ${c.ple.resetsAfterPos0}` : null,
   );
@@ -918,13 +1043,31 @@ export function preScoreChecks(records, censusByArm, { shell }) {
 
 async function runScore(o) {
   const lib = await import(pathToFileURL(o.lib).href);
+  // every arm-*.json in --out is read; a file not named exactly arm-<its arm>.json (e.g. a stale
+  // arm-A0-attempt1.json) is refused, never silently picked or skipped
   const records = fs
     .readdirSync(o.out)
     .filter((f) => /^arm-.+\.json$/.test(f))
-    .map((f) => JSON.parse(fs.readFileSync(path.join(o.out, f), "utf8")));
+    .map((f) => {
+      const r = JSON.parse(fs.readFileSync(path.join(o.out, f), "utf8"));
+      if (f !== `arm-${r.arm}.json`)
+        throw new Error(
+          `refusing to score: ${f} holds arm ${JSON.stringify(r.arm)}; move stale records out of --out`,
+        );
+      return r;
+    });
   for (const r of records) {
     if (!o.armLogs[r.arm])
       throw new Error(`--arm-log ${r.arm}=<server log> is required for every arm`);
+    // the record's -LogStem must name the log it is scored against
+    const stem = path
+      .basename(o.armLogs[r.arm])
+      .replace(/\.err\.log$/i, "")
+      .replace(/\.log$/i, "");
+    if (r.logStem !== stem)
+      throw new Error(
+        `refusing to score: arm ${r.arm}'s record was run against log stem ${JSON.stringify(r.logStem ?? null)}, but --arm-log gives ${stem}`,
+      );
   }
   const censusByArm = {};
   const restoresByArm = {};
@@ -933,13 +1076,14 @@ async function runScore(o) {
     censusByArm[r.arm] = await feedFiles([o.armLogs[r.arm]]);
     restoresByArm[r.arm] = censusByArm[r.arm].v2.restores;
   }
-  // throws (exit 1) unless A0, A1, the shell arm and every benign arm have records
-  const { pre, refused } = gateRefusal(records, censusByArm, restoresByArm, {
+  // throws (exit 1) unless the records are one consistent run (checkRecords)
+  const { pre, refused, specOff } = gateRefusal(records, censusByArm, restoresByArm, {
     shell: o.shell,
     benign: o.benign,
     minPrompts: o.minPrompts,
   });
-  const horizon = records[0]?.horizon ?? o.horizon;
+  const horizon = records[0].horizon; // equal in every record (checkRecords)
+  const runLabel = specOff ? "spec-off fallback" : "standard (spec on)";
   const result = refused
     ? { ...refused, rule: { outcome: "not-scored", reason: "" } }
     : score(records, lib, {
@@ -956,6 +1100,7 @@ async function runScore(o) {
     scoredAt: new Date().toISOString(),
     lib: o.lib,
     armLogs: o.armLogs,
+    run: runLabel,
     status,
     engagement: {
       tailRestores: pre.tailRestores,
@@ -990,7 +1135,7 @@ async function runScore(o) {
     `dropped prompts: ${pre.droppedPrompts} ${JSON.stringify(pre.droppedCounts)}\n`,
   );
   process.stdout.write(
-    `verdict: ${result.verdict}${result.voidReason ? ` (${result.voidReason})` : ""}\n`,
+    `verdict [${runLabel}]: ${result.verdict}${result.voidReason ? ` (${result.voidReason})` : ""}\n`,
   );
   process.stdout.write(`rule: ${result.rule.outcome} - ${result.rule.reason ?? ""}\n`);
   process.stdout.write(
