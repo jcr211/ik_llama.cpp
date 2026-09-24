@@ -34,6 +34,9 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
 - [x] fix round 3 (re-review of cd34defb): gate B built once from A0, one traffic-defined step-3 class +
       T1 mechanism check, VOID on traffic mismatch / insufficient-sample, id count == usage, restore
       binding by order + content; node tools 14/14 (tools only, no engine change, no rebuild)
+- [x] fix round 4 (review of 322dbfa7): strict tail restore + xcheck refusal (Opus repro test), mislaunch
+      VOID in steps 2/3, step-3 floor rule, CUDA errors STOP in every arm, A1 request-A = determinism,
+      erase no-op documented; node tools 19/19 (tools only)
 
 ## GPU-window assumptions (W-SV2)
 - Every arm (P0, T1, A0, A1, C, A5, A3, probe) launches via launch-stateos-tail-8099.ps1, so all run
@@ -66,9 +69,19 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
     server-context.cpp:5467-5468, recorded as root - 1 at llama.cpp:10144; spec_pos_base is root + 1.)
   - Traffic sanity, VOID when violated: each run has >= 5 eligible events, T1's eligible count is within
     0.5x-2x P0's, P0 ran with the tail off, T1 with it on.
-  - Mechanism, STOP when violated: in T1 a tail was written AND chosen on >= 90 % of eligible events.
-  - Effect, STOP when violated: T1 gap tokens per eligible event <= 10 % of P0's (>= 90 % reduction).
-  - The all-last-token-events ratio is REPORT-ONLY.
+  - Protocol, VOID ("mislaunched") when violated: T1 ran with the tail on and WITHOUT the crosscheck (no
+    [ckpt-xcheck] rows or skips, no *:xcheck-flag-off outcome); P0 ran with the tail off.
+  - Mechanism, STOP when violated: in T1 a tail was written AND chosen (outcome restored, reason tail) on
+    >= 90 % of eligible events.
+  - Effect (coordinator protocol ruling on the step-3 floor), STOP when violated: a tail restore
+    necessarily re-prefills the final round's accepted drafts (the shadow sits at root - 1), so a
+    tail-served event's gap is n_acc. Over eligible events, T1's mean gap <= floor + 0.10 x (P0's mean
+    gap - floor), where floor = the mean n_acc (prev_n_acc) of those events' final rounds, computed from
+    each run's own lines (floor_T1 on the left, floor_P0 inside the bracket). That is >= 90 % of the
+    ACHIEVABLE reduction. If P0's mean gap <= floor_P0 x 1.5 (nothing meaningful to save), step 3 is VOID
+    ("gap too small to measure").
+  - REPORT-ONLY: the raw per-event ratio T1 mean gap / P0 mean gap, and the all-last-token-events ratio.
+  - A CUDA error line in the run's log is STOP even when a VOID check also fails (every step).
 - Step 4 (gate driver):
   - Run A0 FIRST. Request B is built ONCE from A0's request-A output; every arm sends its own request A
     (its cache, and C's tail, exist), then A0's B tokens (sha recorded per row).
@@ -79,10 +92,23 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
     outcome restored* (benign arms reach the same B from their own cache and are not constrained).
     Restore lines bind by request order AND content (n_past == forced index, cache-window marked token ==
     g_A0[G-2], prompt-window marked token == X). Dropped counts in gate.json.
-  - Engagement: C needs >= 20 tail restores on its request-B lines. Otherwise `not-engaged`: VOID when tails
-    were available on < 20 B requests (no eligible prompts), STOP when they were available and not used.
-  - Status: compatible-at-horizon PASS (exit 0); shellWorse STOP (2); insufficient-sample, void-determinism,
+  - Engagement: C needs >= 20 tail restores on its request-B lines; a tail restore is exactly
+    chosen_origin=tail, outcome=restored, reason=tail (restored:xcheck-flag-off does NOT count: that server
+    continued on the flag-off state). Otherwise `not-engaged`: VOID when tails were available on < 20 B
+    requests (no eligible prompts), STOP when they were available and not used.
+  - Pre-score refusals: CUDA error lines in ANY arm's log = cuda-errors (STOP); C's log shows the crosscheck
+    = mislaunched:xcheck (VOID; relaunch C with -Tail -DivLog only); a C row failing where A0's succeeded =
+    shell-errors (STOP).
+  - A1's request A differing from A0's is spec-on nondeterminism = void-determinism (not a drop).
+  - Status: compatible-at-horizon PASS (exit 0); shellWorse, not-engaged:tails-not-used, cuda-errors,
+    shell-errors STOP (2); insufficient-sample, void-determinism, mislaunched:xcheck,
     not-engaged:no-eligible-prompts VOID (3) - the gate did not answer, not a C1 kill.
+  - Step 2 VOID ("mislaunched") when the probe ran with the tail off.
+  - The slot erase before each prompt is a NO-OP in W-SV2 (/slots/:id exists only with --slot-save-path,
+    which the launcher does not pass), so request A of prompt k+1 runs on prompt k's cache. Harmless: request
+    A never chooses a tail (a tail sits at <= last cached - 2 of the previous generation, A diverges near the
+    prompt start), A0/A1/C send the same request sequence and take the same restore path for A, and the
+    tail writer's extra eviction cannot change C's list below the 32-checkpoint cap.
   - Forced token X differs from the original by id and by text, raw and with ' ', '\n', '\r' deleted, and
     keeps text after that deletion.
 - Report-only: with the tail flag on, the tail buffer (~113 MiB) is allocated before the eviction loop,

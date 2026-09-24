@@ -19,6 +19,7 @@ import {
   engagementAndDrops,
   forcedPrompt,
   gateStatus,
+  preScoreChecks,
   matchRestores,
   score,
   tokensOf,
@@ -259,7 +260,7 @@ test("step 3: one traffic-defined class, T1 mechanism check, VOID on traffic mis
   const r = checkStep("step3", t1, p0);
   assert.equal(r.verdict, "PASS", JSON.stringify(r.checks.filter((c) => !c.ok)));
   // the all-events ratio (~0.5 here) would have failed a 90 % test: it is report-only
-  const report = r.checks.find((c) => c.reportOnly);
+  const report = r.checks.find((c) => c.reportOnly && /all last-token/.test(c.name));
   assert.ok(report && /ratio=0\.5/.test(report.detail));
 
   // mechanism: eligible events where the tail was not written or not chosen -> STOP
@@ -416,13 +417,15 @@ const bLine = (over = {}) => ({
   nPast: 5,
   tailDist: 1,
   chosenOrigin: "tolerance",
+  reason: "tolerance",
   outcome: "restored",
   tailAvailable: false,
   cacheWin: { ids: [10, 11, 7], center: 2 },
   promptWin: { ids: [10, 11, 99], center: 2 },
   ...over,
 });
-const tailLine = (over = {}) => bLine({ chosenOrigin: "tail", tailAvailable: true, ...over });
+const tailLine = (over = {}) =>
+  bLine({ chosenOrigin: "tail", reason: "tail", tailAvailable: true, ...over });
 
 test("restore lines bind by request order and content, not position alone", () => {
   const rec = { arm: "A0", prompts: [row("p0"), row("p1", { forcedToken: 50 })] };
@@ -545,4 +548,167 @@ test("score: void on A1 != A0, otherwise the v2 rule; drops and differing B prom
     opts,
   );
   assert.deepEqual(diffB.dropped, [{ id: "p0", reason: "request B differs across arms" }]);
+});
+// ---- round 4 ------------------------------------------------------------------------------------
+
+test("step 3 floor rule: >= 90 % of the ACHIEVABLE reduction, VOID when the gap is too small", () => {
+  const withGap = (gap) =>
+    `chosen_origin=tolerance chosen_pos_max=1700 gap=${gap} restore_ms=12 reason=tolerance outcome=restored`;
+  const p0Of = (gap) =>
+    census([...ARMED, ...Array.from({ length: 6 }, () => restore(withGap(gap)))]);
+  const t1 = census([
+    ...ARMED,
+    ...Array.from({ length: 6 }, () => [TAIL_CREATE, restore(TAIL_HIT)]).flat(),
+  ]);
+  assert.equal(t1.v2.lastToken.eligible.floor, 3);
+  // short generations (P0 gap 29, n_acc 3): the raw ratio 3/29 = 10.3 % would have failed; the floor
+  // rule passes (bound = 3 + 0.1 x (29 - 3) = 5.6)
+  const r = checkStep("step3", t1, p0Of(29));
+  assert.equal(r.verdict, "PASS", JSON.stringify(r.checks.filter((c) => !c.ok)));
+  const raw = r.checks.find((c) => c.reportOnly && /raw per-event/.test(c.name));
+  assert.ok(raw && /T1\/P0=0\.10/.test(raw.detail));
+  // nothing meaningful to save: P0 gap 4 <= 1.5 x 3 -> VOID
+  assert.equal(checkStep("step3", t1, p0Of(4)).verdict, "VOID");
+  // a T1 that pays more than the bound -> STOP
+  const slow = census([
+    ...ARMED,
+    ...Array.from({ length: 6 }, () => [
+      TAIL_CREATE,
+      restore(
+        "chosen_origin=tail chosen_pos_max=1990 gap=9 restore_ms=12 reason=tail outcome=restored",
+      ),
+    ]).flat(),
+  ]);
+  assert.equal(checkStep("step3", slow, p0Of(29)).verdict, "STOP");
+});
+
+test("mislaunched runs are VOID; a CUDA error is STOP even when the step would be VOID", () => {
+  const p0 = census([...ARMED, ...Array.from({ length: 6 }, () => restore(FLAG_OFF))]);
+  // T1 served by the crosscheck launcher: the server continued on the flag-off state
+  const xT1 = census([
+    ...ARMED,
+    ...Array.from({ length: 6 }, () => [
+      TAIL_CREATE,
+      restore(
+        "chosen_origin=tail chosen_pos_max=1995 gap=298 restore_ms=12 reason=tolerance outcome=restored:xcheck-flag-off",
+      ),
+    ]).flat(),
+  ]);
+  assert.equal(xT1.v2.xcheckActive, true);
+  const r = checkStep("step3", xT1, p0);
+  assert.equal(r.verdict, "VOID");
+  assert.ok(r.checks.find((c) => /crosscheck/.test(c.name) && !c.ok));
+  // a step-2 probe launched without -Tail
+  const noTail = census([...ARMED, ...Array.from({ length: 6 }, () => restore(FLAG_OFF))]);
+  assert.equal(checkStep("step2", noTail).verdict, "VOID");
+  // CUDA error wins over VOID
+  const crashed = census([
+    ...ARMED,
+    TAIL_CREATE,
+    "CUDA error: an illegal memory access was encountered",
+  ]);
+  assert.equal(checkStep("step3", crashed, p0).verdict, "STOP");
+  assert.equal(checkStep("step2", census([...ARMED, "CUDA error: x"])).verdict, "STOP");
+});
+
+test("Opus repro: a C arm served by the crosscheck never scores (restored:xcheck-flag-off is no tail restore)", () => {
+  const ids = Array.from({ length: 24 }, (_, i) => `p${i}`);
+  const mk = (arm) => ({ arm, prompts: ids.map((id) => row(id)) });
+  const records = ["A0", "A1", "C", "A5", "A3"].map(mk);
+  const xLine = () =>
+    bLine({
+      chosenOrigin: "tail",
+      tailAvailable: true,
+      outcome: "restored:xcheck-flag-off",
+      reason: "gen-interval",
+    });
+  const restoresByArm = {
+    A0: ids.map(() => bLine()),
+    A1: ids.map(() => bLine()),
+    C: ids.map(xLine),
+    A5: [],
+    A3: [],
+  };
+  const pre = engagementAndDrops(records, restoresByArm, { shell: "C", minPrompts: 20 });
+  assert.equal(pre.tailRestores, 0);
+  assert.equal(pre.engaged, false);
+  // and runScore refuses the arm outright from its log
+  const cCensus = newCensus();
+  feed(
+    cCensus,
+    "[ckpt-xcheck] origin=tail slot=0 task=8 skip=flag-off-reset x=1 tail_pos=0 ref_origin=none ref_pos=-1",
+  );
+  const refused = preScoreChecks(records, { A0: newCensus(), C: cCensus }, { shell: "C" });
+  assert.equal(refused.verdict, "mislaunched:xcheck");
+  assert.equal(gateStatus(refused.verdict), "VOID");
+  const cOutcome = newCensus();
+  feed(
+    cOutcome,
+    restore(
+      "chosen_origin=tail chosen_pos_max=1995 gap=298 restore_ms=12 reason=tolerance outcome=restored:xcheck-flag-off",
+    ),
+  );
+  assert.equal(
+    preScoreChecks(records, { C: cOutcome }, { shell: "C" }).verdict,
+    "mislaunched:xcheck",
+  );
+});
+
+test("pre-score: CUDA errors in any arm and C-only failures are STOP", () => {
+  const ids = ["p0", "p1"];
+  const mk = (arm, over = {}) => ({ arm, prompts: ids.map((id) => row(id, over[id] ?? {})) });
+  const records = [mk("A0"), mk("A1"), mk("C")];
+  const bad = newCensus();
+  feed(bad, "CUDA error: an illegal memory access was encountered");
+  const r = preScoreChecks(records, { A0: newCensus(), A5: bad, C: newCensus() }, { shell: "C" });
+  assert.equal(r.verdict, "cuda-errors");
+  assert.equal(gateStatus(r.verdict), "STOP");
+  const cFail = [mk("A0"), mk("A1"), mk("C", { p1: { ok: false, error: "HTTP 500" } })];
+  const r2 = preScoreChecks(cFail, { A0: newCensus(), C: newCensus() }, { shell: "C" });
+  assert.equal(r2.verdict, "shell-errors");
+  assert.equal(gateStatus(r2.verdict), "STOP");
+  assert.equal(preScoreChecks(records, { A0: newCensus(), C: newCensus() }, { shell: "C" }), null);
+});
+
+test("A1's request A differing from A0's is void-determinism, not a drop", {
+  skip: !fs.existsSync(DEFAULT_LIB),
+}, async () => {
+  const lib = await import(pathToFileURL(DEFAULT_LIB).href);
+  const ids = ["p0", "p1"];
+  const mk = (arm, over = {}) => ({
+    arm,
+    horizon: 8,
+    prompts: ids.map((id) => row(id, over[id] ?? {})),
+  });
+  const records = [
+    mk("A0"),
+    mk("A1", { p1: { generated: [10, 11, 8, 13] } }),
+    mk("C"),
+    mk("A5", {
+      p0: { continuation: [1, 2, 3, 9, 5, 6, 7, 8] },
+      p1: { continuation: [1, 2, 9, 4, 5, 6, 7, 8] },
+    }),
+    mk("A3", {
+      p0: { continuation: [1, 2, 3, 9, 5, 6, 7, 8] },
+      p1: { continuation: [1, 2, 9, 4, 5, 6, 7, 8] },
+    }),
+  ];
+  const lines = ids.map(() => bLine());
+  const pre = engagementAndDrops(
+    records,
+    { A0: lines, A1: [lines[0]], C: ids.map(() => tailLine()), A5: [], A3: [] },
+    { shell: "C", minPrompts: 1 },
+  );
+  assert.equal(pre.drop.has("p1"), false);
+  const s = score(records, lib, {
+    shell: "C",
+    benign: ["A5", "A3"],
+    horizon: 8,
+    minPrompts: 1,
+    nMin: 1,
+    drop: pre.drop,
+  });
+  assert.equal(s.determinismFailures, 1);
+  assert.equal(s.verdict, "void-determinism");
+  assert.equal(gateStatus(s.verdict), "VOID");
 });

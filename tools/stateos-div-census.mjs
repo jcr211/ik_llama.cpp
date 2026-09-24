@@ -274,7 +274,24 @@ export function summarize(c) {
   const eligibleClass = lastAfterDrafted;
   const eligibleGaps = eligibleClass.map((r) => r.gap ?? 0);
   // mechanism on that class (tail-on runs): a tail was written for the event and the search chose it
-  const eligibleServed = eligibleClass.filter((r) => r.tailAvailable && isTailHit(r));
+  // (strict: the live state after the restore is the tail's - outcome restored, reason tail)
+  const eligibleServed = eligibleClass.filter(
+    (r) =>
+      r.tailAvailable &&
+      r.chosenOrigin === "tail" &&
+      r.outcome === "restored" &&
+      r.reason === "tail",
+  );
+  // the achievable floor: a tail restore still re-prefills the final round's accepted drafts (the
+  // shadow sits at root - 1, the divergence at root + n_acc), so a served event's gap is n_acc
+  const eligibleFloor = eligibleClass.length
+    ? sum(eligibleClass.map((r) => r.prevNAcc ?? 0)) / eligibleClass.length
+    : null;
+  // the crosscheck was on in this run (diagnostic: the server continues on the flag-off state)
+  const xcheckActive =
+    V.xcheck.length > 0 ||
+    Object.keys(V.xcheckSkips).length > 0 ||
+    rs.some((r) => String(r.outcome).endsWith("xcheck-flag-off"));
   const lastDivergences = divergences.filter((r) => r.tailDist === 1);
   const v2ByBucket = {};
   for (const b of BUCKETS) v2ByBucket[b] = { n: 0, gapTokens: 0 };
@@ -294,6 +311,7 @@ export function summarize(c) {
     divergenceEvents: divergences.length,
     newConversationResets: rs.length - divergences.length,
     tailOn,
+    xcheckActive,
     byBucket: v2ByBucket,
     byClass: count(rs, "cls"),
     byOutcome: count(rs, "outcome"),
@@ -326,6 +344,8 @@ export function summarize(c) {
         // tail written for the event AND chosen by the search (meaningful for tail-on runs)
         served: eligibleServed.length,
         servedRate: eligibleClass.length ? eligibleServed.length / eligibleClass.length : null,
+        // mean prev_n_acc over the class: the gap a served event still pays
+        floor: eligibleFloor,
       },
     },
     creates: V.creates,
@@ -365,8 +385,13 @@ const voidCheck = (name, ok, detail) => ({ name, ok: Boolean(ok), detail, void: 
 // - traffic sanity (VOID when violated): each run has >= STEP3_MIN_EVENTS eligible events and T1's
 //   eligible count is within [STEP3_COUNT_LO, STEP3_COUNT_HI] x P0's;
 // - mechanism (MISS): in T1 a tail was written and chosen on >= STEP3_MIN_SERVED of the eligible events;
-// - effect (MISS): T1 gap tokens per eligible event <= 10 % of P0's (>= 90 % reduction).
-// The all-last-token-events ratio is report-only.
+// - effect (MISS): >= 90 % of the ACHIEVABLE reduction: T1 mean gap <= floor_T1 + 0.10 x (P0 mean gap
+//   - floor_P0), floor = mean prev_n_acc of the class in that run (a tail-served event's gap is n_acc);
+//   VOID when P0's mean gap <= 1.5 x floor_P0 (gap too small to measure);
+// - protocol (VOID, "mislaunched"): P0 tail off; T1 tail on and crosscheck off.
+// The raw per-event ratio and the all-last-token-events ratio are report-only.
+export const STEP3_FLOOR_MARGIN = 1.5;
+export const STEP3_REDUCTION_SLACK = 0.1;
 export const STEP3_MIN_EVENTS = 5;
 export const STEP3_COUNT_LO = 0.5;
 export const STEP3_COUNT_HI = 2;
@@ -392,7 +417,8 @@ export function checkStep(step, s, p0 = null) {
       s.ple.resetsAfterPos0 === 0,
       `resets=${s.ple.resetsAfterPos0}`,
     ),
-    miss("CUDA errors == 0", s.cudaErrors === 0, `lines=${s.cudaErrors}`),
+    // a CUDA error is always a STOP, even when a traffic/protocol check would VOID the step
+    { ...miss("CUDA errors == 0", s.cudaErrors === 0, `lines=${s.cudaErrors}`), hard: true },
   ];
   // steps 2 and 3: a tail choice never ends in a failed restore, and no tail prefix mismatches
   const tailIntegrity = () => {
@@ -424,6 +450,14 @@ export function checkStep(step, s, p0 = null) {
       ),
     );
   } else if (step === "step2") {
+    // the probe must run with the tail on (-Tail -Xcheck -DivLog); otherwise it was mislaunched
+    checks.push(
+      voidCheck(
+        "mislaunched? the probe ran with the tail on",
+        V.tailOn,
+        `creates=${JSON.stringify(V.creates)} tail_skips=${JSON.stringify(V.tailSkips)}`,
+      ),
+    );
     checks.push(
       miss(
         "tail available on >= 1 last-token divergence",
@@ -473,6 +507,13 @@ export function checkStep(step, s, p0 = null) {
     );
     checks.push(
       voidCheck(
+        "mislaunched? T1 ran without the crosscheck",
+        !V.xcheckActive,
+        `[ckpt-xcheck] rows=${V.xcheck.rows} skips=${JSON.stringify(V.xcheck.skips)} outcomes=${JSON.stringify(V.byOutcome)}`,
+      ),
+    );
+    checks.push(
+      voidCheck(
         `P0 eligible events >= ${STEP3_MIN_EVENTS}`,
         pe.n >= STEP3_MIN_EVENTS,
         `n=${pe.n} (${pe.definition})`,
@@ -507,21 +548,39 @@ export function checkStep(step, s, p0 = null) {
         `served=${te.served}/${te.n} rate=${te.servedRate}`,
       ),
     );
-    // effect, per event on the one class
-    const ok =
-      pe.gapPerEvent !== null &&
-      pe.gapPerEvent > 0 &&
-      te.gapPerEvent !== null &&
-      te.gapPerEvent <= 0.1 * pe.gapPerEvent;
+    // effect, per event on the one class, against the ACHIEVABLE reduction (coordinator ruling): a
+    // served event still re-prefills the final round's accepted drafts, so its gap is n_acc. floor =
+    // mean prev_n_acc over the class, from each run's own lines. Pass: T1 mean gap <= floor_T1 +
+    // 0.10 x (P0 mean gap - floor_P0), i.e. >= 90 % of the achievable reduction. VOID when P0's mean
+    // gap <= 1.5 x floor_P0 (nothing meaningful to save).
+    const fp = pe.floor;
+    const ft = te.floor;
+    checks.push(
+      voidCheck(
+        `gap large enough to measure: P0 mean gap > ${STEP3_FLOOR_MARGIN} x floor`,
+        pe.gapPerEvent !== null && fp !== null && pe.gapPerEvent > STEP3_FLOOR_MARGIN * fp,
+        `P0 mean gap=${pe.gapPerEvent} floor_P0=${fp}`,
+      ),
+    );
+    const bound =
+      pe.gapPerEvent !== null && fp !== null && ft !== null
+        ? ft + STEP3_REDUCTION_SLACK * (pe.gapPerEvent - fp)
+        : null;
     checks.push(
       miss(
-        "eligible class: T1 gap tokens per event >= 90% below P0",
-        ok,
-        `P0=${pe.gapTokens}/${pe.n}=${pe.gapPerEvent} T1=${te.gapTokens}/${te.n}=${te.gapPerEvent}`,
+        "eligible class: T1 mean gap <= floor_T1 + 0.10 x (P0 mean gap - floor_P0) (>= 90% of the achievable reduction)",
+        bound !== null && te.gapPerEvent !== null && te.gapPerEvent <= bound,
+        `P0=${pe.gapTokens}/${pe.n}=${pe.gapPerEvent} (floor ${fp}) T1=${te.gapTokens}/${te.n}=${te.gapPerEvent} (floor ${ft}) bound=${bound}`,
       ),
     );
     tailIntegrity();
     // report-only, never a miss
+    checks.push({
+      name: "REPORT-ONLY raw per-event ratio on the eligible class",
+      ok: true,
+      reportOnly: true,
+      detail: `T1/P0=${pe.gapPerEvent > 0 && te.gapPerEvent !== null ? te.gapPerEvent / pe.gapPerEvent : null}`,
+    });
     const allP = P.lastToken.gapTokens;
     const allT = T.gapTokens;
     checks.push({
@@ -533,9 +592,15 @@ export function checkStep(step, s, p0 = null) {
   } else {
     throw new Error(`unknown step ${step}`);
   }
+  const hardFail = checks.some((c) => c.hard && !c.ok);
   const voided = checks.some((c) => c.void && !c.ok);
   const pass = checks.every((c) => c.ok);
-  return { step, verdict: voided ? "VOID" : pass ? "PASS" : "STOP", pass, checks };
+  return {
+    step,
+    verdict: hardFail ? "STOP" : voided ? "VOID" : pass ? "PASS" : "STOP",
+    pass,
+    checks,
+  };
 }
 
 export async function censusOfFiles(files) {
