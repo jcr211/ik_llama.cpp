@@ -215,6 +215,8 @@ add_executable(test-stateos-tail test-stateos-tail.cpp)
 target_include_directories(test-stateos-tail PRIVATE ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/examples/server)
 add_test(NAME test-stateos-tail COMMAND $<TARGET_FILE:test-stateos-tail>)
 
+llama_build_and_test(test-ple-hist.cpp)
+
 llama_build_and_test(test-iq4-ks-kt-decode.cpp)
 target_include_directories(test-iq4-ks-kt-decode PRIVATE ${PROJECT_SOURCE_DIR}/ggml/src)
 

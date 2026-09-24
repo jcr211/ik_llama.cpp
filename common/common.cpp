@@ -5003,6 +5003,32 @@ void llama_kv_cache_dump_view_seqs(const llama_kv_cache_view & view, int row_siz
     printf("\n=== Done dumping\n");
 }
 
+bool common_ple_hist_rewind_enabled() {
+    static const bool enabled = [] {
+        const char * value = getenv("LONGSPEAR_PLE_HIST_REWIND");
+        return value != nullptr && strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+bool common_ple_history_set(llama_context * ctx, llama_seq_id seq_id, const llama_token * prev, int32_t n_prev,
+        llama_pos next_pos, const char * site) {
+    if (!common_ple_hist_rewind_enabled() || llama_ple_history_len(ctx) == 0) {
+        return false;
+    }
+    llama_ple_history_set(ctx, seq_id, prev, n_prev, next_pos);
+
+    static const bool log = [] {
+        const char * value = getenv("LONGSPEAR_PLE_HIST_LOG");
+        return value != nullptr && strcmp(value, "1") == 0;
+    }();
+    if (log) {
+        fprintf(stderr, "[ple-hist] set seq=%d next_pos=%d n_prev=%d site=%s\n",
+                (int) seq_id, (int) next_pos, (int) n_prev, site);
+    }
+    return true;
+}
+
 //
 // Embedding utils
 //

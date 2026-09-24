@@ -17,6 +17,7 @@
 #include "llama-cparams.h"
 #include "llama-hparams.h"
 #include "llama-context.h"
+#include "llama-ple-hist.h"
 #include "llama-spec-features.h"
 #include "llama-dflash.h"
 #include "llama-dsv4.h"
@@ -6228,57 +6229,21 @@ static void llama_set_inputs(llama_context & lctx, const llama_batch & batch) {
         const llama_token img_tok = hp.ple_image_token_id != 0
             ? (llama_token) hp.ple_image_token_id
             : eos;
-        auto tok_of = [&](int32_t k) -> llama_token {
-            return batch.token ? batch.token[k] : img_tok;
-        };
 
-        // snapshot before any update: one pass would let a token read an earlier token of this
-        // same ubatch as prior context
-        std::map<llama_seq_id, std::vector<llama_token>> snap;
-        for (int32_t i = 0; i < n_tokens; ++i) {
-            const llama_seq_id seq = batch.seq_id[i][0];
-            if (snap.count(seq)) {
-                continue;
-            }
-            auto & h = lctx.ple_hist[seq];
-            if (h.next_pos != batch.pos[i]) {
-                h.toks.assign(n_gram - 1, eos);
-            }
-            h.toks.resize(n_gram - 1, eos);
-            snap[seq] = h.toks;
-        }
+        // the n-gram context of every token, from the ubatch and each sequence's history
+        // (llama-ple-hist.h); only the hash below is model-specific
+        std::vector<llama_token> ctx_all;
+        llama_ple_ngram_fill(lctx.ple_hist, n_tokens, batch.token, img_tok, batch.pos, batch.seq_id,
+                n_gram, eos, ctx_all,
+                [](llama_seq_id seq, llama_pos pos, llama_pos next_pos) {
+                    if (pos > 0 && llama_ple_hist_log_enabled()) {
+                        fprintf(stderr, "[ple-hist] reset seq=%d pos=%d next_pos=%d\n",
+                                (int) seq, (int) pos, (int) next_pos);
+                    }
+                });
 
         for (int32_t i = 0; i < n_tokens; ++i) {
-            const llama_pos    pos = batch.pos[i];
-            const llama_seq_id seq = batch.seq_id[i][0];
-
-            const auto & hist = snap[seq];
-
-            // predecessor s (1-based) of this token: from the ubatch when it is there, from the
-            // sequence's own history when it is not, EOS past a segment boundary
-            auto prev = [&](int32_t s) -> llama_token {
-                const int32_t j = i - s;
-                if (j >= 0 && batch.seq_id[j][0] == seq && batch.pos[j] == pos - s) {
-                    return tok_of(j);
-                }
-                // s - i positions before this ubatch started, most recent last
-                const int32_t back = s - i;
-                const int32_t k    = (int32_t) hist.size() - back;
-                if (back > 0 && k >= 0 && pos - s >= 0) {
-                    return hist[k];
-                }
-                return eos;
-            };
-
-            std::vector<llama_token> ctx_toks(n_gram);
-            ctx_toks[0] = tok_of(i);
-            bool cut = false;
-            for (int32_t s = 1; s < n_gram; ++s) {
-                ctx_toks[s] = cut ? eos : prev(s);
-                if (ctx_toks[s] == eos) {
-                    cut = true;
-                }
-            }
+            const llama_token * ctx_toks = ctx_all.data() + (size_t) i * n_gram;
 
             for (int32_t n = 2; n <= n_gram; ++n) {
                 uint64_t mixed = (uint64_t) ctx_toks[0] * hp.ple_layer_multipliers[0];
@@ -6292,13 +6257,6 @@ static void llama_set_inputs(llama_context & lctx, const llama_batch & batch) {
                         (int32_t) (mixed % hp.ple_head_vocab_sizes[h_i] + hp.ple_head_offsets[h_i]);
                 }
             }
-
-            auto & h = lctx.ple_hist[seq];
-            h.toks.push_back(tok_of(i));
-            if ((int32_t) h.toks.size() > n_gram - 1) {
-                h.toks.erase(h.toks.begin(), h.toks.end() - (n_gram - 1));
-            }
-            h.next_pos = pos + 1;
         }
     }
 
@@ -9777,6 +9735,47 @@ int32_t llama_get_kv_cache_used_cells(const struct llama_context * ctx) {
 void llama_kv_cache_clear(struct llama_context * ctx) {
     llama_kv_cache_clear(ctx->kv_self);
     llama_reset_dsv4_state(ctx);
+    if (llama_ple_hist_rewind_enabled()) {
+        ctx->ple_hist.clear();
+    }
+}
+
+int32_t llama_ple_history_len(const struct llama_context * ctx) {
+    const auto & hp = ctx->model.hparams;
+    return hp.ple_n_heads > 0 && hp.ple_ngram_size > 1 ? (int32_t) hp.ple_ngram_size - 1 : 0;
+}
+
+int32_t llama_ple_history_get(const struct llama_context * ctx, llama_seq_id seq_id,
+        llama_token * out, int32_t n_max, llama_pos * next_pos) {
+    if (next_pos != nullptr) {
+        *next_pos = -1;
+    }
+    if (llama_ple_history_len(ctx) == 0) {
+        return 0;
+    }
+    const auto it = ctx->ple_hist.find(seq_id);
+    if (it == ctx->ple_hist.end()) {
+        return 0;
+    }
+    if (next_pos != nullptr) {
+        *next_pos = it->second.next_pos;
+    }
+    const auto & toks = it->second.toks;
+    const int32_t n = out != nullptr ? std::min(std::max(n_max, 0), (int32_t) toks.size()) : 0;
+    for (int32_t i = 0; i < n; ++i) {
+        out[i] = toks[toks.size() - n + i];
+    }
+    return n;
+}
+
+void llama_ple_history_set(struct llama_context * ctx, llama_seq_id seq_id,
+        const llama_token * prev, int32_t n_prev, llama_pos next_pos) {
+    const int32_t n_hist = llama_ple_history_len(ctx);
+    if (n_hist == 0 || seq_id < 0) {
+        return;
+    }
+    llama_ple_hist_assign(ctx->ple_hist[seq_id], n_hist + 1,
+            (llama_token) ctx->model.hparams.ple_eos_token_id, prev, n_prev, next_pos);
 }
 
 // Unified speculative-checkpoint
@@ -10169,6 +10168,14 @@ bool llama_kv_cache_seq_rm(struct llama_context * ctx, llama_seq_id seq_id, llam
     if (result && ctx->model.arch == LLM_ARCH_DEEPSEEK4 && p0 <= 0 && p1 < 0) {
         llama_reset_dsv4_state(ctx, seq_id);
     }
+    if (result && p0 <= 0 && p1 < 0 && llama_ple_hist_rewind_enabled()) {
+        // a removed sequence starts over from position 0 with no history
+        if (seq_id < 0) {
+            ctx->ple_hist.clear();
+        } else {
+            ctx->ple_hist.erase(seq_id);
+        }
+    }
     return result;
 }
 
@@ -10177,6 +10184,13 @@ void llama_kv_cache_seq_cp(struct llama_context * ctx, llama_seq_id seq_id_src, 
         return;
     }
     llama_kv_cache_seq_cp(ctx->kv_self, seq_id_src, seq_id_dst, p0, p1);
+    if (llama_ple_hist_rewind_enabled() && p0 <= 0) {
+        // dst now ends where src ends, so it continues from src's history
+        const auto it = ctx->ple_hist.find(seq_id_src);
+        if (it != ctx->ple_hist.end() && (p1 < 0 || p1 >= it->second.next_pos)) {
+            ctx->ple_hist[seq_id_dst] = it->second;
+        }
+    }
 }
 
 void llama_kv_cache_seq_keep(struct llama_context * ctx, llama_seq_id seq_id) {
