@@ -127,3 +127,40 @@ valid MAIN is caught after seq_rm (slot cleared, 500), so a content checksum is 
 - Build: a process check showed no nvcc, cl, cmake or ninja from another lane. `.lane/build-l1.cmd` exit 0 (120 steps).
 - Tests: `.lane/test-l1.cmd` exit 0. `test-stateos-header` runs 202 checks with 0 failures; ctest 3/3
   (`test-speculative-params`, `test-stateos-header`, `test-ple-hist`).
+
+## Follow-ups (branch lane/stateos-lane1-f11 from 7c77724b; build-stateos-f11)
+
+Worktree `D:/AI/worktrees/stateos-lane1-f11`, one commit per item. The frozen acceptance worktree and its build were
+not touched. No GPU was used.
+
+1. `0c1bebea` — new hard field **`effective_model`**. It is `"none"`, or a length-prefixed sha256 over the active
+   runtime items in load order: LoRA adapters (path, scale), applied control vectors, `--override-kv` entries, and
+   expert-count overrides. A state saved under one adapter set is refused on another. Files written by 7c77724b lack
+   the field, so this build refuses them as `<missing>`. That is fail closed: re-save them.
+2. `14c84ffe` — the layout descriptor is rendered by `src/llama-state-layout.h`. The output text is byte-identical to
+   before, so existing `kv_geometry` digests still match. `tests/test-stateos-layout.cpp` pins two goldens and checks
+   that every field reaches the text. The BUMP RULE is documented in the header, and `write_kv_cache` points to it.
+3. `4e1f27ca` — `/list` no longer decodes State-OS tokens to text. Those entries show `prompt: null`,
+   `stateos.prompt_redacted`, `token_count` and `token_sha256`. Legacy entries get a vocabulary-range check (prompt null
+   plus an error instead of calling the detokenizer), and the body uses the replace-mode JSON dump.
+4. `a3ff750d` — a file that exists but cannot be stat'ed or opened, or is not a regular file, now answers 409
+   `state_unreadable`. `state_missing` means only "no such file".
+5. `842e16f6` — the save flushes to disk (`FlushFileBuffers`, or `fsync` on POSIX) before the commit rename. At startup
+   with `--slot-save-path`, leftover `*.stateos.tmp` files older than 1 h are removed; only that suffix, only regular
+   files, not recursive.
+6. `b29a940c` — the CKPT section is bounded before it is read: `ctx_checkpoints_n` records, each at most one partial
+   state of this context (the full MAIN size when the SWA window is compacted). An over-budget section is skipped,
+   and the restore proceeds without checkpoints (`stateos.checkpoints: "skipped: …"`). An oversized record after
+   decoding is corrupt.
+7. `9436d471` — N5/N6 nits:
+   - an exception after the save's commit now answers a minimal success, not "save failed";
+   - the replace retries only lock, sharing and access errors, and never sleeps after the final attempt;
+   - tokens > n_ctx is `state_refused`;
+   - the empty-restore reply no longer mentions a companion the server does not have.
+
+Build: before every build a process check showed no nvcc, cl, cmake or ninja from another lane.
+`.lane/build-f11.cmd` exit 0 on every item.
+Tests: `.lane/test-f11.cmd` exit 0 with `CUDA_VISIBLE_DEVICES=-1`: `test-stateos-header` 242 checks, 0 failures;
+ctest 4/4 (`test-speculative-params`, `test-stateos-header`, `test-ple-hist`, `test-stateos-layout`).
+Not verified on GPU: `effective_model` on a live server, and the /list, CKPT-skip and flush paths. The GPU script
+tampers `effective_model` among the hard fields.
