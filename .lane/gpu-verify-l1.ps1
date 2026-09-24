@@ -12,9 +12,16 @@
 # Leg B (spec ON = production flags, report-only): companion section saved/loaded at 32K, a companion sub-header tamper
 #   (200, companion skipped), draft acceptance with the companion vs a companion-less file, and the state bytes +
 #   restore time at 190K tokens (production context 196608).
+#
+# -DryRun: no server, no GPU, no process is stopped. Runs the response parsers below against the requests/responses a
+#   previous run recorded in its --verbose server log (default build-stateos-l1\gpu-verify\specoff.log, or -DryRunLog),
+#   the [ple-hist]/acceptance counters against that log and a synthetic one, and the header readers against a recorded
+#   id4k.state if present; exits 0 when everything parsed, 1 otherwise.
 param(
     [switch] $SkipSpecOn,
-    [switch] $Skip192K
+    [switch] $Skip192K,
+    [switch] $DryRun,
+    [string] $DryRunLog
 )
 $ErrorActionPreference = 'Stop'
 
@@ -54,10 +61,38 @@ $Results = [ordered]@{ started = (Get-Date).ToUniversalTime().ToString('o'); leg
 
 function Log([string] $m) {
     $line = "[$((Get-Date).ToUniversalTime().ToString('HH:mm:ss'))] $m"
-    Add-Content -LiteralPath $VerdictTxt -Value $line -Encoding utf8
+    if (-not $DryRun) { Add-Content -LiteralPath $VerdictTxt -Value $line -Encoding utf8 } # a dry run leaves the receipts alone
     Write-Host $line
 }
 function Short([string] $s) { if ($null -eq $s) { '' } elseif ($s.Length -gt 400) { $s.Substring(0, 400) + '...' } else { $s } }
+
+# A required response field by dotted path ('timings.prompt_n'). Throws naming the field when the body is not JSON or any
+# step is missing or null, so a changed response shape fails loudly instead of as "Cannot index into a null array".
+function Need($Resp, [string] $Path, [string] $What) {
+    if ($null -eq $Resp) { throw "$What`: no response (wanted field '$Path')" }
+    $v = $Resp.Body
+    if ($null -eq $v) { throw "$What`: HTTP $($Resp.Status) body is not JSON (wanted field '$Path'): $(Short $Resp.Raw)" }
+    foreach ($seg in $Path.Split('.')) {
+        if (($null -eq $v) -or -not (@($v.PSObject.Properties | ForEach-Object { $_.Name }) -contains $seg)) {
+            throw "$What`: response field '$Path' is missing (no '$seg'; HTTP $($Resp.Status)): $(Short $Resp.Raw)"
+        }
+        $v = $v.$seg
+    }
+    if ($null -eq $v) { throw "$What`: response field '$Path' is null (HTTP $($Resp.Status)): $(Short $Resp.Raw)" }
+    # not Write-Output -NoEnumerate: PowerShell 7 wraps a scalar in a List[object] that way
+    if ($v -is [System.Array]) { return ,$v } else { return $v }
+}
+# The same lookup for the refusal / negative paths, where a missing field must fail that check, not abort the run:
+# returns the value, or the marker '<missing: path>' (never equal to an expected value; recorded in results.json).
+function Field($Resp, [string] $Path) {
+    $v = if ($null -eq $Resp) { $null } else { $Resp.Body }
+    foreach ($seg in $Path.Split('.')) {
+        if (($null -eq $v) -or -not (@($v.PSObject.Properties | ForEach-Object { $_.Name }) -contains $seg)) { return "<missing: $Path>" }
+        $v = $v.$seg
+    }
+    if ($null -eq $v) { return "<missing: $Path>" }
+    if ($v -is [System.Array]) { return ,$v } else { return $v }
+}
 function Save-Results { $Results | ConvertTo-Json -Depth 10 | Out-File -LiteralPath $ResultsJs -Encoding utf8 }
 
 function Api([string] $Method, [string] $Path, [string] $Json) {
@@ -70,10 +105,46 @@ function Api([string] $Method, [string] $Path, [string] $Json) {
     [pscustomobject]@{ Status = [int] $resp.StatusCode; Body = $obj; Raw = $text }
 }
 
+# ---- response parsers (shared by the live run and -DryRun) ----
+function Parse-Tokens($r) {
+    if ($r.Status -ne 200) { throw "tokenize failed: $($r.Status) $(Short $r.Raw)" }
+    $t = Need $r 'tokens' 'tokenize'
+    return ,([int[]] @($t))
+}
+function Parse-Completion($r) {
+    if ($r.Status -ne 200) { throw "completion failed: $($r.Status) $(Short $r.Raw)" }
+    [pscustomobject]@{
+        content     = [string] (Need $r 'content' 'completion')
+        prompt_n    = [int]    (Need $r 'timings.prompt_n' 'completion')
+        prompt_ms   = [double] (Need $r 'timings.prompt_ms' 'completion')
+        predicted_n = [int]    (Need $r 'timings.predicted_n' 'completion')
+    }
+}
+function Parse-Save($r, [string] $What) {
+    if ($r.Status -ne 200) { throw "$What save: $($r.Status) $(Short $r.Raw)" }
+    [ordered]@{
+        n_saved           = Need $r 'n_saved' "$What save"
+        n_written         = Need $r 'n_written' "$What save"
+        save_ms           = Need $r 'timings.save_ms' "$What save"
+        bytes             = Need $r 'stateos.bytes' "$What save"
+        companion         = Need $r 'stateos.companion' "$What save"
+        checkpoints_saved = Need $r 'stateos.checkpoints_saved' "$What save"
+        token_sha256      = Need $r 'stateos.token_sha256' "$What save"
+    }
+}
+function Parse-Restore($r, [string] $What) {
+    if ($r.Status -ne 200) { throw "$What restore: $($r.Status) $(Short $r.Raw)" }
+    [ordered]@{
+        n_restored = Need $r 'n_restored' "$What restore"
+        n_read     = Need $r 'n_read' "$What restore"
+        restore_ms = Need $r 'timings.restore_ms' "$What restore"
+        stateos    = Need $r 'stateos' "$What restore"
+    }
+}
+
 function Get-Tokens([string] $Text) {
     $r = Api 'POST' '/tokenize' (@{ content = $Text } | ConvertTo-Json -Compress)
-    if ($r.Status -ne 200) { throw "tokenize failed: $($r.Status) $(Short $r.Raw)" }
-    return ,([int[]] $r.Body.tokens)
+    return ,(Parse-Tokens $r)
 }
 
 function New-SyntheticText([int] $Lines, [int] $Seed) {
@@ -90,9 +161,7 @@ function New-SyntheticText([int] $Lines, [int] $Seed) {
 function Complete([int[]] $Ids, [int] $NPredict) {
     $json = '{"prompt":[' + ($Ids -join ',') + '],"n_predict":' + $NPredict +
             ',"temperature":0,"top_k":1,"top_p":1,"min_p":0,"seed":1234,"cache_prompt":true,"id_slot":0,"stream":false}'
-    $r = Api 'POST' '/completion' $json
-    if ($r.Status -ne 200) { throw "completion failed: $($r.Status) $(Short $r.Raw)" }
-    [pscustomobject]@{ content = [string] $r.Body.content; prompt_n = [int] $r.Body.timings.prompt_n; prompt_ms = [double] $r.Body.timings.prompt_ms; predicted_n = [int] $r.Body.timings.predicted_n }
+    Parse-Completion (Api 'POST' '/completion' $json)
 }
 
 function Slot([string] $Action, [string] $File) {
@@ -104,14 +173,19 @@ function Concat([int[]] $A, [int[]] $B) { $r = New-Object int[] ($A.Length + $B.
 function Head([int[]] $A, [int] $N) { $r = New-Object int[] $N; [Array]::Copy($A, $r, $N); return ,$r }
 
 # log lines appended since a byte offset, read while the server still holds the file open
+# Returns ONE string[] object. Assign it to a [string[]] variable or pass it directly: wrapping the call in @(...)
+# nests the whole array as a single element (the 2026-09-24 abort: Ple-Counts did @(Read-LogSince ..) + @(..)).
 function Read-LogSince([string] $Path, [long] $Offset) {
-    if (-not (Test-Path -LiteralPath $Path)) { return @() }
+    if (-not (Test-Path -LiteralPath $Path)) { return ,([string[]] @()) }
     $fs = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
     try {
         [void] $fs.Seek($Offset, [System.IO.SeekOrigin]::Begin)
         $sr = New-Object System.IO.StreamReader($fs)
-        return ,($sr.ReadToEnd() -split "`n")
+        return ,([string[]] ($sr.ReadToEnd() -split "`n"))
     } finally { $fs.Dispose() }
+}
+function Assert-Line($l, [string] $What) {
+    if (($null -ne $l) -and ($l -isnot [string])) { throw "internal: a $What log line is a $($l.GetType().FullName), not a string (an array nested by @())" }
 }
 function Log-Size([string] $Path) { if (Test-Path -LiteralPath $Path) { (Get-Item -LiteralPath $Path).Length } else { 0 } }
 
@@ -122,18 +196,29 @@ function Ple-Offsets([string] $LogPath) {
     $err = $LogPath -replace '\.log$', '.err.log'
     [pscustomobject]@{ Out = (Log-Size $LogPath); Err = (Log-Size $err); OutPath = $LogPath; ErrPath = $err }
 }
+# [regex]::Match, never -match/$Matches: -match on an array filters and leaves $Matches unset (null).
 function Ple-Counts($Offsets) {
-    $lines = @(Read-LogSince $Offsets.OutPath $Offsets.Out) + @(Read-LogSince $Offsets.ErrPath $Offsets.Err)
+    [string[]] $out = Read-LogSince $Offsets.OutPath $Offsets.Out
+    [string[]] $err = Read-LogSince $Offsets.ErrPath $Offsets.Err
     $resets = 0; $resume = 0; $sets = 0
-    foreach ($l in $lines) {
-        if ($l -match '\[ple-hist\] reset seq=\d+ pos=(\d+)') { if ([int] $Matches[1] -gt 0) { $resets++ } }
-        elseif ($l -match '\[ple-hist\] set .*site=(\S+)') { $sets++; if ($Matches[1] -eq 'server-resume') { $resume++ } }
+    foreach ($l in (@($out) + @($err))) {
+        Assert-Line $l '[ple-hist]'
+        if ($null -eq $l) { continue }
+        $m = [regex]::Match($l, '\[ple-hist\] reset seq=\d+ pos=(\d+)')
+        if ($m.Success) { if ([long] $m.Groups[1].Value -gt 0) { $resets++ }; continue }
+        $m = [regex]::Match($l, '\[ple-hist\] set .*site=(\S+)')
+        if ($m.Success) { $sets++; if ($m.Groups[1].Value -eq 'server-resume') { $resume++ } }
     }
     [pscustomobject]@{ resets_pos_gt0 = $resets; sets = $sets; sets_server_resume = $resume }
 }
-function Acceptance([string[]] $Lines) {
+function Acceptance($Lines) {
     $a = 0; $g = 0
-    foreach ($l in $Lines) { if ($l -match 'draft acceptance rate = [0-9.]+ \(\s*(\d+) accepted /\s*(\d+) generated\)') { $a += [int] $Matches[1]; $g += [int] $Matches[2] } }
+    foreach ($l in $Lines) {
+        Assert-Line $l 'acceptance'
+        if ($null -eq $l) { continue }
+        $m = [regex]::Match($l, 'draft acceptance rate = [0-9.]+ \(\s*(\d+) accepted /\s*(\d+) generated\)')
+        if ($m.Success) { $a += [int] $m.Groups[1].Value; $g += [int] $m.Groups[2].Value }
+    }
     [pscustomobject]@{ accepted = $a; generated = $g; rate = $(if ($g) { [math]::Round($a / $g, 4) } else { $null }) }
 }
 
@@ -226,8 +311,16 @@ function Get-HeaderValue([string] $Path, [string] $Key) {
         $len = [BitConverter]::ToUInt32($pre, 8)
         $hb = New-Object byte[] $len; Read-Exact $in $hb ([int] $len)
     } finally { $in.Dispose() }
-    foreach ($l in ([System.Text.Encoding]::UTF8.GetString($hb) -split "`n")) { if ($l -match ('^[HSI] ' + [regex]::Escape($Key) + '=(.*)$')) { return $Matches[1] } }
+    foreach ($l in ([System.Text.Encoding]::UTF8.GetString($hb) -split "`n")) {
+        $m = [regex]::Match($l, '^[HSI] ' + [regex]::Escape($Key) + '=(.*)$')
+        if ($m.Success) { return $m.Groups[1].Value }
+    }
     return $null
+}
+function Need-HeaderValue([string] $Path, [string] $Key) {
+    $v = Get-HeaderValue $Path $Key
+    if ($null -eq $v) { throw "header field '$Key' is missing in $Path" }
+    return $v
 }
 
 # ---- one identity round: in-memory continuation vs restored continuation (x2) vs cold (report-only) ----
@@ -236,9 +329,7 @@ function Test-Identity([string] $Tag, [int[]] $P, [int[]] $Z, [int[]] $Q, [int] 
     $res = [ordered]@{ n_prompt = $P.Length; n_suffix = $Z.Length }
     [void] (Slot 'erase' $null)
     [void] (Complete $P 1)                                       # in-memory state S0: the slot holds P
-    $s = Slot 'save' "$Tag.state"
-    if ($s.Status -ne 200) { throw "$Tag save: $($s.Status) $(Short $s.Raw)" }
-    $res.save = [ordered]@{ n_saved = $s.Body.n_saved; n_written = $s.Body.n_written; save_ms = $s.Body.timings.save_ms; bytes = $s.Body.stateos.bytes; companion = $s.Body.stateos.companion; checkpoints_saved = $s.Body.stateos.checkpoints_saved; token_sha256 = $s.Body.stateos.token_sha256 }
+    $res.save = Parse-Save (Slot 'save' "$Tag.state") $Tag
     $o = Log-Size $LogPath
     $po = Ple-Offsets $LogPath
     $w = Complete $PZ $NGen                                      # continuation from the in-memory S0
@@ -248,14 +339,14 @@ function Test-Identity([string] $Tag, [int[]] $P, [int[]] $Z, [int[]] $Q, [int] 
     foreach ($k in 1, 2) {
         [void] (Slot 'erase' $null); [void] (Complete $Q 8)      # another conversation occupies the slot
         $po = Ple-Offsets $LogPath                               # from the restore through the continuation
-        $rs = Slot 'restore' "$Tag.state"
-        if ($rs.Status -ne 200) { throw "$Tag restore $k`: $($rs.Status) $(Short $rs.Raw)" }
+        $rsp = Parse-Restore (Slot 'restore' "$Tag.state") "$Tag round $k"
         $o = Log-Size $LogPath
         $r = Complete $PZ $NGen
         $ple = Ple-Counts $po
-        $runs += [ordered]@{ restore = [ordered]@{ n_restored = $rs.Body.n_restored; n_read = $rs.Body.n_read; restore_ms = $rs.Body.timings.restore_ms; stateos = $rs.Body.stateos }; out = $r; acceptance = (Acceptance (Read-LogSince $LogPath $o)); ple = $ple }
+        $runs += ,([ordered]@{ restore = $rsp; out = $r; acceptance = (Acceptance (Read-LogSince $LogPath $o)); ple = $ple })
         Log "$Tag restore round $k`: [ple-hist] resets at pos>0 = $($ple.resets_pos_gt0) (expect 0), server-resume sets = $($ple.sets_server_resume)"
     }
+    if ($runs.Count -ne 2) { throw "internal: $Tag has $($runs.Count) restore rounds recorded, expected 2" }
     $res.restored = $runs
     $res.ple_resets_pos_gt0 = [int] $runs[0].ple.resets_pos_gt0 + [int] $runs[1].ple.resets_pos_gt0
     $res.ple_ok = ($res.ple_resets_pos_gt0 -eq 0) -and ($runs[0].ple.sets_server_resume -ge 1) -and ($runs[1].ple.sets_server_resume -ge 1)
@@ -275,6 +366,109 @@ function Test-Identity([string] $Tag, [int[]] $P, [int[]] $Z, [int[]] $Q, [int] 
     return $res
 }
 
+# ---- -DryRun: the parsers above against a recorded --verbose server log (no server, no GPU, nothing stopped) ------
+# The server logs each request as an INFO line (status, method, path, params) followed by a VERB line carrying
+# request="..." response="..." (JSON-escaped strings).
+function Get-RecordedExchanges([string] $LogPath) {
+    $list = New-Object System.Collections.Generic.List[object]
+    $cur = $null
+    foreach ($l in [System.IO.File]::ReadLines($LogPath)) {
+        $m = [regex]::Match($l, 'log_server_request\] request \|.* status=(\d+) method="(\w+)" path="([^"]*)" params=(.*)$')
+        if ($m.Success) { $cur = [pscustomobject]@{ Status = [int] $m.Groups[1].Value; Method = $m.Groups[2].Value; Path = $m.Groups[3].Value; Params = $m.Groups[4].Value.Trim() }; continue }
+        $m = [regex]::Match($l, ' response=("(?:[^"\\]|\\.)*")\s*$')
+        if ($m.Success -and $cur) {
+            $raw = [string] ($m.Groups[1].Value | ConvertFrom-Json)
+            $obj = $null
+            try { $obj = $raw | ConvertFrom-Json } catch {}
+            $list.Add([pscustomobject]@{ Path = $cur.Path; Params = $cur.Params; Method = $cur.Method; Status = $cur.Status; Body = $obj; Raw = $raw })
+            $cur = $null
+        }
+    }
+    return ,$list
+}
+function Invoke-DryRun {
+    $logPath = if ($DryRunLog) { $DryRunLog } else { Join-Path $Root 'specoff.log' }
+    if (-not (Test-Path -LiteralPath $logPath)) { throw "dry run: no recorded log at $logPath" }
+    $check = {
+        param([string] $Name, [scriptblock] $Body)
+        try { $out = & $Body; Write-Host "  ok    $Name$(if ($out) { ": $out" })" }
+        catch { Write-Host "  FAIL  $Name`: $($_.Exception.Message)"; $script:dryFails++ }
+    }
+    $script:dryFails = 0
+    Write-Host "dry run against $logPath"
+
+    $ex = Get-RecordedExchanges $logPath
+    Write-Host "  recorded exchanges with a response: $($ex.Count)"
+    $seen = @{}
+    foreach ($e in $ex) {
+        $kind = if ($e.Path -like '/slots/*') { 'slots ' + ([regex]::Match($e.Params, '"action":"(\w+)"').Groups[1].Value) } else { $e.Path }
+        $seen[$kind] = 1 + [int] $seen[$kind]
+        switch ($kind) {
+            '/tokenize'     { & $check "tokenize #$($seen[$kind])" { "$((Parse-Tokens $e).Length) tokens" } }
+            '/completion'   { & $check "completion #$($seen[$kind])" { $c = Parse-Completion $e; "prompt_n=$($c.prompt_n) predicted_n=$($c.predicted_n) content=$($c.content.Length) chars" } }
+            '/props'        { & $check '/props stateos' { $v = Need $e 'stateos.version' '/props'; [void] (Need $e 'stateos.keyed_header' '/props'); [void] (Need $e 'stateos.companion' '/props'); "version=$v" } }
+            'slots save'    { & $check "slots save #$($seen[$kind])" { $s = Parse-Save $e 'dry'; "n_saved=$($s.n_saved) n_written=$($s.n_written) checkpoints_saved=$($s.checkpoints_saved)" } }
+            'slots erase'   { & $check "slots erase #$($seen[$kind])" { "n_erased=$(Need $e 'n_erased' 'erase')" } }
+            'slots restore' {
+                if ($e.Status -eq 200) { & $check "slots restore #$($seen[$kind])" { $r = Parse-Restore $e 'dry'; "n_restored=$($r.n_restored)" } }
+                else { & $check "slots restore refusal #$($seen[$kind])" { "status=$($e.Status) type=$(Field $e 'error.type') refused_field=$(Field $e 'error.refused_field') slot_untouched=$(Field $e 'error.slot_untouched')" } }
+            }
+        }
+    }
+    foreach ($need in '/tokenize', '/completion', 'slots save') {
+        if (-not $seen[$need]) { Write-Host "  FAIL  no recorded '$need' exchange in the log"; $script:dryFails++ }
+    }
+
+    # a changed response shape must throw naming the field, and Field must mark it
+    & $check 'missing field throws naming it' {
+        $fake = [pscustomobject]@{ Status = 200; Body = ('{"content":"x","timings":{"prompt_ms":1}}' | ConvertFrom-Json); Raw = '{"content":"x","timings":{"prompt_ms":1}}' }
+        $msg = $null
+        try { [void] (Parse-Completion $fake) } catch { $msg = $_.Exception.Message }
+        if (($null -eq $msg) -or ($msg -notlike "*'timings.prompt_n'*")) { throw "expected a throw naming 'timings.prompt_n', got: $msg" }
+        $mk = Field $fake 'error.refused_field'
+        if ($mk -ne '<missing: error.refused_field>') { throw "Field marker was '$mk'" }
+        $msg
+    }
+
+    # the counters over the recorded logs (the abort was here: Ple-Counts on the recorded [ple-hist] set line)
+    & $check 'Ple-Counts over the recorded log pair' { $p = Ple-Counts ([pscustomobject]@{ Out = 0; Err = 0; OutPath = $logPath; ErrPath = ($logPath -replace '\.log$', '.err.log') }); "resets_pos_gt0=$($p.resets_pos_gt0) sets=$($p.sets) server_resume=$($p.sets_server_resume)" }
+    & $check 'Acceptance over the recorded log' { $a = Acceptance (Read-LogSince $logPath 0); "accepted=$($a.accepted) generated=$($a.generated)" }
+    # the counters against known lines (expected: 1 reset at pos>0, 2 sets, 1 at server-resume, 3/6 accepted)
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('gpu-verify-dry-' + [guid]::NewGuid().ToString('N') + '.log')
+    try {
+        Set-Content -LiteralPath $tmp -Encoding utf8 -Value @(
+            '[ple-hist] reset seq=0 pos=0', '[ple-hist] reset seq=0 pos=17', '[ple-hist] set seq=0 next_pos=4096 n_prev=2 site=server-resume',
+            '[ple-hist] set seq=0 next_pos=12 n_prev=2 site=decode', 'draft acceptance rate = 0.50000 (    3 accepted /     6 generated)')
+        & $check 'Ple-Counts on known lines' {
+            $p = Ple-Counts ([pscustomobject]@{ Out = 0; Err = 0; OutPath = $tmp; ErrPath = ($tmp + '.none') })
+            if (($p.resets_pos_gt0 -ne 1) -or ($p.sets -ne 2) -or ($p.sets_server_resume -ne 1)) { throw "got resets=$($p.resets_pos_gt0) sets=$($p.sets) resume=$($p.sets_server_resume), expected 1/2/1" }
+            'resets=1 sets=2 resume=1'
+        }
+        & $check 'Acceptance on known lines' {
+            $a = Acceptance (Read-LogSince $tmp 0)
+            if (($a.accepted -ne 3) -or ($a.generated -ne 6)) { throw "got $($a.accepted)/$($a.generated), expected 3/6" }
+            '3/6'
+        }
+    } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+
+    # the header readers on a recorded state file (read-only)
+    $st = Join-Path $SlotDir 'id4k.state'
+    if (Test-Path -LiteralPath $st) {
+        & $check 'id4k.state header + MAIN section' {
+            $fp = Need-HeaderValue $st 'model_fingerprint_v2'; [void] (Need-HeaderValue $st 'rope'); $mm = Find-Section $st 'MAIN'
+            "fingerprint=$($fp.Substring(0, 12))... MAIN at $($mm.Offset), $($mm.Size) B"
+        }
+    } else { Write-Host "  skip  no recorded $st" }
+
+    Write-Host "dry run: $($script:dryFails) failure(s)"
+    return [int] ($script:dryFails -ne 0)
+}
+if ($DryRun) {
+    $rc = 1
+    try { $rc = Invoke-DryRun } catch { Write-Host "dry run ERROR: $($_.Exception.Message)" }
+    exit $rc
+}
+
 # ---- preflight ------------------------------------------------------------------------------------
 Add-Content -LiteralPath $VerdictTxt -Value "==== $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')) lane-1 GPU verify ====" -Encoding utf8
 foreach ($f in @($PatchedExe, $Model, $Standing)) { if (-not (Test-Path -LiteralPath $f)) { throw "missing: $f" } }
@@ -292,9 +486,10 @@ try {
     $proc = Start-TestServer 'specoff' @()
     $logA = Join-Path $Root 'specoff.log'
     $props = Api 'GET' '/props' $null
-    $propsOk = ($props.Status -eq 200) -and ($props.Body.stateos.version -ge 1) -and ($props.Body.stateos.keyed_header -eq $true) -and ($props.Body.stateos.companion -eq $false)
-    $Results.legA.props_stateos = [ordered]@{ value = $props.Body.stateos; pass = $propsOk }
-    Log "GET /props stateos (spec off, expect companion=false): $($props.Body.stateos | ConvertTo-Json -Compress) pass=$propsOk"
+    $propsOk = ($props.Status -eq 200) -and ((Field $props 'stateos.version') -is [ValueType]) -and ((Field $props 'stateos.version') -ge 1) -and
+               ((Field $props 'stateos.keyed_header') -eq $true) -and ((Field $props 'stateos.companion') -eq $false)
+    $Results.legA.props_stateos = [ordered]@{ value = (Field $props 'stateos'); pass = $propsOk }
+    Log "GET /props stateos (spec off, expect companion=false): $((Field $props 'stateos') | ConvertTo-Json -Compress) pass=$propsOk"
     $text = New-SyntheticText 9000 7
     $all = Get-Tokens $text
     if ($all.Length -lt 200000) { $all = Concat $all (Get-Tokens (New-SyntheticText 9000 11)) }
@@ -316,16 +511,17 @@ try {
     # soft field: warn and proceed
     New-TamperedCopy $good (Join-Path $SlotDir 'soft-build.state') { param($t) Set-HeaderValue $t 'build' '1-softfieldtest' }
     $soft = Slot 'restore' 'soft-build.state'
-    $softOk = ($soft.Status -eq 200) -and (@($soft.Body.stateos.warnings | Where-Object { $_.field -eq 'build' }).Count -eq 1)
-    $Results.legA.soft_build = [ordered]@{ status = $soft.Status; warnings = $soft.Body.stateos.warnings; pass = $softOk }
+    $softWarn = Field $soft 'stateos.warnings'
+    $softOk = ($soft.Status -eq 200) -and ($softWarn -isnot [string]) -and (@($softWarn | Where-Object { $_.field -eq 'build' }).Count -eq 1)
+    $Results.legA.soft_build = [ordered]@{ status = $soft.Status; warnings = $softWarn; pass = $softOk }
     Log "soft field 'build': status=$($soft.Status) pass=$softOk"
 
     $hard = [ordered]@{
-        model_fingerprint_v2 = 'ffff' + (Get-HeaderValue $good 'model_fingerprint_v2').Substring(4)
+        model_fingerprint_v2 = 'ffff' + (Need-HeaderValue $good 'model_fingerprint_v2').Substring(4)
         n_ctx                = '65536'
         cache_type_k         = 'f16'
         cache_type_v         = 'f16'
-        rope                 = (Get-HeaderValue $good 'rope') + ' tampered=1'
+        rope                 = (Need-HeaderValue $good 'rope') + ' tampered=1'
         kv_layout_version    = 'stateos-kv/999 llama-seq/4'
         system_prompt_sha256 = '0' * 64
         kv_geometry          = '1' * 64
@@ -338,25 +534,26 @@ try {
         $v = $hard[$k]
         New-TamperedCopy $good (Join-Path $SlotDir "hard-$k.state") ([scriptblock]::Create("param(`$t) Set-HeaderValue `$t '$k' '$v'"))
         $r = Slot 'restore' "hard-$k.state"
-        $ok = ($r.Status -eq 409) -and ($r.Body.error.refused_field -eq $k) -and ($r.Body.error.slot_untouched -eq $true)
-        $ref[$k] = [ordered]@{ status = $r.Status; refused_field = $r.Body.error.refused_field; message = $r.Body.error.message; pass = $ok }
-        Log "hard field '$k': status=$($r.Status) refused_field=$($r.Body.error.refused_field) pass=$ok"
+        $ok = ($r.Status -eq 409) -and ((Field $r 'error.refused_field') -eq $k) -and ((Field $r 'error.slot_untouched') -eq $true)
+        $ref[$k] = [ordered]@{ status = $r.Status; refused_field = (Field $r 'error.refused_field'); message = (Field $r 'error.message'); pass = $ok }
+        Log "hard field '$k': status=$($r.Status) refused_field=$((Field $r 'error.refused_field')) pass=$ok"
         if ($first -and -not $ok) { throw "KILL: the first hard-field refusal did not answer 409 naming '$k': $(Short $r.Raw)" }
         $first = $false
     }
     New-TamperedCopy $good (Join-Path $SlotDir 'hard-unknown.state') { param($t) $t + "H future_field=x`n" }
     $r = Slot 'restore' 'hard-unknown.state'
-    $ref['<unknown hard field>'] = [ordered]@{ status = $r.Status; refused_field = $r.Body.error.refused_field; pass = (($r.Status -eq 409) -and ($r.Body.error.refused_field -eq 'future_field')) }
+    $ref['<unknown hard field>'] = [ordered]@{ status = $r.Status; refused_field = (Field $r 'error.refused_field'); pass = (($r.Status -eq 409) -and ((Field $r 'error.refused_field') -eq 'future_field')) }
 
     [System.IO.File]::WriteAllBytes((Join-Path $SlotDir 'legacy-fake.state'), [byte[]] (0x71,0x73,0x67,0x67, 4,0,0,0, 0,0,0,0, 0,0,0,0))
     $r = Slot 'restore' 'legacy-fake.state'
-    $ref['<legacy fake>'] = [ordered]@{ status = $r.Status; type = $r.Body.error.type; message = $r.Body.error.message; pass = (($r.Status -eq 409) -and ($r.Body.error.type -eq 'state_legacy_unkeyed')) }
+    $ref['<legacy fake>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); message = (Field $r 'error.message'); pass = (($r.Status -eq 409) -and ((Field $r 'error.type') -eq 'state_legacy_unkeyed')) }
     if (Test-Path -LiteralPath $Lane0Slot) {
         $src = [System.IO.File]::OpenRead($Lane0Slot)
         try { $buf = New-Object byte[] 65536; $n = $src.Read($buf, 0, 65536) } finally { $src.Dispose() }
+        if ($n -le 0) { throw "lane-0 legacy file is empty: $Lane0Slot" }
         [System.IO.File]::WriteAllBytes((Join-Path $SlotDir 'legacy-real.state'), [byte[]] $buf[0..($n - 1)])
         $r = Slot 'restore' 'legacy-real.state'
-        $ref['<legacy real, lane-0 file head>'] = [ordered]@{ status = $r.Status; type = $r.Body.error.type; pass = (($r.Status -eq 409) -and ($r.Body.error.type -eq 'state_legacy_unkeyed')) }
+        $ref['<legacy real, lane-0 file head>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); pass = (($r.Status -eq 409) -and ((Field $r 'error.type') -eq 'state_legacy_unkeyed')) }
     }
     $trunc = Join-Path $SlotDir 'truncated.state'
     $in = [System.IO.File]::OpenRead($good)
@@ -368,12 +565,12 @@ try {
         } finally { $out.Dispose() }
     } finally { $in.Dispose() }
     $r = Slot 'restore' 'truncated.state'
-    $ref['<truncated>'] = [ordered]@{ status = $r.Status; type = $r.Body.error.type; message = $r.Body.error.message; pass = (($r.Status -eq 409) -and ($r.Body.error.type -eq 'state_corrupt')) }
+    $ref['<truncated>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); message = (Field $r 'error.message'); pass = (($r.Status -eq 409) -and ((Field $r 'error.type') -eq 'state_corrupt')) }
     [System.IO.File]::WriteAllBytes((Join-Path $SlotDir 'junk.state'), [byte[]] (0x4A,0x55,0x4E,0x4B, 1,2,3,4))
     $r = Slot 'restore' 'junk.state'
-    $ref['<unrecognized>'] = [ordered]@{ status = $r.Status; type = $r.Body.error.type; pass = (($r.Status -eq 409) -and ($r.Body.error.refused_field -eq 'format')) }
+    $ref['<unrecognized>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); pass = (($r.Status -eq 409) -and ((Field $r 'error.refused_field') -eq 'format')) }
     $r = Slot 'restore' 'does-not-exist.state'
-    $ref['<missing>'] = [ordered]@{ status = $r.Status; type = $r.Body.error.type; pass = (($r.Status -eq 409) -and ($r.Body.error.type -eq 'state_missing')) }
+    $ref['<missing>'] = [ordered]@{ status = $r.Status; type = (Field $r 'error.type'); pass = (($r.Status -eq 409) -and ((Field $r 'error.type') -eq 'state_missing')) }
     $Results.legA.refusals = $ref
 
     # every refusal above must have left the restored 4K S0 in the slot: the continuation is the in-memory one
@@ -404,12 +601,12 @@ try {
     $ae = Complete $PZ4 64
     $pleA = Ple-Counts $poA
     Log "empty-slot round trip: [ple-hist] resets at pos>0 = $($pleA.resets_pos_gt0) (expect 0)"
-    $emptyMech = ($se.Status -eq 200) -and ($se.Body.n_saved -eq 0) -and ($re.Status -eq 200) -and ($re.Body.stateos.empty -eq $true) -and $alive -and
+    $emptyMech = ($se.Status -eq 200) -and ((Field $se 'n_saved') -is [ValueType]) -and ((Field $se 'n_saved') -eq 0) -and ($re.Status -eq 200) -and ((Field $re 'stateos.empty') -eq $true) -and $alive -and
                  ($ae.prompt_n -eq $PZ4.Length) -and ($pleA.resets_pos_gt0 -eq 0)
     $emptySame = ($ae.content -ceq $cold4.content)
     $emptyVerdict = Destructive-Verdict $emptyMech $emptySame
-    $Results.legA.empty_roundtrip = [ordered]@{ save_status = $se.Status; restore_status = $re.Status; restore = $re.Body.stateos; alive = $alive; next = $ae; ple = $pleA; mechanism = $emptyMech; same_as_cold = $emptySame; verdict = $emptyVerdict; pass = ($emptyVerdict -eq 'PASS') }
-    Log "empty-slot round trip: save=$($se.Status) restore=$($re.Status) empty=$($re.Body.stateos.empty) alive=$alive next prompt_n=$($ae.prompt_n)/$($PZ4.Length) same-as-cold=$emptySame verdict=$emptyVerdict"
+    $Results.legA.empty_roundtrip = [ordered]@{ save_status = $se.Status; restore_status = $re.Status; restore = (Field $re 'stateos'); alive = $alive; next = $ae; ple = $pleA; mechanism = $emptyMech; same_as_cold = $emptySame; verdict = $emptyVerdict; pass = ($emptyVerdict -eq 'PASS') }
+    Log "empty-slot round trip: save=$($se.Status) restore=$($re.Status) empty=$((Field $re 'stateos.empty')) alive=$alive next prompt_n=$($ae.prompt_n)/$($PZ4.Length) same-as-cold=$emptySame verdict=$emptyVerdict"
 
     # (b) MAIN tamper: cell_count + 1 inside a well-formed container -> the loader fails after its seq_rm -> 500,
     #     slot_untouched:false, server alive, the next request re-prefills and is correct
@@ -425,12 +622,12 @@ try {
     $at = Complete $PZ4 64
     $pleB = Ple-Counts $poB
     Log "MAIN tamper: [ple-hist] resets at pos>0 = $($pleB.resets_pos_gt0) (expect 0)"
-    $tamperMech = ($rs.Status -eq 200) -and ($rt.Status -eq 500) -and ($rt.Body.error.slot_untouched -eq $false) -and $alive -and
+    $tamperMech = ($rs.Status -eq 200) -and ($rt.Status -eq 500) -and ((Field $rt 'error.slot_untouched') -eq $false) -and $alive -and
                   ($at.prompt_n -eq $PZ4.Length) -and ($pleB.resets_pos_gt0 -eq 0)
     $tamperSame = ($at.content -ceq $cold4.content)
     $tamperVerdict = Destructive-Verdict $tamperMech $tamperSame
-    $Results.legA.main_tamper = [ordered]@{ cell_count = $cc; status = $rt.Status; error = $rt.Body.error; alive = $alive; next = $at; ple = $pleB; mechanism = $tamperMech; same_as_cold = $tamperSame; verdict = $tamperVerdict; pass = ($tamperVerdict -eq 'PASS') }
-    Log "MAIN tamper (cell_count $cc -> $($cc + 1)): status=$($rt.Status) slot_untouched=$($rt.Body.error.slot_untouched) alive=$alive next prompt_n=$($at.prompt_n)/$($PZ4.Length) same-as-cold=$tamperSame verdict=$tamperVerdict"
+    $Results.legA.main_tamper = [ordered]@{ cell_count = $cc; status = $rt.Status; error = (Field $rt 'error'); alive = $alive; next = $at; ple = $pleB; mechanism = $tamperMech; same_as_cold = $tamperSame; verdict = $tamperVerdict; pass = ($tamperVerdict -eq 'PASS') }
+    Log "MAIN tamper (cell_count $cc -> $($cc + 1)): status=$($rt.Status) slot_untouched=$((Field $rt 'error.slot_untouched')) alive=$alive next prompt_n=$($at.prompt_n)/$($PZ4.Length) same-as-cold=$tamperSame verdict=$tamperVerdict"
     Save-Results
     Stop-TestServer $proc; $proc = $null
 
@@ -439,15 +636,16 @@ try {
         $proc = Start-TestServer 'specon' $SpecArgs
         $logB = Join-Path $Root 'specon.log'
         $props = Api 'GET' '/props' $null
-        $propsOk = ($props.Status -eq 200) -and ($props.Body.stateos.version -ge 1) -and ($props.Body.stateos.keyed_header -eq $true) -and ($props.Body.stateos.companion -eq $true)
-        $Results.legB.props_stateos = [ordered]@{ value = $props.Body.stateos; pass = $propsOk }
-        Log "GET /props stateos (spec on, expect companion=true): $($props.Body.stateos | ConvertTo-Json -Compress) pass=$propsOk"
+        $propsOk = ($props.Status -eq 200) -and ((Field $props 'stateos.version') -is [ValueType]) -and ((Field $props 'stateos.version') -ge 1) -and
+                   ((Field $props 'stateos.keyed_header') -eq $true) -and ((Field $props 'stateos.companion') -eq $true)
+        $Results.legB.props_stateos = [ordered]@{ value = (Field $props 'stateos'); pass = $propsOk }
+        Log "GET /props stateos (spec on, expect companion=true): $((Field $props 'stateos') | ConvertTo-Json -Compress) pass=$propsOk"
         $Results.legB.companion_32k = Test-Identity 'on32k' (Head $all 32768) $Z $Q 128 -NoCold -LogPath $logB
         # the spec-off 32K file has no COMP section: restore it here to see acceptance without the companion
         [void] (Slot 'erase' $null); [void] (Complete $Q 8)
         $poNc = Ple-Offsets $logB
         $rs = Slot 'restore' 'id32k.state'
-        $nc = [ordered]@{ status = $rs.Status; stateos = $rs.Body.stateos; error = $rs.Body.error }
+        $nc = [ordered]@{ status = $rs.Status; stateos = (Field $rs 'stateos'); error = (Field $rs 'error') }
         if ($rs.Status -eq 200) {
             $o = Log-Size $logB
             $nc.out = Complete (Concat (Head $all 32768) $Z) 128
@@ -473,17 +671,20 @@ try {
                 Copy-Item -LiteralPath $on32 -Destination $ct -Force
                 $c = Find-Section $ct 'COMP'
                 $sublen = [BitConverter]::ToUInt32((Read-BytesAt $ct $c.Offset 4), 0)
+                if (($sublen -eq 0) -or ($sublen + 4 -gt $c.Size)) { throw "COMP sub-header length $sublen does not fit the $($c.Size)-byte section" }
                 $sub = [System.Text.Encoding]::ASCII.GetString((Read-BytesAt $ct ($c.Offset + 4) ([int] $sublen)))
                 $gpos = $sub.IndexOf('companion_kv_geometry=')
                 if ($gpos -lt 0) { throw 'companion_kv_geometry not found in the COMP sub-header' }
                 $vpos = $gpos + 'companion_kv_geometry='.Length
+                if ($vpos -ge $sub.Length) { throw 'companion_kv_geometry has no value in the COMP sub-header' }
                 $newc = if ($sub[$vpos] -eq '0') { [byte][char] '1' } else { [byte][char] '0' }
                 Write-BytesAt $ct ($c.Offset + 4 + $vpos) ([byte[]] @($newc))
                 [void] (Slot 'erase' $null); [void] (Complete $Q 8)
                 $rc = Slot 'restore' 'comp-tamper.state'
-                $compOk = ($rc.Status -eq 200) -and ([string] $rc.Body.stateos.companion).StartsWith("skipped: companion field 'companion_kv_geometry'")
-                $Results.legB.comp_tamper = [ordered]@{ status = $rc.Status; companion = $rc.Body.stateos.companion; verdict = $(if ($compOk) { 'PASS' } else { 'FAIL' }); pass = $compOk }
-                Log "COMP sub-header tamper: status=$($rc.Status) companion='$($rc.Body.stateos.companion)' pass=$compOk"
+                $rcComp = [string] (Field $rc 'stateos.companion')
+                $compOk = ($rc.Status -eq 200) -and $rcComp.StartsWith("skipped: companion field 'companion_kv_geometry'")
+                $Results.legB.comp_tamper = [ordered]@{ status = $rc.Status; companion = $rcComp; verdict = $(if ($compOk) { 'PASS' } else { 'FAIL' }); pass = $compOk }
+                Log "COMP sub-header tamper: status=$($rc.Status) companion='$rcComp' pass=$compOk"
             } catch {
                 $Results.legB.comp_tamper = [ordered]@{ verdict = 'FAIL'; pass = $false; reason = $_.Exception.Message }
                 Log "COMP sub-header tamper: FAIL ($($_.Exception.Message)); continuing to the 190K measurement"
