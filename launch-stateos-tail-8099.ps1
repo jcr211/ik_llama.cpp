@@ -14,6 +14,9 @@
 # Before launching it writes <LogStem>.flags: one '[stateos-flags] NAME=0|1 ...' line with the effective
 # LONGSPEAR_STATEOS_{DIV_LOG,TAIL_SNAPSHOT,TAIL_XCHECK} and LONGSPEAR_PLE_HIST_{REWIND,LOG}; the census and
 # the gate read it to decide "mislaunched" (VOID). A missing .flags file is "flags unknown" (VOID).
+# After launching it writes <LogStem>.pid. Once the server is up and BEFORE any traffic the chain runs
+# check-stateos-port-8099.ps1 -LogStem <LogStem>, which writes <LogStem>.port; the census and the gate
+# require it to say the launched PID is the only listener on :8099 (else VOID "port shared/unverified").
 # BOX-LOCK: D:\AI\ik_llama-qwen4exp\BOX-LOCK.json refuses the launch unless its "owner" field equals
 # -LockOwner (default 'W-SV2 chain', the owner string the W-SV2 chain must write into its own lock).
 param(
@@ -82,7 +85,9 @@ Set-Content -Path $flagsPath -Value $flagsLine -Encoding ascii
 $argsx = '-m "D:\AI\LLM Models\custom\Qwen3.8-Flash-Next-MXFP4moe-ngramQ8-MTP.gguf" --api-key "' + $key + '" -ngl 999 -ncmoe 37 -fa 1 -c 196608 -ub 512 -ctk q8_0 -ctv q8_0 -np 1 -t 24 -tb 32 --jinja --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --host 0.0.0.0 --port 8099 --spec-type ngram-mod:n_min=4 --spec-type mtp:n_max=4 --reasoning-budget 1024 --spec-ckpt-mode gpu-fallback -rtr -muge'
 if ($ExtraArgs -ne '') { $argsx = $argsx + ' ' + $ExtraArgs }
 
-Start-Process -FilePath $exe -ArgumentList $argsx -WindowStyle Hidden `
+$proc = Start-Process -FilePath $exe -ArgumentList $argsx -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput ("D:\AI\ik_llama-qwen4exp\" + $LogStem + ".out.log") `
     -RedirectStandardError $errLog
-Write-Output ("stateos-tail-8099-launched divlog=" + [int][bool]$DivLog + " tail=" + [int][bool]$Tail + " xcheck=" + [int][bool]$Xcheck + " ple_hist_rewind=1 ple_hist_log=1 extra='" + $ExtraArgs + "' log=" + $LogStem)
+# the launched PID, for check-stateos-port-8099.ps1 (run it once the server is up, before any traffic)
+Set-Content -Path ('D:\AI\ik_llama-qwen4exp\' + $LogStem + '.pid') -Value ([string]$proc.Id) -Encoding ascii
+Write-Output ("stateos-tail-8099-launched pid=" + $proc.Id + " divlog=" + [int][bool]$DivLog + " tail=" + [int][bool]$Tail + " xcheck=" + [int][bool]$Xcheck + " ple_hist_rewind=1 ple_hist_log=1 extra='" + $ExtraArgs + "' log=" + $LogStem)

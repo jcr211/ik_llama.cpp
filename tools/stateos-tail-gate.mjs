@@ -29,31 +29,34 @@
 //   C = -Tail -DivLog, benign A5 (-ExtraArgs '-no-fmoe -no-fug') and A3 (-ExtraArgs '-fa 0') flag off.
 //
 // Scoring (needs every arm's record and server log, --arm-log ARM=path; each log's <LogStem>.flags
-// sidecar, written by the launcher, records the arm's effective flags):
-//   - a prompt is dropped when its B prompt (sha) differs across arms, when C's request-A output
-//     differs from A0's, when C's response could not be parsed (e.g. a UTF-8-split id-count mismatch in
-//     a drifted continuation; counted and reported), or when the request-B restore line of A0, A1 or C
-//     is missing or lacks tail_dist=1, or C's is not a strict tail restore (chosen_origin=tail,
-//     outcome=restored, reason=tail). Benign arms reach the same B from their own cache, so their
-//     restore lines are not constrained. A restore line binds to a row by request order AND content:
-//     n_past == the forced index, the cache window's marked token == g_A0[G-2] and the prompt window's
-//     marked token == X;
-//   - engagement: arm C must have >= --min-prompts strict tail restores on its request-B lines, else
-//     `not-engaged`: VOID when tails were not available on enough B requests (no eligible prompts:
-//     final rounds without an accepted draft), STOP when they were and C did not restore from them;
-//   - before that: CUDA error lines in any arm's log = `cuda-errors` (STOP: stops the window);
+// sidecar, written by the launcher, records the arm's effective flags, and its <LogStem>.port sidecar,
+// written by check-stateos-port-8099.ps1, the listener check):
+//   - log checks first (preScoreChecks): CUDA error lines in any arm's log = `cuda-errors` (STOP);
 //     an arm whose recorded flags differ from the required set (C: DIV_LOG + TAIL_SNAPSHOT; every other
 //     arm: DIV_LOG only; all: PLE_HIST_REWIND + PLE_HIST_LOG; -ExtraArgs: A5 '-no-fmoe -no-fug', A3
 //     '-fa 0', all others none), or with no flags record, = `mislaunched` (VOID) - decided from the
-//     recorded flags only, never from the lever's own output; an HTTP or connection error on a C
-//     request where A0's row succeeded = `shell-errors` (STOP);
-//   - a C response that cannot be parsed is bound to its restore line with A0's row fields; after a
-//     strict tail restore it counts as C diverging (unreadable output): more of them than the drop
-//     slack (prompts - min-prompts) = `shell-unreadable` (STOP); up to the slack, a counted drop;
+//     recorded flags only, never from the lever's own output; a `[ple-hist] reset` at pos > 0 in any
+//     arm = `ple-hist` (STOP); a missing/failed port record = `mislaunched` (VOID); no `[ple-hist] set`
+//     line in an arm = `ple-hist` (STOP);
+//   - every prompt is scorable or excluded once (engagementAndDrops). A restore line binds to a row by
+//     request order AND content: n_past == the forced index, the cache window's marked token ==
+//     g_A0[G-2] and the prompt window's marked token == X. A C row whose request B reached the server
+//     but failed is bound with A0's row fields. Benign arms reach the same B from their own cache, so
+//     their restore lines are not constrained;
+//   - ONE shared slack (prompts - min-prompts, 24 - 20 = 4) for every exclusion attributable to arm C,
+//     whatever the reason: C's request A differs from A0's (where A1 reproduced A0), C's request A or B
+//     could not be parsed or failed with an HTTP/connection error, C's B differs, or, on a prompt A0's
+//     line shows as eligible (prev_round=drafted, prev_n_acc >= 1), C's request-B restore line is
+//     missing, not at tail_dist=1, or not a strict tail restore (chosen_origin=tail, outcome=restored,
+//     reason=tail). Each is reported with its prompt, request (A or B) and reason. More than the slack =
+//     `shell-diverged` (STOP); up to the slack they are counted drops (tolerated by design);
+//   - exclusions NOT attributable to C (A0 or A1 problems, A0 showing no eligible tail, a benign arm's
+//     different B) leaving fewer than --min-prompts scorable strict tail restores =
+//     `not-engaged:no-eligible-prompts` (VOID);
 //   - A1's request A differing from A0's is spec-on nondeterminism: void-determinism, counted before
 //     any drop;
-//   - verdicts: compatible-at-horizon = PASS (exit 0); shellWorse, not-engaged:tails-not-used,
-//     cuda-errors, shell-errors, shell-unreadable = STOP (exit 2); insufficient-sample, void-determinism, mislaunched and
+//   - verdicts: compatible-at-horizon = PASS (exit 0); shellWorse, cuda-errors, ple-hist,
+//     shell-diverged = STOP (exit 2); insufficient-sample, void-determinism, mislaunched and
 //     not-engaged:no-eligible-prompts = VOID (exit 3): the gate did not answer, not a C1 kill.
 //
 // Usage:
@@ -71,7 +74,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { REQUIRED_FLAGS, feedFiles, flagsMismatch } from "./stateos-div-census.mjs";
+import { REQUIRED_FLAGS, feedFiles, flagsMismatch, portProblemOf } from "./stateos-div-census.mjs";
 
 export const DEFAULT_RECEIPT =
   "D:/AI/worktrees/starfighter-trace-validation/.lanes/noise-floor-v2-20260908T022117Z/receipt.json";
@@ -290,6 +293,8 @@ async function runArm(o) {
   };
   for (const p of prompts) {
     const row = { id: p.id, sha256: p.sha256, ok: false };
+    // which request failed, if any: "A" (tokenize or request A) or "B" (request B was sent)
+    let stage = "A";
     try {
       try {
         await post(o.url, key, "/slots/0?action=erase", {});
@@ -300,6 +305,7 @@ async function runArm(o) {
       }
       const promptTokens = (await post(o.url, key, "/tokenize", { content: p.text })).tokens;
       const a = await complete(o, key, promptTokens, o.nFirst);
+      row.generated = a.ids; // kept even when request B fails
       let forced;
       if (reference) {
         const ref = reference.prompts.find((r) => r.id === p.id);
@@ -317,6 +323,8 @@ async function runArm(o) {
             `request A generated ${a.ids.length} tokens or no unrelated X; need >= 2`,
           );
       }
+      row.bSha = tokensSha(forced.tokens);
+      stage = "B";
       const b = await complete(o, key, forced.tokens, o.horizon);
       Object.assign(row, {
         ok: true,
@@ -335,6 +343,7 @@ async function runArm(o) {
       // "input": no usable A0 row / no forced prompt. Plain errors come from post() -> "http".
       row.errorKind =
         e.kind ?? (/^A0 has no valid row|^request A generated/.test(row.error) ? "input" : "http");
+      row.failedAt = stage;
     }
     record.prompts.push(row);
     process.stdout.write(
@@ -368,7 +377,7 @@ export function bindsTo(row, r) {
 /**
  * Match each row of an arm record to its request-B restore line, in request order (the search
  * resumes after the previous match) and by content (bindsTo). Returns {promptId: restore | null}.
- * A row whose request B reached the server but whose response could not be parsed (errorKind "parse")
+ * A row whose request B reached the server but failed (failedAt "B"; old records: errorKind "parse")
  * is bound with the reference (A0) row's fields: it sent A0's B prompt, so the forced position and the
  * two marked tokens are A0's.
  */
@@ -377,7 +386,9 @@ export function matchRestores(record, restores, reference = null) {
   let j = 0;
   for (const row of record.prompts) {
     let key = row.ok ? row : null;
-    if (!row.ok && row.errorKind === "parse" && reference) {
+    // a failed row binds (through the reference row) only if its request B reached the server
+    const sentB = row.failedAt ? row.failedAt === "B" : row.errorKind === "parse";
+    if (!row.ok && sentB && reference) {
       const ref = reference.prompts.find((p) => p.id === row.id);
       if (ref?.ok) key = ref;
     }
@@ -400,77 +411,164 @@ export function matchRestores(record, restores, reference = null) {
 const sameIds = (a, b) =>
   Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => v === b[i]);
 
+// A0's request-B line shows the prompt in the class C1 targets: the final round of request A was a
+// drafted round with >= 1 accepted draft, so the spec shadow held a tail (tail distance 1 = eligible).
+export const eligibleInA0 = (r) => r.prevRound === "drafted" && r.prevNAcc >= 1;
+
 /**
- * Pre-scoring filter: engagement of the shell arm and per-prompt drops.
+ * Pre-scoring filter (round-7 structural rule). Every prompt is either scorable or excluded once, with
+ * ONE reason, and every exclusion is either attributable to the shell arm C or not:
+ *   NOT C (VOID territory): A0 has no valid row; A1's request A differs from A0's (determinism, which
+ *     `score` counts first); A1 has no valid row; A0's or A1's request-B restore line is missing or has
+ *     tail_dist != 1; a benign arm answered a different B; A0's line shows no eligible tail (no
+ *     accepted draft in the final round) and C did not restore from a tail.
+ *   C (checked only when A0's row is valid and A1 reproduced A0's request A): C has no row; C's request
+ *     A or B failed with an HTTP/connection error; C's response to request A or B could not be parsed;
+ *     C's request A differs from A0's; C's request B differs from A0's; on a prompt A0 shows as
+ *     eligible, C's request-B restore line is missing, has tail_dist != 1, or is not a strict tail
+ *     restore. Each records the request that failed (A or B) and why.
+ * All C exclusions count against ONE shared slack (prompts - minPrompts). preVerdict: more than the
+ * slack = `shell-diverged` (STOP); up to the slack they are counted drops.
  * restoresByArm: {arm: census restore rows (in log order)}.
  */
 export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }) {
   const byArm = new Map(records.map((r) => [r.arm, r]));
   const a0 = byArm.get("A0");
   if (!a0) throw new Error("missing arm record arm-A0.json");
-  const constrained = ["A0", "A1", shell].filter((a) => byArm.has(a));
   const matched = {};
-  for (const a of constrained) matched[a] = matchRestores(byArm.get(a), restoresByArm[a] ?? [], a0);
+  for (const a of ["A0", "A1", shell].filter((x) => byArm.has(x))) {
+    matched[a] = matchRestores(byArm.get(a), restoresByArm[a] ?? [], a0);
+  }
+  const rowOf = (arm, id) => byArm.get(arm)?.prompts.find((p) => p.id === id);
   const drop = new Map();
   const droppedCounts = {};
-  const note = (id, reason) => {
-    if (!drop.has(id)) drop.set(id, reason);
-    droppedCounts[reason] = (droppedCounts[reason] ?? 0) + 1;
+  const cExclusions = [];
+  const cReasons = {};
+  const nonCReasons = {};
+  const exclude = (id, byC, request, reason, detail = "") => {
+    const label = byC ? `${shell}: ${reason}` : reason;
+    drop.set(id, detail ? `${label} (${detail})` : label);
+    droppedCounts[label] = (droppedCounts[label] ?? 0) + 1;
+    if (byC) {
+      cExclusions.push({ id, request, reason, ...(detail ? { detail } : {}) });
+      cReasons[reason] = (cReasons[reason] ?? 0) + 1;
+    } else {
+      nonCReasons[reason] = (nonCReasons[reason] ?? 0) + 1;
+    }
   };
-  const rowOf = (arm, id) => byArm.get(arm)?.prompts.find((p) => p.id === id);
+  // the reason a constrained arm's request-B line cannot be used, or null
+  const lineProblem = (m) =>
+    !m
+      ? "no request-B restore line"
+      : m.tailDist !== 1
+        ? `restore line tail_dist=${m.tailDist}`
+        : null;
   let tailRestores = 0;
-  let tailAvailableAtB = 0;
-  let unreadableAfterTail = 0;
+  let eligible = 0;
   for (const p of a0.prompts) {
     const id = p.id;
-    // one B prompt for every arm
-    for (const r of records) {
-      const row = rowOf(r.arm, id);
-      if (row?.ok && p.ok && row.bSha !== p.bSha) note(id, `${r.arm}: request B differs from A0's`);
-    }
-    // C's cache must equal A0's. A1's request A differing from A0's is NOT a drop: it is spec-on greedy
-    // nondeterminism, which `score` turns into void-determinism (so A1's restore line is not
-    // constrained for that prompt either).
-    const cRow = rowOf(shell, id);
-    if (cRow?.ok && p.ok && !sameIds(cRow.generated, p.generated)) {
-      note(id, `${shell}: request A output differs from A0's`);
-    }
-    // a C response we could not read (e.g. a UTF-8-split id-count mismatch) is not a server failure
-    // (HTTP/connection errors are STOP in preScoreChecks). After a strict tail restore on a B that A0
-    // read fine it is evidence that C DIVERGED (corrupted output): counted as unreadable-after-tail;
-    // more than the drop slack (prompts - minPrompts) of them is STOP (preVerdict). Up to the slack it
-    // is a counted drop (benign drift).
-    const cParseFailed = Boolean(cRow && !cRow.ok && cRow.errorKind === "parse" && p.ok);
-    if (cParseFailed) {
-      note(id, `${shell}: response not parsed`);
-      const m = matched[shell]?.[id];
-      if (m && isTailRestore(m)) unreadableAfterTail += 1;
+    const a0Line = matched.A0[id];
+    if (a0Line && a0Line.tailDist === 1 && eligibleInA0(a0Line)) eligible += 1;
+    if (!p.ok) {
+      exclude(id, false, null, "A0: no valid row");
+      continue;
     }
     const a1Row = rowOf("A1", id);
-    const a1Diverged = Boolean(a1Row?.ok && p.ok && !sameIds(a1Row.generated, p.generated));
-    for (const a of constrained) {
-      if (a === "A1" && a1Diverged) continue;
-      const m = matched[a][id];
-      if (!m) note(id, `${a}: no request-B restore line`);
-      else if (m.tailDist !== 1) note(id, `${a}: tail_dist=${m.tailDist}`);
-      else if (a === shell && !isTailRestore(m))
-        note(id, `${shell}: not restored from the tail (${m.chosenOrigin}/${m.outcome})`);
+    if (a1Row?.ok && !sameIds(a1Row.generated, p.generated)) {
+      exclude(id, false, null, "A1: request A differs from A0's (determinism)");
+      continue;
     }
+    // C, row level: whatever went wrong on C's own requests
+    const cRow = rowOf(shell, id);
+    if (!cRow) {
+      exclude(id, true, "A", "no row in the arm record");
+      continue;
+    }
+    if (!cRow.ok) {
+      const request = cRow.failedAt ?? (cRow.errorKind === "parse" ? "B" : "A");
+      const what =
+        cRow.errorKind === "parse"
+          ? "not parsed"
+          : cRow.errorKind === "input"
+            ? "not sent (input error)"
+            : "HTTP/connection error";
+      exclude(
+        id,
+        true,
+        request,
+        `request ${request} ${what}`,
+        String(cRow.error ?? "").slice(0, 120),
+      );
+      continue;
+    }
+    if (!sameIds(cRow.generated, p.generated)) {
+      exclude(id, true, "A", "request A output differs from A0's");
+      continue;
+    }
+    if (cRow.bSha !== p.bSha) {
+      exclude(id, true, "B", "request B differs from A0's");
+      continue;
+    }
+    // not C: the reference arms' own lines, and the benign arms' B
+    const a0Problem = lineProblem(a0Line);
+    if (a0Problem) {
+      exclude(id, false, null, `A0: ${a0Problem}`);
+      continue;
+    }
+    if (!a1Row?.ok) {
+      exclude(id, false, null, "A1: no valid row");
+      continue;
+    }
+    const a1Problem = lineProblem(matched.A1?.[id]);
+    if (a1Problem) {
+      exclude(id, false, null, `A1: ${a1Problem}`);
+      continue;
+    }
+    const otherB = records.find((r) => {
+      const row = rowOf(r.arm, id);
+      return r.arm !== shell && row?.ok && row.bSha !== p.bSha;
+    });
+    if (otherB) {
+      exclude(id, false, null, `${otherB.arm}: request B differs from A0's`);
+      continue;
+    }
+    // C's request-B line: a strict tail restore scores; otherwise C's fault iff A0 shows a tail
     const mc = matched[shell]?.[id];
-    if (mc) {
-      tailAvailableAtB += mc.tailAvailable ? 1 : 0;
-      tailRestores += isTailRestore(mc) ? 1 : 0;
+    if (mc && mc.tailDist === 1 && isTailRestore(mc)) {
+      tailRestores += 1;
+      continue;
+    }
+    if (eligibleInA0(a0Line)) {
+      const lp = lineProblem(mc);
+      exclude(
+        id,
+        true,
+        "B",
+        lp ? lp.replace(/tail_dist=.*$/, "tail_dist != 1") : "not a strict tail restore",
+        lp ??
+          `${mc.chosenOrigin}/${mc.outcome}/${mc.reason}${mc.tailAvailable ? "" : ", no tail written"}`,
+      );
+    } else {
+      exclude(
+        id,
+        false,
+        null,
+        "A0: no eligible tail (final round without an accepted draft)",
+        `prev_round=${a0Line.prevRound} prev_n_acc=${a0Line.prevNAcc}`,
+      );
     }
   }
-  const engaged = tailRestores >= minPrompts;
   const slack = Math.max(0, a0.prompts.length - minPrompts);
   return {
-    engaged,
+    engaged: tailRestores >= minPrompts,
     tailRestores,
-    tailAvailableAtB,
-    eligibleExisted: tailAvailableAtB >= minPrompts,
-    unreadableAfterTail,
+    eligible,
     slack,
+    cExcluded: cExclusions.length,
+    cReasons,
+    cExclusions,
+    nonCExcluded: drop.size - cExclusions.length,
+    nonCReasons,
     drop,
     droppedCounts,
     droppedPrompts: drop.size,
@@ -479,26 +577,27 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
 
 /**
  * The verdict before scoring, from engagementAndDrops' result, or null to score.
- *   - C responses unreadable after a strict tail restore beyond the drop slack: `shell-unreadable` (STOP)
- *   - not engaged: `not-engaged:tails-not-used` (STOP) or `not-engaged:no-eligible-prompts` (VOID)
+ *   - more C-attributable exclusions than the shared slack: `shell-diverged` (STOP), with the
+ *     per-reason breakdown and each prompt's failed request;
+ *   - fewer than minPrompts scorable strict tail restores, with the C exclusions within the slack: the
+ *     shortfall is not C's, `not-engaged:no-eligible-prompts` (VOID).
  */
 export function preVerdict(pre, { shell, minPrompts }) {
-  if (pre.unreadableAfterTail > pre.slack) {
+  const breakdown = (o) =>
+    Object.entries(o)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join("; ");
+  if (pre.cExcluded > pre.slack) {
+    const which = pre.cExclusions.map((e) => `${e.id}@${e.request}`).join(", ");
     return {
-      verdict: "shell-unreadable",
-      voidReason: `${pre.unreadableAfterTail} ${shell} responses could not be read after a strict tail restore on a B that A0 read (drop slack ${pre.slack}): the tail-restored state produced unreadable output`,
+      verdict: "shell-diverged",
+      voidReason: `${pre.cExcluded} prompt(s) excluded because of arm ${shell} (shared slack ${pre.slack}): ${breakdown(pre.cReasons)} [${which}]`,
     };
   }
   if (pre.engaged) return null;
-  if (pre.eligibleExisted) {
-    return {
-      verdict: "not-engaged:tails-not-used",
-      voidReason: `tails were available on ${pre.tailAvailableAtB} request-B divergences in ${shell} but restored on only ${pre.tailRestores} (< ${minPrompts}): the lever failed where it could act`,
-    };
-  }
   return {
     verdict: "not-engaged:no-eligible-prompts",
-    voidReason: `tails were available on only ${pre.tailAvailableAtB} request-B divergences in ${shell} (< ${minPrompts}; final rounds without an accepted draft leave no tail): no eligible prompts, the gate did not answer`,
+    voidReason: `only ${pre.tailRestores} scorable strict tail restores in ${shell} (< ${minPrompts}); ${pre.nonCExcluded} exclusion(s) not attributable to ${shell} (${breakdown(pre.nonCReasons)}), ${pre.cExcluded} attributable to ${shell} within the slack: the gate did not answer`,
   };
 }
 
@@ -623,10 +722,9 @@ export function gateStatus(verdict) {
   if (verdict === "compatible-at-horizon") return "PASS";
   if (
     verdict === "shellWorse" ||
-    verdict === "not-engaged:tails-not-used" ||
     verdict === "cuda-errors" ||
-    verdict === "shell-errors" ||
-    verdict === "shell-unreadable"
+    verdict === "ple-hist" ||
+    verdict === "shell-diverged"
   ) {
     return "STOP";
   }
@@ -642,15 +740,20 @@ export function requiredFlagsOfArm(arm, shell) {
 }
 
 /**
- * Checks on the arms' logs and records before any scoring. censusByArm: {arm: raw census state
- * (feedFiles: the <LogStem>.flags sidecar + the log)}. Returns a verdict object, or null to proceed to
- * engagement and scoring.
+ * Checks on the arms' logs before any scoring. censusByArm: {arm: raw census state (feedFiles: the
+ * log + its <LogStem>.flags and <LogStem>.port sidecars)}. Returns a verdict object, or null to proceed
+ * to engagement and scoring. In order:
  *   - any CUDA error line in any arm's log: `cuda-errors` (STOP: stops the window);
  *   - an arm whose RECORDED flags differ from its required set (C: REQUIRED_FLAGS.gateTail, others:
- *     REQUIRED_FLAGS.gateOff), or with no flags record: `mislaunched` (VOID). Decided only from the
- *     launcher's record, never from the lever's own output;
- *   - an HTTP or connection error on a C request where A0's row is ok (the server failed on C only):
- *     `shell-errors` (STOP). A C response that could not be parsed is a drop, not a STOP.
+ *     REQUIRED_FLAGS.gateOff/gateA5/gateA3), or with no flags record: `mislaunched` (VOID). Decided only
+ *     from the launcher's record, never from the lever's own output. Every required set has
+ *     PLE_HIST_REWIND=1 + PLE_HIST_LOG=1, so past this point each arm's PLE repair was armed and logged;
+ *   - a `[ple-hist] reset` at pos > 0 in any arm's log (an unrepaired rewind): `ple-hist` (STOP);
+ *   - an arm whose <LogStem>.port record is missing or does not show the launched PID as the only
+ *     listener on the port: `mislaunched` (VOID: requests may have reached another server);
+ *   - an arm's log with no `[ple-hist] set` line: `ple-hist` (STOP).
+ * HTTP/connection and parse failures of C's requests are C-attributable exclusions (engagementAndDrops),
+ * counted against the shared slack.
  */
 export function preScoreChecks(records, censusByArm, { shell }) {
   const errors = Object.entries(censusByArm)
@@ -662,38 +765,44 @@ export function preScoreChecks(records, censusByArm, { shell }) {
       voidReason: `CUDA error lines in arm logs: ${errors.join(", ")}`,
     };
   }
-  const mislaunched = records
-    .map((r) => {
-      const c = censusByArm[r.arm];
-      const why = flagsMismatch(
-        c?.flags ?? null,
-        requiredFlagsOfArm(r.arm, shell),
-        c?.flagsProblem ?? null,
-      );
-      return why ? `${r.arm}: ${why}` : null;
-    })
-    .filter(Boolean);
+  const perArm = (fn) =>
+    records
+      .map((r) => {
+        const why = fn(censusByArm[r.arm], r.arm);
+        return why ? `${r.arm}: ${why}` : null;
+      })
+      .filter(Boolean);
+  const mislaunched = perArm((c, arm) =>
+    flagsMismatch(c?.flags ?? null, requiredFlagsOfArm(arm, shell), c?.flagsProblem ?? null),
+  );
   if (mislaunched.length) {
     return {
       verdict: "mislaunched",
       voidReason: `recorded launch flags do not match the step-4 arms: ${mislaunched.join("; ")}`,
     };
   }
-  const a0 = records.find((r) => r.arm === "A0");
-  const cRec = records.find((r) => r.arm === shell);
-  if (a0 && cRec) {
-    const failed = a0.prompts
-      .filter((p) => {
-        const q = cRec.prompts.find((x) => x.id === p.id);
-        return p.ok && q && !q.ok && (q.errorKind ?? "http") === "http";
-      })
-      .map((p) => p.id);
-    if (failed.length) {
-      return {
-        verdict: "shell-errors",
-        voidReason: `arm ${shell} failed on ${failed.length} prompt(s) where A0 succeeded: ${failed.join(", ")}`,
-      };
-    }
+  const resets = perArm((c) =>
+    c.ple.resetsAfterPos0 > 0 ? `[ple-hist] reset at pos > 0 = ${c.ple.resetsAfterPos0}` : null,
+  );
+  if (resets.length) {
+    return {
+      verdict: "ple-hist",
+      voidReason: `unrepaired PLE-history rewinds: ${resets.join("; ")}`,
+    };
+  }
+  const ports = perArm((c) => portProblemOf(c));
+  if (ports.length) {
+    return {
+      verdict: "mislaunched",
+      voidReason: `port ownership not verified: ${ports.join("; ")}`,
+    };
+  }
+  const unarmed = perArm((c) => (c.ple.sets > 0 ? null : "no [ple-hist] set line"));
+  if (unarmed.length) {
+    return {
+      verdict: "ple-hist",
+      voidReason: `PLE-history repair recorded as on but never logged a set: ${unarmed.join("; ")}`,
+    };
   }
   return null;
 }
@@ -711,7 +820,7 @@ async function runScore(o) {
   const censusByArm = {};
   const restoresByArm = {};
   for (const r of records) {
-    // the log plus its <LogStem>.flags sidecar (the arm's recorded launch flags)
+    // the log plus its <LogStem>.flags (recorded launch flags) and <LogStem>.port (port owner) sidecars
     censusByArm[r.arm] = await feedFiles([o.armLogs[r.arm]]);
     restoresByArm[r.arm] = censusByArm[r.arm].v2.restores;
   }
@@ -742,11 +851,15 @@ async function runScore(o) {
     status,
     engagement: {
       tailRestores: pre.tailRestores,
-      tailAvailableAtB: pre.tailAvailableAtB,
+      eligibleInA0: pre.eligible,
       required: o.minPrompts,
       engaged: pre.engaged,
-      unreadableAfterTail: pre.unreadableAfterTail,
       slack: pre.slack,
+      shellExcluded: pre.cExcluded,
+      shellReasons: pre.cReasons,
+      shellExclusions: pre.cExclusions,
+      otherExcluded: pre.nonCExcluded,
+      otherReasons: pre.nonCReasons,
     },
     droppedPrompts: pre.droppedPrompts,
     droppedCounts: pre.droppedCounts,
@@ -754,8 +867,16 @@ async function runScore(o) {
   };
   fs.writeFileSync(file, `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(
-    `engagement: ${pre.tailRestores} tail restores, tails available on ${pre.tailAvailableAtB} request-B divergences in ${o.shell} (need ${o.minPrompts})\n`,
+    `engagement: ${pre.tailRestores} scorable strict tail restores in ${o.shell} (need ${o.minPrompts}); ${pre.eligible} prompts eligible in A0\n`,
   );
+  process.stdout.write(
+    `excluded because of ${o.shell}: ${pre.cExcluded} of slack ${pre.slack} ${JSON.stringify(pre.cReasons)}\n`,
+  );
+  for (const e of pre.cExclusions) {
+    process.stdout.write(
+      `  ${e.id} request ${e.request}: ${e.reason}${e.detail ? ` (${e.detail})` : ""}\n`,
+    );
+  }
   process.stdout.write(
     `dropped prompts: ${pre.droppedPrompts} ${JSON.stringify(pre.droppedCounts)}\n`,
   );

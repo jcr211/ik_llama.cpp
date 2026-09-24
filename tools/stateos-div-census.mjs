@@ -109,6 +109,10 @@ export function flagsMismatch(flags, required, problem = null) {
 }
 
 /** <LogStem>.flags next to <LogStem>.err.log (the launcher writes it before the server starts). */
+export function portSidecarOf(logPath) {
+  return logPath.replace(/\.err\.log$/i, "").replace(/\.log$/i, "") + ".port";
+}
+
 export function flagsSidecarOf(logPath) {
   return logPath.replace(/\.err\.log$/i, "").replace(/\.log$/i, "") + ".flags";
 }
@@ -169,6 +173,10 @@ export function newCensus() {
     serverListening: false,
     serverBindFailed: false,
     serversAll: null, // set by feedFiles: every log's server served
+    // port ownership, written by check-stateos-port-8099.ps1 into <LogStem>.port after the launch:
+    // exactly one listener on the model port and it is the launched PID; null = not verified
+    port: null,
+    portProblem: null, // set by feedFiles: a log without a port record, or a record that is not ok
     cudaErrors: 0,
     _last: null,
     _tailPending: new Map(),
@@ -186,6 +194,13 @@ export function feed(c, line) {
     flags.extra = normalizeExtra(m ? m[1] : "");
     if (c.flags && JSON.stringify(c.flags) !== JSON.stringify(flags)) c.flagsConflict = true;
     c.flags = flags;
+    return;
+  }
+  if (line.startsWith("[stateos-port]")) {
+    c.port = {
+      ok: /^\[stateos-port\] ok\b/.test(line),
+      detail: line.slice("[stateos-port]".length).trim(),
+    };
     return;
   }
   if (/HTTP server listening/.test(line)) {
@@ -470,7 +485,18 @@ export function summarize(c) {
       c.flagsProblem ??
       (c.flagsConflict ? "flags inconsistent (two different records for one log)" : null),
     served,
+    portProblem: portProblemOf(c),
   };
+}
+
+/** null when the port record says the launched PID was the only listener, else why not. */
+export function portProblemOf(c) {
+  if (c.portProblem) return c.portProblem;
+  if (!c.port)
+    return "port unverified (no [stateos-port] record: run check-stateos-port-8099.ps1 after the launch)";
+  return c.port.ok
+    ? null
+    : `mislaunched: port shared or not owned by the launched PID (${c.port.detail})`;
 }
 
 const miss = (name, ok, detail) => ({ name, ok: Boolean(ok), detail });
@@ -542,6 +568,16 @@ export function checkStep(step, s, p0 = null) {
   const launched = (who, run, required) => {
     const why = flagsMismatch(run.flags, required, run.flagsProblem);
     checks.push(voidCheck(`mislaunched? ${who} flags`, why === null, why ?? "flags as required"));
+    // the chain's port check: the launched PID was the only listener (SO_REUSEADDR lets a second
+    // server bind on Windows, so the log's bind-failure line cannot be trusted for this)
+    const port = run.portProblem ?? null;
+    checks.push(
+      voidCheck(
+        `mislaunched? ${who} port`,
+        port === null,
+        port ?? "launched PID is the only listener",
+      ),
+    );
   };
   // steps 1 and 2: the log must show that this server served (build lines, not lever output):
   // "HTTP server listening" present, no "couldn't bind" (another server held the port)
@@ -727,13 +763,22 @@ export async function feedFiles(files) {
   const c = newCensus();
   const perFile = [];
   for (const f of files) {
+    // per-log state: records, and the parser's slot state (a pending tail or the last Cache line of one
+    // log must never describe the next log)
     c.flags = null;
     c.flagsConflict = false;
     c.serverListening = false;
     c.serverBindFailed = false;
+    c.port = null;
+    c._last = null;
+    c._tailPending = new Map();
     const sidecar = flagsSidecarOf(f);
     if (fs.existsSync(sidecar)) {
       for (const line of fs.readFileSync(sidecar, "utf8").split(/\r?\n/)) feed(c, line);
+    }
+    const portFile = portSidecarOf(f);
+    if (fs.existsSync(portFile)) {
+      for (const line of fs.readFileSync(portFile, "utf8").split(/\r?\n/)) feed(c, line);
     }
     const rl = readline.createInterface({ input: fs.createReadStream(f), crlfDelay: Infinity });
     for await (const line of rl) feed(c, line);
@@ -750,8 +795,23 @@ export async function feedFiles(files) {
       conflict: c.flagsConflict,
       listening: c.serverListening,
       bindFailed: c.serverBindFailed,
+      port: c.port,
     });
   }
+  const portBad = perFile.filter((p) => !p.port || !p.port.ok);
+  c.port =
+    perFile.length && !portBad.length
+      ? { ok: true, detail: "every log's launched PID was the only listener" }
+      : null;
+  c.portProblem = portBad.length
+    ? portBad
+        .map((p) =>
+          p.port
+            ? `${p.file}: mislaunched: port shared or not owned by the launched PID (${p.port.detail})`
+            : `${p.file}: port unverified (no <LogStem>.port record)`,
+        )
+        .join("; ")
+    : null;
   const missing = perFile.filter((p) => !p.flags).map((p) => p.file);
   const conflicting = perFile.filter((p) => p.conflict).map((p) => p.file);
   const distinct = new Set(perFile.filter((p) => p.flags).map((p) => JSON.stringify(p.flags)));

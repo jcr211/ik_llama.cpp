@@ -134,11 +134,14 @@ test("stateos-div lines: tail availability, hit rate, gaps, crosscheck rows", ()
   assert.deepEqual(s.xcheck.skips, { "flag-off-reset": 1 });
 });
 
-// the server's startup line (normally from <LogStem>.out.log) plus an armed PLE-history repair
+// the server's startup line (normally from <LogStem>.out.log), the chain's port check (normally the
+// <LogStem>.port sidecar) and an armed PLE-history repair
 const LISTENING =
   'INFO [                    main] HTTP server listening | tid="1" timestamp=1 hostname="0.0.0.0" port="8099"';
+const PORT_OK = "[stateos-port] ok pid=1 listeners=1 port=8099";
 const ARMED = [
   LISTENING,
+  PORT_OK,
   "[ple-hist] set seq=0 next_pos=1996 n_prev=2 site=server-resume",
   "[ple-hist] reset seq=0 pos=0 next_pos=-1",
 ];
@@ -501,9 +504,12 @@ const row = (id, over = {}) => ({
   continuation: [1, 2, 3, 4, 5, 6, 7, 8],
   ...over,
 });
+// a request-B restore line; by default the final round of request A accepted drafts (eligible in A0)
 const bLine = (over = {}) => ({
   nPast: 5,
   tailDist: 1,
+  prevRound: "drafted",
+  prevNAcc: 2,
   chosenOrigin: "tolerance",
   reason: "tolerance",
   outcome: "restored",
@@ -556,29 +562,31 @@ test("engagement and drops: B built once from A0, constraints on A0/A1/C only", 
     A3: [],
   };
   const r = engagementAndDrops(records, restoresByArm, { shell: "C", minPrompts: 2 });
-  assert.equal(r.tailRestores, 4);
-  assert.equal(r.tailAvailableAtB, 4);
+  assert.equal(r.tailRestores, 2);
+  assert.equal(r.eligible, 4);
   assert.equal(r.engaged, true);
   assert.deepEqual([...r.drop.keys()].sort(), ["p2", "p3"]);
   assert.equal(r.droppedCounts["C: request A output differs from A0's"], 1);
   assert.equal(r.droppedCounts["A3: request B differs from A0's"], 1);
-  // no eligible prompts vs tails not used
-  const noTails = engagementAndDrops(
-    records,
-    { ...restoresByArm, C: ids.map(() => bLine()) },
-    { shell: "C", minPrompts: 2 },
-  );
-  assert.equal(noTails.engaged, false);
-  assert.equal(noTails.eligibleExisted, false);
+  // C's request-A difference counts against the shared slack; A3's different B does not
+  assert.equal(r.cExcluded, 1);
+  assert.deepEqual(r.cExclusions, [
+    { id: "p2", request: "A", reason: "request A output differs from A0's" },
+  ]);
+  assert.equal(r.nonCExcluded, 1);
+  assert.equal(preVerdict(r, { shell: "C", minPrompts: 2 }), null);
+  // C did not restore from the tail on prompts A0 shows as eligible: C's fault (3 > slack 2) -> STOP
   const unused = engagementAndDrops(
     records,
     { ...restoresByArm, C: ids.map(() => bLine({ tailAvailable: true })) },
     { shell: "C", minPrompts: 2 },
   );
-  assert.equal(unused.engaged, false);
-  assert.equal(unused.eligibleExisted, true);
+  assert.equal(unused.cExcluded, 3);
+  assert.equal(unused.cReasons["not a strict tail restore"], 2);
+  assert.equal(preVerdict(unused, { shell: "C", minPrompts: 2 }).verdict, "shell-diverged");
   assert.equal(gateStatus("not-engaged:no-eligible-prompts"), "VOID");
-  assert.equal(gateStatus("not-engaged:tails-not-used"), "STOP");
+  assert.equal(gateStatus("shell-diverged"), "STOP");
+  assert.equal(gateStatus("ple-hist"), "STOP");
   assert.equal(gateStatus("insufficient-sample"), "VOID");
   assert.equal(gateStatus("void-determinism"), "VOID");
   assert.equal(gateStatus("shellWorse"), "STOP");
@@ -706,8 +714,9 @@ const rawCensus = (lines) => {
 };
 const armFlags = (a, shell) =>
   a === shell ? F_TAIL : a === "A5" ? F_A5 : a === "A3" ? F_A3 : F_OFF;
+// every arm: its recorded flags, the port check and an armed PLE-history repair
 const gateCensus = (arms, shell = "C") =>
-  Object.fromEntries(arms.map((a) => [a, rawCensus([armFlags(a, shell)])]));
+  Object.fromEntries(arms.map((a) => [a, rawCensus([armFlags(a, shell), ...ARMED])]));
 
 test("Opus repro: a C arm served by the crosscheck never scores (restored:xcheck-flag-off is no tail restore)", () => {
   const ids = Array.from({ length: 24 }, (_, i) => `p${i}`);
@@ -759,35 +768,221 @@ test("pre-score: flags per arm, CUDA errors in any arm, C HTTP failures STOP, C 
   const r = preScoreChecks(records, cuda, { shell: "C" });
   assert.equal(r.verdict, "cuda-errors");
   assert.equal(gateStatus(r.verdict), "STOP");
-  // an HTTP/connection failure on C where A0 succeeded: STOP
-  const cHttp = [
-    mk("A0"),
-    mk("A1"),
-    mk("C", { p1: { ok: false, error: "HTTP 500", errorKind: "http" } }),
-    mk("A5"),
-    mk("A3"),
-  ];
-  const r2 = preScoreChecks(cHttp, gateCensus(arms), { shell: "C" });
-  assert.equal(r2.verdict, "shell-errors");
-  assert.equal(gateStatus(r2.verdict), "STOP");
-  // a C response that could not be parsed (UTF-8-split id-count mismatch): not a STOP, a counted drop
-  const cParse = [
+  // C's HTTP and parse failures are not log checks: they are C-attributable exclusions (shared slack)
+  const cFail = [
     mk("A0"),
     mk("A1"),
     mk("C", {
-      p1: { ok: false, error: "2 logprobs ids for 3 completion tokens", errorKind: "parse" },
+      p0: { ok: false, error: "HTTP 500", errorKind: "http", failedAt: "B" },
+      p1: {
+        ok: false,
+        error: "2 logprobs ids for 3 completion tokens",
+        errorKind: "parse",
+        failedAt: "A",
+      },
     }),
     mk("A5"),
     mk("A3"),
   ];
-  assert.equal(preScoreChecks(cParse, gateCensus(arms), { shell: "C" }), null);
-  const pre = engagementAndDrops(
-    cParse,
-    { A0: ids.map(() => bLine()), A1: ids.map(() => bLine()), C: [tailLine()], A5: [], A3: [] },
-    { shell: "C", minPrompts: 1 },
+  assert.equal(preScoreChecks(cFail, gateCensus(arms), { shell: "C" }), null);
+  const lines = {
+    A0: ids.map(() => bLine()),
+    A1: ids.map(() => bLine()),
+    C: [tailLine()],
+    A5: [],
+    A3: [],
+  };
+  const pre = engagementAndDrops(cFail, lines, { shell: "C", minPrompts: 1 });
+  assert.deepEqual(
+    pre.cExclusions.map((e) => [e.id, e.request, e.reason]),
+    [
+      ["p0", "B", "request B HTTP/connection error"],
+      ["p1", "A", "request A not parsed"],
+    ],
   );
-  assert.equal(pre.drop.get("p1"), "C: response not parsed");
-  assert.equal(pre.droppedCounts["C: response not parsed"], 1);
+  // 2 > slack 1: STOP
+  assert.equal(preVerdict(pre, { shell: "C", minPrompts: 1 }).verdict, "shell-diverged");
+  // one of them (1 <= slack 1): a counted drop
+  const one = engagementAndDrops(
+    [mk("A0"), mk("A1"), mk("C", { p1: cFail[2].prompts[1] }), mk("A5"), mk("A3")],
+    lines,
+    {
+      shell: "C",
+      minPrompts: 1,
+    },
+  );
+  assert.equal(preVerdict(one, { shell: "C", minPrompts: 1 }), null);
+  assert.equal(one.droppedCounts["C: request A not parsed"], 1);
+});
+
+test("N10/N8: step 4 PLE checks (STOP) and the port check (VOID) per arm", () => {
+  const ids = ["p0"];
+  const records = ["A0", "A1", "C", "A5", "A3"].map((arm) => ({
+    arm,
+    prompts: ids.map((id) => row(id)),
+  }));
+  const arms = ["A0", "A1", "C", "A5", "A3"];
+  const noPle = ARMED.filter((l) => !l.startsWith("[ple-hist] set"));
+  // no [ple-hist] set in C's log although its flags record REWIND=1 LOG=1: STOP
+  const unarmed = { ...gateCensus(arms), C: rawCensus([F_TAIL, ...noPle]) };
+  const r = preScoreChecks(records, unarmed, { shell: "C" });
+  assert.equal(r.verdict, "ple-hist");
+  assert.equal(gateStatus(r.verdict), "STOP");
+  // an unrepaired rewind in a benign arm: STOP
+  const rewind = {
+    ...gateCensus(arms),
+    A3: rawCensus([F_A3, ...ARMED, "[ple-hist] reset seq=0 pos=1996 next_pos=2001"]),
+  };
+  assert.equal(preScoreChecks(records, rewind, { shell: "C" }).verdict, "ple-hist");
+  // a second listener on the port, or no port record: mislaunched (VOID)
+  const shared = {
+    ...gateCensus(arms),
+    A1: rawCensus([
+      F_OFF,
+      ...ARMED.filter((l) => l !== PORT_OK),
+      "[stateos-port] shared pid=7 listeners=7,9 port=8099",
+    ]),
+  };
+  const s = preScoreChecks(records, shared, { shell: "C" });
+  assert.equal(s.verdict, "mislaunched");
+  assert.ok(/A1: mislaunched: port shared/.test(s.voidReason));
+  assert.equal(gateStatus(s.verdict), "VOID");
+  const unverified = {
+    ...gateCensus(arms),
+    C: rawCensus([F_TAIL, ...ARMED.filter((l) => l !== PORT_OK)]),
+  };
+  assert.ok(
+    /C: port unverified/.test(preScoreChecks(records, unverified, { shell: "C" }).voidReason),
+  );
+  // the census steps apply the same port rule
+  const s2 = census([
+    F_PROBE,
+    ...ARMED.filter((l) => l !== PORT_OK),
+    TAIL_CREATE,
+    restore(TAIL_HIT),
+    XCHECK_ROW,
+  ]);
+  assert.equal(checkStep("step2", s2).verdict, "VOID");
+});
+
+// ---- round 7: one shared slack for every exclusion attributable to C ----------------------------
+
+const ids24 = Array.from({ length: 24 }, (_, i) => `p${i}`);
+const mk24 = (arm, over = {}) => ({ arm, prompts: ids24.map((id) => row(id, over[id] ?? {})) });
+const lines24 = (c = ids24.map(() => tailLine())) => ({
+  A0: ids24.map(() => bLine()),
+  A1: ids24.map(() => bLine()),
+  C: c,
+  A5: [],
+  A3: [],
+});
+const gate24 = (cOver, restores = lines24()) => {
+  const records = [mk24("A0"), mk24("A1"), mk24("C", cOver), mk24("A5"), mk24("A3")];
+  assert.equal(
+    preScoreChecks(records, gateCensus(["A0", "A1", "C", "A5", "A3"]), { shell: "C" }),
+    null,
+  );
+  const pre = engagementAndDrops(records, restores, { shell: "C", minPrompts: 20 });
+  return { pre, v: preVerdict(pre, { shell: "C", minPrompts: 20 }) };
+};
+
+test("round 7 P1: B unreadable after a strict tail restore on p0, A unreadable on p1-p23 -> STOP", () => {
+  const parse = (failedAt) => ({
+    ok: false,
+    error: "23 logprobs ids for 24 completion tokens",
+    errorKind: "parse",
+    failedAt,
+  });
+  const cOver = Object.fromEntries(ids24.map((id, i) => [id, parse(i === 0 ? "B" : "A")]));
+  // C's log: one strict tail restore (p0's B); requests A of p1..p23 never reached a B
+  const { pre, v } = gate24(cOver, lines24([tailLine()]));
+  assert.equal(pre.slack, 4);
+  assert.equal(pre.cExcluded, 24);
+  assert.deepEqual(pre.cReasons, { "request B not parsed": 1, "request A not parsed": 23 });
+  assert.equal(pre.cExclusions[0].request, "B");
+  assert.equal(v.verdict, "shell-diverged");
+  assert.equal(gateStatus(v.verdict), "STOP");
+  assert.ok(/request A not parsed: 23/.test(v.voidReason));
+});
+
+test("round 7 P2: parseable garbage (C's request A differs) on p1-p23 -> STOP, never VOID", () => {
+  const cOver = Object.fromEntries(
+    ids24.map((id, i) =>
+      i === 0
+        ? [id, { ok: false, error: "garbled", errorKind: "parse", failedAt: "B" }]
+        : [id, { generated: [42, 42, 42, 42] }],
+    ),
+  );
+  const { pre, v } = gate24(cOver, lines24([tailLine()]));
+  assert.equal(pre.cExcluded, 24);
+  assert.equal(pre.cReasons["request A output differs from A0's"], 23);
+  assert.equal(v.verdict, "shell-diverged");
+  assert.equal(gateStatus(v.verdict), "STOP");
+});
+
+test("round 7 P3: C's request A differs on 5 of 24, 19 clean strict tail restores -> STOP (5 > 4)", () => {
+  const cOver = Object.fromEntries(
+    ids24.slice(0, 5).map((id) => [id, { generated: [42, 42, 42, 42] }]),
+  );
+  // C still sends A0's B on every prompt, so its log has a request-B line for each of the 24
+  const { pre, v } = gate24(cOver);
+  assert.equal(pre.tailRestores, 19);
+  assert.equal(pre.cExcluded, 5);
+  assert.equal(v.verdict, "shell-diverged");
+  // 4 of 24: tolerated by design, reported with the reason, then scored
+  const four = gate24(
+    Object.fromEntries(ids24.slice(0, 4).map((id) => [id, { generated: [42, 42, 42, 42] }])),
+  );
+  assert.equal(four.v, null);
+  assert.equal(four.pre.cExcluded, 4);
+  assert.equal(four.pre.tailRestores, 20);
+  assert.equal(four.pre.droppedCounts["C: request A output differs from A0's"], 4);
+});
+
+test("round 7: a genuine no-eligible-prompts case (A0 shows no accepted draft) is VOID", () => {
+  const ineligible = () => bLine({ prevRound: "root-only", prevNAcc: 0 });
+  const records = [mk24("A0"), mk24("A1"), mk24("C"), mk24("A5"), mk24("A3")];
+  const restores = {
+    ...lines24(ids24.map(() => bLine())),
+    A0: ids24.map(ineligible),
+    A1: ids24.map(ineligible),
+  };
+  const pre = engagementAndDrops(records, restores, { shell: "C", minPrompts: 20 });
+  assert.equal(pre.eligible, 0);
+  assert.equal(pre.cExcluded, 0);
+  assert.equal(pre.nonCExcluded, 24);
+  const v = preVerdict(pre, { shell: "C", minPrompts: 20 });
+  assert.equal(v.verdict, "not-engaged:no-eligible-prompts");
+  assert.equal(gateStatus(v.verdict), "VOID");
+  // but the same C behaviour where A0 shows eligible prompts is C's fault: STOP
+  const eligibleCase = engagementAndDrops(records, lines24(ids24.map(() => bLine())), {
+    shell: "C",
+    minPrompts: 20,
+  });
+  assert.equal(eligibleCase.cExcluded, 24);
+  assert.equal(preVerdict(eligibleCase, { shell: "C", minPrompts: 20 }).verdict, "shell-diverged");
+});
+
+test("N9: feedFiles resets per-log parser state (a pending tail at the end of log 1 never reaches log 2)", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stateos-reset-"));
+  try {
+    const write = (stem, body) => {
+      fs.writeFileSync(path.join(dir, `${stem}.err.log`), `${body.join("\n")}\n`);
+      fs.writeFileSync(path.join(dir, `${stem}.flags`), `${F_TAIL}\n`);
+      return path.join(dir, `${stem}.err.log`);
+    };
+    // log 1 ends right after a tail create (pending); log 2 starts with a restore and no create
+    const log1 = write("one", [...ARMED, TAIL_CREATE]);
+    const log2 = write("two", [...ARMED, restore(FLAG_OFF)]);
+    const c = await feedFiles([log1, log2]);
+    assert.equal(c.v2.restores.length, 1);
+    assert.equal(c.v2.restores[0].tailAvailable, false);
+    // the same lines in ONE log: the tail is pending at the restore
+    const both = await feedFiles([write("both", [...ARMED, TAIL_CREATE, restore(FLAG_OFF)])]);
+    assert.equal(both.v2.restores[0].tailAvailable, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("A1's request A differing from A0's is void-determinism, counted before any drop", {
@@ -835,48 +1030,6 @@ test("A1's request A differing from A0's is void-determinism, counted before any
 });
 // ---- round 6 ------------------------------------------------------------------------------------
 
-test("B2: C responses unreadable after strict tail restores are C diverging -> STOP (5/24 and 24/24)", () => {
-  const ids = Array.from({ length: 24 }, (_, i) => `p${i}`);
-  const mk = (arm, over = {}) => ({ arm, prompts: ids.map((id) => row(id, over[id] ?? {})) });
-  const parseFail = {
-    ok: false,
-    error: "23 logprobs ids for 24 completion tokens",
-    errorKind: "parse",
-  };
-  const run = (nBad) => {
-    const cOver = Object.fromEntries(ids.slice(0, nBad).map((id) => [id, { ...parseFail }]));
-    const records = [mk("A0"), mk("A1"), mk("C", cOver), mk("A5"), mk("A3")];
-    const restoresByArm = {
-      A0: ids.map(() => bLine()),
-      A1: ids.map(() => bLine()),
-      C: ids.map(() => tailLine()), // 24 strict tail restores in C's log
-      A5: [],
-      A3: [],
-    };
-    const pre = engagementAndDrops(records, restoresByArm, { shell: "C", minPrompts: 20 });
-    assert.equal(
-      preScoreChecks(records, gateCensus(["A0", "A1", "C", "A5", "A3"]), { shell: "C" }),
-      null,
-    );
-    return pre;
-  };
-  for (const nBad of [5, 24]) {
-    const pre = run(nBad);
-    // the parse-failed rows are bound through A0's fields: all 24 tails count as available and used
-    assert.equal(pre.tailAvailableAtB, 24);
-    assert.equal(pre.tailRestores, 24);
-    assert.equal(pre.unreadableAfterTail, nBad);
-    assert.equal(pre.slack, 4);
-    const v = preVerdict(pre, { shell: "C", minPrompts: 20 });
-    assert.equal(v.verdict, "shell-unreadable");
-    assert.equal(gateStatus(v.verdict), "STOP");
-  }
-  // within the slack (4/24): a counted drop, scoring proceeds
-  const ok = run(4);
-  assert.equal(preVerdict(ok, { shell: "C", minPrompts: 20 }), null);
-  assert.equal(ok.droppedCounts["C: response not parsed"], 4);
-});
-
 test("steps 1 and 2 are VOID when the log shows the server never served", () => {
   const noServe = [
     ...ARMED.filter((l) => l !== LISTENING),
@@ -908,17 +1061,17 @@ test("step 4: -ExtraArgs of the benign arms (and of C) are checked against the r
   const arms = ["A0", "A1", "C", "A5", "A3"];
   assert.equal(preScoreChecks(records, gateCensus(arms), { shell: "C" }), null);
   // benign arms launched without their perturbation: identical to A0 -> mislaunched (VOID)
-  const noA5 = { ...gateCensus(arms), A5: rawCensus([F_OFF]) };
+  const noA5 = { ...gateCensus(arms), A5: rawCensus([F_OFF, ...ARMED]) };
   const r = preScoreChecks(records, noA5, { shell: "C" });
   assert.equal(r.verdict, "mislaunched");
   assert.ok(/extra=''/.test(r.voidReason));
-  const wrongA3 = { ...gateCensus(arms), A3: rawCensus([flags(1, 0, 0, "-fa 1")]) };
+  const wrongA3 = { ...gateCensus(arms), A3: rawCensus([flags(1, 0, 0, "-fa 1"), ...ARMED]) };
   assert.equal(preScoreChecks(records, wrongA3, { shell: "C" }).verdict, "mislaunched");
   // C launched with -fa 0 is mislaunched too
-  const cFa0 = { ...gateCensus(arms), C: rawCensus([flags(1, 1, 0, "-fa 0")]) };
+  const cFa0 = { ...gateCensus(arms), C: rawCensus([flags(1, 1, 0, "-fa 0"), ...ARMED]) };
   assert.equal(preScoreChecks(records, cFa0, { shell: "C" }).verdict, "mislaunched");
   // whitespace in the recorded extra does not matter
-  const spaced = { ...gateCensus(arms), A5: rawCensus([flags(1, 0, 0, "  -no-fmoe   -no-fug ")]) };
+  const spaced = { ...gateCensus(arms), A5: rawCensus([flags(1, 0, 0, "  -no-fmoe   -no-fug "), ...ARMED]) };
   assert.equal(preScoreChecks(records, spaced, { shell: "C" }), null);
 });
 
