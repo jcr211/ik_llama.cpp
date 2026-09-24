@@ -164,3 +164,44 @@ Tests: `.lane/test-f11.cmd` exit 0 with `CUDA_VISIBLE_DEVICES=-1`: `test-stateos
 ctest 4/4 (`test-speculative-params`, `test-stateos-header`, `test-ple-hist`, `test-stateos-layout`).
 Not verified on GPU: `effective_model` on a live server, and the /list, CKPT-skip and flush paths. The GPU script
 tampers `effective_model` among the hard fields.
+
+### F11 review round (REVIEW-F11 = FIX-FIRST)
+
+- `4d44c638` **P1:** the CKPT per-record bound no longer depends on what the target slot holds at restore time.
+  - A checkpoint is a fixed partial state plus 8 B per cell of its source conversation, so the old bound refused valid
+    files as `state_corrupt`, or skipped their checkpoints, after a short conversation.
+  - The bound is now `stateos_ckpt_record_bound` = the current partial size + 8 B × slot `n_ctx` (the MAIN size when the
+    SWA window is compacted). It is overflow-safe and unit-tested: a 4K-conversation checkpoint against a 10-cell slot
+    and an empty one, and a full list of 32 long checkpoints within budget.
+  - `gpu-verify-l1.ps1` now asserts, after every identity round, `checkpoints_restored == checkpoints_saved` and
+    status `restored` (`identity_*.ckpt_ok`).
+  - This defect was only on this branch: 7c77724b does not contain `b29a940c`.
+- `1e94d160` **P2-1:** `effective_model` now covers startup control vectors (`--control-vector`,
+  `--control-vector-scaled`, `--control-vector-layer-range`, all in `params.control_vectors`).
+- `e2b76a3a` **P2-2, honest stamp.** Design: a server-wide adapter generation, bumped on SET_LORA and on every
+  control-vector apply. Each slot records the generation its KV was built under.
+  - When the stamp is set: a prompt that starts from an empty KV, erase or clear, and a verified restore.
+  - A RAM prompt-cache load sets it to "unknown" unless the adapter set never changed since startup.
+  - A save whose slot generation differs answers 409 `state_adapters_changed`.
+  - Why this over clearing every slot on an adapter change: it is equally correct for State-OS and does not change
+    serving behaviour outside it. The predicate is unit-tested.
+- `fea27876` **P2-3:** names ending (case-insensitively) in `.stateos.tmp` are refused with 409
+  `state_name_reserved` for `/slots` save and restore, and as a `/rename_prompt` destination. The startup cleanup
+  therefore never meets a committed state.
+- `60f9c9a4` **P3s:**
+  - Before the flush and rename, the finished temp file must be exactly `stateos_container_size(header, sections)`
+    bytes, so a temp deleted and recreated mid-save cannot replace the last good state.
+  - The committed-save fallback reply carries `stateos.token_sha256`.
+- **7c77724b files:** states saved by tonight's acceptance binary (7c77724b) have no `effective_model` field. This
+  branch refuses them with 409 `state_refused`, `refused_field: effective_model`, `saved=<missing>`. This is
+  deliberate: that build could not know the adapter set. Their `kv_geometry` still matches, because the layout
+  renderer is byte-identical. Re-save with this build.
+- **Left as follow-ups (review P3):**
+  - `effective_model` over-refuses harmless cases: `--lora-init-without-apply`, and LoRA paths spelled differently.
+  - The flush has no sharing-violation retry, and POSIX has no directory fsync after the rename.
+  - One layout golden taken from a real 7c77724b descriptor.
+  - `llama_state_layout_fmt`'s 511-byte fragment limit (assert or grow it).
+- Build: before every build a process check showed no nvcc, cl, cmake or ninja from another lane.
+  `.lane/build-f11.cmd` exit 0.
+- Tests: `.lane/test-f11.cmd` exit 0 with `CUDA_VISIBLE_DEVICES=-1`: `test-stateos-header` 264 checks, 0 failures;
+  ctest 4/4.
