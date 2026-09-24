@@ -10,7 +10,10 @@
 //      request A never chooses a tail (a tail sits at <= last cached - 2 of the PREVIOUS prompt's
 //      generation, and A diverges near the prompt start), and A0, A1 and C take the same restore path
 //      for A (same prompts in the same order); the tail writer's extra eviction cannot change C's list
-//      below the 32-checkpoint cap. Every arm sends the same request sequence;
+//      below the 32-checkpoint cap. Every arm sends the same request sequence. Caveat: the ngram-mod
+//      draft table is server-lifetime shared state, so after a harmless B divergence C's later
+//      request-A drafts can differ from A0's; outputs stay greedy-exact in principle (drafts affect
+//      speed only), and if they do not, the determinism control (A1 vs A0) returns void-determinism;
 //   2. request A: greedy, max_tokens = --n-first, cache_prompt: true -> generated ids g[0..G-1].
 //      After A the slot caches prompt + g[0..G-2] (the last sampled token is never decoded);
 //   3. request B: the forced prompt, built ONCE from arm A0's request-A output:
@@ -36,16 +39,24 @@
 //     arm: DIV_LOG only; all: PLE_HIST_REWIND + PLE_HIST_LOG; -ExtraArgs: A5 '-no-fmoe -no-fug', A3
 //     '-fa 0', all others none), or with no flags record, = `mislaunched` (VOID) - decided from the
 //     recorded flags only, never from the lever's own output; a `[ple-hist] reset` at pos > 0 in any
-//     arm = `ple-hist` (STOP); a missing/failed port record = `mislaunched` (VOID); no `[ple-hist] set`
-//     line in an arm = `ple-hist` (STOP);
-//   - every prompt is scorable or excluded once (engagementAndDrops). A restore line binds to a row by
+//     arm = `ple-hist` (STOP); a <LogStem>.port record that is missing or does not name the model port
+//     with exactly one listener PID equal to <LogStem>.pid = `mislaunched` (VOID; log lines are never
+//     port evidence); no `[ple-hist] set` line in an arm = `ple-hist` (STOP);
+//   - missing arm records (A0, A1, C, A5, A3 are all required): refuse with an error (exit 1);
+//   - then the determinism control, BEFORE any C attribution: A1 differing from A0 on ANY prompt where
+//     both rows are valid (request A ids, or B's continuation) = `void-determinism` (VOID);
+//   - one validity rule (rowProblem) for engagement, determinism and scoring: a failed request, or a
+//     successful one with fewer than 2 request-A / 1 request-B tokens, is an invalid row;
+//   - every prompt is scorable or excluded once (engagementAndDrops). Invalid A0/A1 rows are control
+//     failures, checked before C and never charged to C; more of them than the slack, with too few
+//     scorable prompts left, = `insufficient-control` (VOID). A restore line binds to a row by
 //     request order AND content: n_past == the forced index, the cache window's marked token ==
 //     g_A0[G-2] and the prompt window's marked token == X. A C row whose request B reached the server
 //     but failed is bound with A0's row fields. Benign arms reach the same B from their own cache, so
 //     their restore lines are not constrained;
 //   - ONE shared slack (prompts - min-prompts, 24 - 20 = 4) for every exclusion attributable to arm C,
-//     whatever the reason: C's request A differs from A0's (where A1 reproduced A0), C's request A or B
-//     could not be parsed or failed with an HTTP/connection error, C's B differs, or, on a prompt A0's
+//     whatever the reason: C's request A differs from A0's (where A1 reproduced A0), C's row is invalid
+//     (request A or B not parsed, HTTP/connection error, too few tokens), C's B differs, or, on a prompt A0's
 //     line shows as eligible (prev_round=drafted, prev_n_acc >= 1), C's request-B restore line is
 //     missing, not at tail_dist=1, or not a strict tail restore (chosen_origin=tail, outcome=restored,
 //     reason=tail). Each is reported with its prompt, request (A or B) and reason. More than the slack =
@@ -53,11 +64,10 @@
 //   - exclusions NOT attributable to C (A0 or A1 problems, A0 showing no eligible tail, a benign arm's
 //     different B) leaving fewer than --min-prompts scorable strict tail restores =
 //     `not-engaged:no-eligible-prompts` (VOID);
-//   - A1's request A differing from A0's is spec-on nondeterminism: void-determinism, counted before
-//     any drop;
 //   - verdicts: compatible-at-horizon = PASS (exit 0); shellWorse, cuda-errors, ple-hist,
-//     shell-diverged = STOP (exit 2); insufficient-sample, void-determinism, mislaunched and
-//     not-engaged:no-eligible-prompts = VOID (exit 3): the gate did not answer, not a C1 kill.
+//     shell-diverged = STOP (exit 2); insufficient-sample, void-determinism, mislaunched,
+//     insufficient-control and not-engaged:no-eligible-prompts = VOID (exit 3): the gate did not
+//     answer, not a C1 kill. A missing arm record or any other refusal to run = exit 1.
 //
 // Usage:
 //   node tools/stateos-tail-gate.mjs run --arm A0 --out <dir> [--url http://127.0.0.1:8099]
@@ -411,6 +421,72 @@ export function matchRestores(record, restores, reference = null) {
 const sameIds = (a, b) =>
   Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => v === b[i]);
 
+// request A must return >= 2 tokens (B replaces the second-to-last one); request B >= 1 (the v2 lib's
+// firstDivergence is invalid on an empty continuation)
+export const MIN_A_TOKENS = 2;
+export const MIN_B_TOKENS = 1;
+
+/**
+ * THE validity rule for an arm's row, shared by engagementAndDrops, the determinism check and score
+ * (so score never rejects a continuation that engagement counted as valid). null when valid, else
+ * {request: "A" | "B", reason, detail}. A successful response with too few tokens is invalid.
+ */
+export function rowProblem(row) {
+  if (!row) return { request: "A", reason: "no row in the arm record", detail: "" };
+  if (!row.ok) {
+    const request = row.failedAt ?? (row.errorKind === "parse" ? "B" : "A");
+    const what =
+      row.errorKind === "parse"
+        ? "not parsed"
+        : row.errorKind === "input"
+          ? "not sent (input error)"
+          : "HTTP/connection error";
+    return {
+      request,
+      reason: `request ${request} ${what}`,
+      detail: String(row.error ?? "").slice(0, 120),
+    };
+  }
+  const nA = Array.isArray(row.generated) ? row.generated.length : 0;
+  if (nA < MIN_A_TOKENS) {
+    return {
+      request: "A",
+      reason: `request A returned < ${MIN_A_TOKENS} tokens`,
+      detail: `${nA} tokens`,
+    };
+  }
+  const nB = Array.isArray(row.continuation) ? row.continuation.length : 0;
+  if (nB < MIN_B_TOKENS) {
+    return {
+      request: "B",
+      reason: `request B returned < ${MIN_B_TOKENS} tokens`,
+      detail: `${nB} tokens`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Determinism control (merged plan section 4 step 4): A1 must reproduce A0 on every prompt where both
+ * rows are valid - request A's ids, and B's continuation where both sent the same B. Returns the
+ * failing prompts [{id, request}]. Checked BEFORE any C attribution or slack: spec-on nondeterminism
+ * would otherwise show up as C differences.
+ */
+export function determinismFailures(records) {
+  const a0 = records.find((r) => r.arm === "A0");
+  const a1 = records.find((r) => r.arm === "A1");
+  if (!a0 || !a1) return [];
+  const out = [];
+  for (const p of a0.prompts) {
+    const q = a1.prompts.find((x) => x.id === p.id);
+    if (rowProblem(p) || rowProblem(q)) continue;
+    if (!sameIds(p.generated, q.generated)) out.push({ id: p.id, request: "A" });
+    else if (p.bSha === q.bSha && !sameIds(p.continuation, q.continuation))
+      out.push({ id: p.id, request: "B" });
+  }
+  return out;
+}
+
 // A0's request-B line shows the prompt in the class C1 targets: the final round of request A was a
 // drafted round with >= 1 accepted draft, so the spec shadow held a tail (tail distance 1 = eligible).
 export const eligibleInA0 = (r) => r.prevRound === "drafted" && r.prevNAcc >= 1;
@@ -418,13 +494,15 @@ export const eligibleInA0 = (r) => r.prevRound === "drafted" && r.prevNAcc >= 1;
 /**
  * Pre-scoring filter (round-7 structural rule). Every prompt is either scorable or excluded once, with
  * ONE reason, and every exclusion is either attributable to the shell arm C or not:
- *   NOT C (VOID territory): A0 has no valid row; A1's request A differs from A0's (determinism, which
- *     `score` counts first); A1 has no valid row; A0's or A1's request-B restore line is missing or has
- *     tail_dist != 1; a benign arm answered a different B; A0's line shows no eligible tail (no
- *     accepted draft in the final round) and C did not restore from a tail.
- *   C (checked only when A0's row is valid and A1 reproduced A0's request A): C has no row; C's request
- *     A or B failed with an HTTP/connection error; C's response to request A or B could not be parsed;
- *     C's request A differs from A0's; C's request B differs from A0's; on a prompt A0 shows as
+ *   NOT C (VOID territory): A0's or A1's row is invalid (rowProblem: a failed request, or too few
+ *     tokens) - a control failure, checked FIRST so a common outage is never charged to C; A1's request
+ *     A differs from A0's (determinism: gateRefusal returns void-determinism before this matters); A0's
+ *     or A1's request-B restore line is missing or has tail_dist != 1; a benign arm answered a
+ *     different B; A0's line shows no eligible tail (no accepted draft in the final round) and C did
+ *     not restore from a tail.
+ *   C (checked only when A0's and A1's rows are valid and A1 reproduced A0's request A): C's row is
+ *     invalid by the same rowProblem rule (no row, a failed or unparsed request A or B, too few
+ *     tokens); C's request A differs from A0's; C's request B differs from A0's; on a prompt A0 shows as
  *     eligible, C's request-B restore line is missing, has tail_dist != 1, or is not a strict tail
  *     restore. Each records the request that failed (A or B) and why.
  * All C exclusions count against ONE shared slack (prompts - minPrompts). preVerdict: more than the
@@ -465,40 +543,34 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
         : null;
   let tailRestores = 0;
   let eligible = 0;
+  let controlExcluded = 0;
   for (const p of a0.prompts) {
     const id = p.id;
     const a0Line = matched.A0[id];
     if (a0Line && a0Line.tailDist === 1 && eligibleInA0(a0Line)) eligible += 1;
-    if (!p.ok) {
-      exclude(id, false, null, "A0: no valid row");
+    // the controls first: a prompt without a valid A0 AND A1 row is a control failure, never C's
+    const a0Bad = rowProblem(p);
+    if (a0Bad) {
+      controlExcluded += 1;
+      exclude(id, false, null, `A0: invalid control row (${a0Bad.reason})`, a0Bad.detail);
       continue;
     }
     const a1Row = rowOf("A1", id);
-    if (a1Row?.ok && !sameIds(a1Row.generated, p.generated)) {
+    const a1Bad = rowProblem(a1Row);
+    if (a1Bad) {
+      controlExcluded += 1;
+      exclude(id, false, null, `A1: invalid control row (${a1Bad.reason})`, a1Bad.detail);
+      continue;
+    }
+    if (!sameIds(a1Row.generated, p.generated)) {
       exclude(id, false, null, "A1: request A differs from A0's (determinism)");
       continue;
     }
-    // C, row level: whatever went wrong on C's own requests
+    // C, row level: whatever went wrong on C's own requests (same validity rule as score)
     const cRow = rowOf(shell, id);
-    if (!cRow) {
-      exclude(id, true, "A", "no row in the arm record");
-      continue;
-    }
-    if (!cRow.ok) {
-      const request = cRow.failedAt ?? (cRow.errorKind === "parse" ? "B" : "A");
-      const what =
-        cRow.errorKind === "parse"
-          ? "not parsed"
-          : cRow.errorKind === "input"
-            ? "not sent (input error)"
-            : "HTTP/connection error";
-      exclude(
-        id,
-        true,
-        request,
-        `request ${request} ${what}`,
-        String(cRow.error ?? "").slice(0, 120),
-      );
+    const cBad = rowProblem(cRow);
+    if (cBad) {
+      exclude(id, true, cBad.request, cBad.reason, cBad.detail);
       continue;
     }
     if (!sameIds(cRow.generated, p.generated)) {
@@ -513,10 +585,6 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
     const a0Problem = lineProblem(a0Line);
     if (a0Problem) {
       exclude(id, false, null, `A0: ${a0Problem}`);
-      continue;
-    }
-    if (!a1Row?.ok) {
-      exclude(id, false, null, "A1: no valid row");
       continue;
     }
     const a1Problem = lineProblem(matched.A1?.[id]);
@@ -569,6 +637,7 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
     cExclusions,
     nonCExcluded: drop.size - cExclusions.length,
     nonCReasons,
+    controlExcluded,
     drop,
     droppedCounts,
     droppedPrompts: drop.size,
@@ -580,7 +649,8 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
  *   - more C-attributable exclusions than the shared slack: `shell-diverged` (STOP), with the
  *     per-reason breakdown and each prompt's failed request;
  *   - fewer than minPrompts scorable strict tail restores, with the C exclusions within the slack: the
- *     shortfall is not C's, `not-engaged:no-eligible-prompts` (VOID).
+ *     shortfall is not C's: `insufficient-control` (VOID) when invalid A0/A1 rows alone exceed the
+ *     slack, else `not-engaged:no-eligible-prompts` (VOID).
  */
 export function preVerdict(pre, { shell, minPrompts }) {
   const breakdown = (o) =>
@@ -595,10 +665,50 @@ export function preVerdict(pre, { shell, minPrompts }) {
     };
   }
   if (pre.engaged) return null;
+  if (pre.controlExcluded > pre.slack) {
+    return {
+      verdict: "insufficient-control",
+      voidReason: `${pre.controlExcluded} prompt(s) without a valid A0/A1 control row (slack ${pre.slack}): ${breakdown(pre.nonCReasons)}; the gate did not answer`,
+    };
+  }
   return {
     verdict: "not-engaged:no-eligible-prompts",
     voidReason: `only ${pre.tailRestores} scorable strict tail restores in ${shell} (< ${minPrompts}); ${pre.nonCExcluded} exclusion(s) not attributable to ${shell} (${breakdown(pre.nonCReasons)}), ${pre.cExcluded} attributable to ${shell} within the slack: the gate did not answer`,
   };
+}
+
+/**
+ * Everything before scoring, in the coordinator's order (round 8). Throws (exit 1) unless the records of
+ * A0, A1, the shell arm and every benign arm all exist. Then:
+ *   1. preScoreChecks (CUDA STOP, flags VOID, PLE STOP, port VOID);
+ *   2. determinism: A1 differing from A0 on ANY prompt with valid rows (request A, or B's continuation)
+ *      = `void-determinism` (VOID; the plan's fallback is one rerun with speculation off) - BEFORE any C
+ *      attribution, so spec-on nondeterminism is never charged to C;
+ *   3. preVerdict (C exclusions vs the shared slack, engagement).
+ * Returns {pre, refused}: refused is a verdict object, or null to score with pre.drop.
+ */
+export function gateRefusal(records, censusByArm, restoresByArm, { shell, benign, minPrompts }) {
+  const have = new Set(records.map((r) => r.arm));
+  const missing = ["A0", "A1", shell, ...benign].filter((a) => !have.has(a));
+  if (missing.length) {
+    throw new Error(
+      `refusing to score: missing arm record(s) ${missing.map((a) => `arm-${a}.json`).join(", ")} (A0, A1, ${shell} and ${benign.join(", ")} are all required)`,
+    );
+  }
+  const pre = engagementAndDrops(records, restoresByArm, { shell, minPrompts });
+  const checks = preScoreChecks(records, censusByArm, { shell });
+  if (checks) return { pre, refused: checks };
+  const nd = determinismFailures(records);
+  if (nd.length) {
+    return {
+      pre,
+      refused: {
+        verdict: "void-determinism",
+        voidReason: `A1 differed from A0 on ${nd.length} prompt(s) (${nd.map((f) => `${f.id}@${f.request}`).join(", ")}): spec-on greedy is not deterministic; rerun once with speculation off in all arms (merged plan section 4 step 4)`,
+      },
+    };
+  }
+  return { pre, refused: preVerdict(pre, { shell, minPrompts }) };
 }
 
 /** Pure scoring over arm records, mirroring the v2 campaign's per-prompt pairing. */
@@ -614,7 +724,7 @@ export function score(
   const rowOf = (arm, promptId) => byArm.get(arm).prompts.find((p) => p.id === promptId);
   const contOf = (arm, promptId) => {
     const row = rowOf(arm, promptId);
-    return row && row.ok ? row.continuation : null;
+    return rowProblem(row) ? null : row.continuation; // the same validity rule as engagement
   };
   const promptIds = byArm.get("A0").prompts.map((p) => p.id);
   const rows = [];
@@ -626,9 +736,8 @@ export function score(
     const a0RowA = rowOf("A0", id);
     const a1RowA = rowOf("A1", id);
     if (
-      a0RowA?.ok &&
-      a1RowA?.ok &&
-      Array.isArray(a0RowA.generated) &&
+      !rowProblem(a0RowA) &&
+      !rowProblem(a1RowA) &&
       !sameIds(a1RowA.generated, a0RowA.generated)
     ) {
       determinismFailures += 1;
@@ -643,7 +752,7 @@ export function score(
     const shas = new Set(
       ["A0", "A1", shell, ...benign]
         .map((a) => rowOf(a, id))
-        .filter((r) => r?.ok)
+        .filter((r) => !rowProblem(r))
         .map((r) => r.bSha ?? null),
     );
     if (shas.size > 1 || shas.has(null)) {
@@ -824,14 +933,13 @@ async function runScore(o) {
     censusByArm[r.arm] = await feedFiles([o.armLogs[r.arm]]);
     restoresByArm[r.arm] = censusByArm[r.arm].v2.restores;
   }
-  const pre = engagementAndDrops(records, restoresByArm, {
+  // throws (exit 1) unless A0, A1, the shell arm and every benign arm have records
+  const { pre, refused } = gateRefusal(records, censusByArm, restoresByArm, {
     shell: o.shell,
+    benign: o.benign,
     minPrompts: o.minPrompts,
   });
   const horizon = records[0]?.horizon ?? o.horizon;
-  const refused =
-    preScoreChecks(records, censusByArm, { shell: o.shell }) ??
-    preVerdict(pre, { shell: o.shell, minPrompts: o.minPrompts });
   const result = refused
     ? { ...refused, rule: { outcome: "not-scored", reason: "" } }
     : score(records, lib, {
@@ -860,6 +968,7 @@ async function runScore(o) {
       shellExclusions: pre.cExclusions,
       otherExcluded: pre.nonCExcluded,
       otherReasons: pre.nonCReasons,
+      controlExcluded: pre.controlExcluded,
     },
     droppedPrompts: pre.droppedPrompts,
     droppedCounts: pre.droppedCounts,

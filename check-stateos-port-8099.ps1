@@ -5,7 +5,9 @@
 #   [stateos-port] ok pid=<launched> listeners=<pid list>          exactly one listener, the launched PID
 #   [stateos-port] shared pid=<launched> listeners=<pid list>      another process listens too
 #   [stateos-port] not-owned pid=<launched> listeners=<pid list>   the launched PID does not listen
-# The census and the gate read it: anything but "ok" (or no .port file) = VOID "mislaunched".
+# The census and the gate read ONLY this file (never log lines) and check it against <LogStem>.pid:
+# anything but "ok" with port=8099 and exactly one listener equal to the launched PID (or no .port or
+# .pid file) = VOID "mislaunched".
 # Exit 0 when ok, 3 otherwise.
 param(
     [Parameter(Mandatory = $true)][string]$LogStem,

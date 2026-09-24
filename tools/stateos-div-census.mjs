@@ -108,9 +108,45 @@ export function flagsMismatch(flags, required, problem = null) {
   return bad.length ? `wrong flags: ${bad.join(", ")}` : null;
 }
 
-/** <LogStem>.flags next to <LogStem>.err.log (the launcher writes it before the server starts). */
+/** <LogStem>.port: written by check-stateos-port-8099.ps1 after the launch (the ONLY port evidence). */
 export function portSidecarOf(logPath) {
   return logPath.replace(/\.err\.log$/i, "").replace(/\.log$/i, "") + ".port";
+}
+
+/** <LogStem>.pid: the launched server's PID, written by launch-stateos-tail-8099.ps1. */
+export function pidSidecarOf(logPath) {
+  return logPath.replace(/\.err\.log$/i, "").replace(/\.log$/i, "") + ".pid";
+}
+
+// the port every W-SV2 server is launched on (launch-stateos-tail-8099.ps1 --port)
+export const MODEL_PORT = 8099;
+
+/**
+ * Validate a <LogStem>.port record against <LogStem>.pid. Returns null when the record says ok, names
+ * the model port, lists exactly one listener PID and that PID is the launched one; else the problem.
+ * portText / pidText: the files' contents (null = file missing).
+ */
+export function portRecordProblem(portText, pidText, port = MODEL_PORT) {
+  if (portText == null)
+    return "port unverified (no <LogStem>.port record: run check-stateos-port-8099.ps1 after the launch)";
+  if (pidText == null) return "port unverified (no <LogStem>.pid record of the launched PID)";
+  const lines = portText.split(/\r?\n/).filter((l) => l.trim() !== "");
+  const m =
+    lines.length === 1 &&
+    /^\[stateos-port\] (\S+) pid=(\d+) listeners=([\d,]*) port=(\d+)\s*$/.exec(lines[0]);
+  if (!m) return `malformed port record: ${JSON.stringify(portText.trim().slice(0, 200))}`;
+  const [, state, pid, listenerList, recPort] = m;
+  const launched = pidText.trim();
+  const listeners = listenerList.split(",").filter(Boolean);
+  const bad = [];
+  if (state !== "ok") bad.push(`state=${state}`);
+  if (Number(recPort) !== port) bad.push(`port=${recPort} (need ${port})`);
+  if (!/^\d+$/.test(launched) || pid !== launched) bad.push(`pid=${pid} (launched ${launched})`);
+  if (listeners.length !== 1 || listeners[0] !== launched)
+    bad.push(`listeners=${listenerList} (need exactly ${launched})`);
+  return bad.length
+    ? `mislaunched: port shared or not owned by the launched PID (${bad.join(", ")})`
+    : null;
 }
 
 export function flagsSidecarOf(logPath) {
@@ -196,13 +232,9 @@ export function feed(c, line) {
     c.flags = flags;
     return;
   }
-  if (line.startsWith("[stateos-port]")) {
-    c.port = {
-      ok: /^\[stateos-port\] ok\b/.test(line),
-      detail: line.slice("[stateos-port]".length).trim(),
-    };
-    return;
-  }
+  // [stateos-port] lines are NOT read from logs: port evidence comes only from the <LogStem>.port
+  // sidecar, validated against <LogStem>.pid (feedFiles -> portRecordProblem)
+  if (line.startsWith("[stateos-port]")) return;
   if (/HTTP server listening/.test(line)) {
     c.serverListening = true;
     return;
@@ -492,11 +524,14 @@ export function summarize(c) {
 /** null when the port record says the launched PID was the only listener, else why not. */
 export function portProblemOf(c) {
   if (c.portProblem) return c.portProblem;
-  if (!c.port)
-    return "port unverified (no [stateos-port] record: run check-stateos-port-8099.ps1 after the launch)";
-  return c.port.ok
-    ? null
-    : `mislaunched: port shared or not owned by the launched PID (${c.port.detail})`;
+  if (!c.port) return portRecordProblem(null, null);
+  return c.port.ok ? null : c.port.detail;
+}
+
+/** Record one log's port evidence (the <LogStem>.port / .pid contents, null = missing) in `c`. */
+export function setPortRecord(c, portText, pidText) {
+  const problem = portRecordProblem(portText, pidText);
+  c.port = { ok: problem === null, detail: problem ?? portText.trim() };
 }
 
 const miss = (name, ok, detail) => ({ name, ok: Boolean(ok), detail });
@@ -776,10 +811,9 @@ export async function feedFiles(files) {
     if (fs.existsSync(sidecar)) {
       for (const line of fs.readFileSync(sidecar, "utf8").split(/\r?\n/)) feed(c, line);
     }
-    const portFile = portSidecarOf(f);
-    if (fs.existsSync(portFile)) {
-      for (const line of fs.readFileSync(portFile, "utf8").split(/\r?\n/)) feed(c, line);
-    }
+    // port evidence: ONLY the <LogStem>.port sidecar, validated against <LogStem>.pid
+    const readOrNull = (file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null);
+    setPortRecord(c, readOrNull(portSidecarOf(f)), readOrNull(pidSidecarOf(f)));
     const rl = readline.createInterface({ input: fs.createReadStream(f), crlfDelay: Infinity });
     for await (const line of rl) feed(c, line);
     const out = stdoutLogOf(f);
@@ -805,11 +839,7 @@ export async function feedFiles(files) {
       : null;
   c.portProblem = portBad.length
     ? portBad
-        .map((p) =>
-          p.port
-            ? `${p.file}: mislaunched: port shared or not owned by the launched PID (${p.port.detail})`
-            : `${p.file}: port unverified (no <LogStem>.port record)`,
-        )
+        .map((p) => `${p.file}: ${p.port ? p.port.detail : portRecordProblem(null, null)}`)
         .join("; ")
     : null;
   const missing = perFile.filter((p) => !p.flags).map((p) => p.file);

@@ -15,13 +15,17 @@ import {
   feedFiles,
   newCensus,
   parseFields,
+  portRecordProblem,
+  setPortRecord,
   summarize,
 } from "./stateos-div-census.mjs";
 import {
   DEFAULT_LIB,
   engagementAndDrops,
   forcedPrompt,
+  gateRefusal,
   gateStatus,
+  rowProblem,
   preScoreChecks,
   preVerdict,
   matchRestores,
@@ -138,10 +142,11 @@ test("stateos-div lines: tail availability, hit rate, gaps, crosscheck rows", ()
 // <LogStem>.port sidecar) and an armed PLE-history repair
 const LISTENING =
   'INFO [                    main] HTTP server listening | tid="1" timestamp=1 hostname="0.0.0.0" port="8099"';
+// the <LogStem>.port / <LogStem>.pid contents of a correctly launched server (the only port evidence)
 const PORT_OK = "[stateos-port] ok pid=1 listeners=1 port=8099";
+const PID = "1";
 const ARMED = [
   LISTENING,
-  PORT_OK,
   "[ple-hist] set seq=0 next_pos=1996 n_prev=2 site=server-resume",
   "[ple-hist] reset seq=0 pos=0 next_pos=-1",
 ];
@@ -155,9 +160,11 @@ const FLAG_OFF =
 const XCHECK_ROW =
   "[ckpt-xcheck] origin=tail slot=0 task=8 x=1998 tail_pos=1995 ref_origin=gen-interval ref_pos=1800 layer=3 type=0 n_bitequal=10 n=20 relL2=0.05";
 
-const census = (lines) => {
+// port = [<LogStem>.port text, <LogStem>.pid text] as feedFiles reads them (null = no record)
+const census = (lines, port = [PORT_OK, PID]) => {
   const c = newCensus();
   for (const l of lines) feed(c, l);
+  if (port) setPortRecord(c, port[0], port[1]);
   return summarize(c);
 };
 
@@ -603,6 +610,7 @@ test("score: void on A1 != A0, otherwise the v2 rule; drops and differing B prom
     prompts: conts.map((c, i) => ({
       id: `p${i}`,
       ok: true,
+      generated: [10, 11, 7, 13], // a valid request A (rowProblem needs >= 2 tokens)
       continuation: c,
       bSha: bShas[i] ?? "b",
     })),
@@ -706,10 +714,11 @@ test("step 3: T1 recorded with the crosscheck is VOID; a CUDA error is STOP even
   assert.equal(checkStep("step2", census([...ARMED, "CUDA error: x"])).verdict, "STOP");
 });
 
-// raw census state with a flags record, as feedFiles returns it
-const rawCensus = (lines) => {
+// raw census state with a flags record and a port record, as feedFiles returns it
+const rawCensus = (lines, port = [PORT_OK, PID]) => {
   const c = newCensus();
   for (const l of lines) feed(c, l);
+  if (port) setPortRecord(c, port[0], port[1]);
   return c;
 };
 const armFlags = (a, shell) =>
@@ -837,32 +846,66 @@ test("N10/N8: step 4 PLE checks (STOP) and the port check (VOID) per arm", () =>
   // a second listener on the port, or no port record: mislaunched (VOID)
   const shared = {
     ...gateCensus(arms),
-    A1: rawCensus([
-      F_OFF,
-      ...ARMED.filter((l) => l !== PORT_OK),
-      "[stateos-port] shared pid=7 listeners=7,9 port=8099",
-    ]),
+    A1: rawCensus([F_OFF, ...ARMED], ["[stateos-port] shared pid=7 listeners=7,9 port=8099", "7"]),
   };
   const s = preScoreChecks(records, shared, { shell: "C" });
   assert.equal(s.verdict, "mislaunched");
   assert.ok(/A1: mislaunched: port shared/.test(s.voidReason));
   assert.equal(gateStatus(s.verdict), "VOID");
-  const unverified = {
-    ...gateCensus(arms),
-    C: rawCensus([F_TAIL, ...ARMED.filter((l) => l !== PORT_OK)]),
-  };
+  const unverified = { ...gateCensus(arms), C: rawCensus([F_TAIL, ...ARMED], null) };
   assert.ok(
     /C: port unverified/.test(preScoreChecks(records, unverified, { shell: "C" }).voidReason),
   );
   // the census steps apply the same port rule
-  const s2 = census([
-    F_PROBE,
-    ...ARMED.filter((l) => l !== PORT_OK),
-    TAIL_CREATE,
-    restore(TAIL_HIT),
-    XCHECK_ROW,
-  ]);
+  const s2 = census([F_PROBE, ...ARMED, TAIL_CREATE, restore(TAIL_HIT), XCHECK_ROW], null);
   assert.equal(checkStep("step2", s2).verdict, "VOID");
+});
+
+test("round 8 (Sol nit): port evidence is ONLY the .port sidecar, validated against .pid", async () => {
+  // contents: ok + model port + exactly one listener == the launched PID; anything else is a problem
+  assert.equal(portRecordProblem(PORT_OK, PID), null);
+  assert.equal(portRecordProblem(`${PORT_OK}\r\n`, "1\r\n"), null);
+  for (const [portText, pidText] of [
+    ["[stateos-port] ok pid=1 listeners=1 port=8101", "1"], // another port
+    ["[stateos-port] ok pid=1 listeners=1,2 port=8099", "1"], // two listeners
+    ["[stateos-port] ok pid=1 listeners=2 port=8099", "1"], // the listener is not the launched PID
+    ["[stateos-port] ok pid=1 listeners=1 port=8099", "5"], // .pid says another process
+    ["[stateos-port] ok pid=1 listeners=1 port=8099", null], // no .pid
+    [null, "1"], // no .port
+    ["[stateos-port] ok", "1"], // malformed
+    [`${PORT_OK}\n${PORT_OK}`, "1"], // more than one record
+  ]) {
+    assert.ok(portRecordProblem(portText, pidText), JSON.stringify([portText, pidText]));
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stateos-port-"));
+  try {
+    const log = (stem, body, port, pid) => {
+      const f = path.join(dir, `${stem}.err.log`);
+      fs.writeFileSync(f, `${body.join("\n")}\n`);
+      fs.writeFileSync(path.join(dir, `${stem}.flags`), `${F_TAIL}\n`);
+      if (port !== null) fs.writeFileSync(path.join(dir, `${stem}.port`), `${port}\n`);
+      if (pid !== null) fs.writeFileSync(path.join(dir, `${stem}.pid`), `${pid}\n`);
+      return f;
+    };
+    const good = await feedFiles([log("good", ARMED, PORT_OK, PID)]);
+    assert.equal(summarize(good).portProblem, null);
+    // an ok line inside the LOG is never port evidence, with or without a failing sidecar
+    const inLog = await feedFiles([log("inlog", [...ARMED, PORT_OK], null, PID)]);
+    assert.ok(/port unverified/.test(summarize(inLog).portProblem));
+    const masked = await feedFiles([
+      log(
+        "masked",
+        [...ARMED, PORT_OK],
+        "[stateos-port] shared pid=1 listeners=1,9 port=8099",
+        PID,
+      ),
+    ]);
+    assert.ok(/port shared/.test(summarize(masked).portProblem));
+    const wrongPid = await feedFiles([log("wrongpid", ARMED, PORT_OK, "77")]);
+    assert.ok(/launched 77/.test(summarize(wrongPid).portProblem));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ---- round 7: one shared slack for every exclusion attributable to C ----------------------------
@@ -961,6 +1004,105 @@ test("round 7: a genuine no-eligible-prompts case (A0 shows no accepted draft) i
   });
   assert.equal(eligibleCase.cExcluded, 24);
   assert.equal(preVerdict(eligibleCase, { shell: "C", minPrompts: 20 }).verdict, "shell-diverged");
+});
+
+// ---- round 8: determinism before C attribution, control failures, one validity rule, all arms ----
+
+const ARMS = ["A0", "A1", "C", "A5", "A3"];
+const OPTS = { shell: "C", benign: ["A5", "A3"], minPrompts: 20 };
+const refuse24 = (over = {}, restores = lines24()) =>
+  gateRefusal(
+    ARMS.map((a) => mk24(a, over[a] ?? {})),
+    gateCensus(ARMS),
+    restores,
+    OPTS,
+  );
+const onIds = (ids, o) => Object.fromEntries(ids.map((id) => [id, { ...o }]));
+const OTHER_A = { generated: [42, 42, 42, 42] };
+const OTHER_B = { continuation: [1, 2, 3, 9, 9, 9, 9, 9] };
+
+test("round 8 (Opus S1/S1b/S3): A1 != A0 is void-determinism BEFORE any C attribution", () => {
+  // control: all clean -> scored
+  assert.equal(refuse24().refused, null);
+  // S1: A1's request A differs on p0, C's request A differs on p1-p5 (5 > slack 4)
+  const s1 = refuse24({ A1: { p0: OTHER_A }, C: onIds(ids24.slice(1, 6), OTHER_A) }).refused;
+  assert.equal(s1.verdict, "void-determinism");
+  assert.equal(gateStatus(s1.verdict), "VOID");
+  assert.ok(/p0@A/.test(s1.voidReason));
+  // S1b: A1's B continuation differs on p0 (its A matches), C's request A differs on p1-p5
+  const s1b = refuse24({ A1: { p0: OTHER_B }, C: onIds(ids24.slice(1, 6), OTHER_A) }).refused;
+  assert.equal(s1b.verdict, "void-determinism");
+  assert.ok(/p0@B/.test(s1b.voidReason));
+  // S3: A1's B continuation differs on p0 and C's request A differs on p0 (a drop would hide it)
+  const s3 = refuse24({ A1: { p0: OTHER_B }, C: { p0: OTHER_A } }).refused;
+  assert.equal(s3.verdict, "void-determinism");
+  // hard checks still come first: a CUDA error in any arm is STOP even with A1 != A0
+  const cuda = gateRefusal(
+    ARMS.map((a) => mk24(a, a === "A1" ? { p0: OTHER_A } : {})),
+    { ...gateCensus(ARMS), C: rawCensus([F_TAIL, ...ARMED, "CUDA error: x"]) },
+    lines24(),
+    OPTS,
+  ).refused;
+  assert.equal(cuda.verdict, "cuda-errors");
+});
+
+test("round 8 (Sol bug 2): an invalid A1 row is a control failure, never charged to C", () => {
+  const http = { ok: false, error: "fetch failed", errorKind: "http", failedAt: "A" };
+  // a common outage: A1 AND C fail request A on all 24 prompts -> VOID (insufficient control), not STOP
+  const outage = refuse24({ A1: onIds(ids24, http), C: onIds(ids24, http) });
+  assert.equal(outage.pre.cExcluded, 0);
+  assert.equal(outage.pre.controlExcluded, 24);
+  assert.equal(outage.refused.verdict, "insufficient-control");
+  assert.equal(gateStatus(outage.refused.verdict), "VOID");
+  // an A1 parse failure on 3 prompts where C also failed: not C's; the other 21 score
+  const parse = { ok: false, error: "x", errorKind: "parse", failedAt: "B" };
+  const some = refuse24({ A1: onIds(ids24.slice(0, 3), parse), C: onIds(ids24.slice(0, 3), http) });
+  assert.equal(some.pre.cExcluded, 0);
+  assert.equal(some.refused, null);
+});
+
+test("round 8 (Sol bug 1): zero-token responses are invalid by the one rule shared with score", {
+  skip: !fs.existsSync(DEFAULT_LIB),
+}, async () => {
+  const lib = await import(pathToFileURL(DEFAULT_LIB).href);
+  // C returns 0 tokens on all 24 eligible B prompts (with strict tail restores in its log) -> STOP
+  const empty = refuse24({ C: onIds(ids24, { continuation: [] }) });
+  assert.equal(empty.pre.cExcluded, 24);
+  assert.deepEqual(empty.pre.cReasons, { "request B returned < 1 tokens": 24 });
+  assert.equal(empty.refused.verdict, "shell-diverged");
+  assert.equal(gateStatus(empty.refused.verdict), "STOP");
+  // a 1-token request A from C is invalid too
+  assert.equal(rowProblem(row("p0", { generated: [10] })).request, "A");
+  // A0/A1 returning 0 tokens is a control failure
+  const a0Empty = refuse24({ A0: onIds(ids24, { continuation: [] }) });
+  assert.equal(a0Empty.pre.cExcluded, 0);
+  assert.equal(a0Empty.refused.verdict, "insufficient-control");
+  // within the slack: engagement's drops and score agree; score never rejects a row engagement scored
+  const four = refuse24({ C: onIds(ids24.slice(0, 4), { continuation: [] }) });
+  assert.equal(four.refused, null);
+  const records = ARMS.map((a) =>
+    mk24(
+      a,
+      a === "C"
+        ? onIds(ids24.slice(0, 4), { continuation: [] })
+        : a === "A5" || a === "A3"
+          ? onIds(ids24, OTHER_B)
+          : {},
+    ),
+  ).map((r) => ({ ...r, horizon: 8 }));
+  const s = score(records, lib, { ...OPTS, horizon: 8, nMin: 1, drop: four.pre.drop });
+  assert.equal(s.rows.length, 20);
+  assert.equal(s.dropped.filter((d) => /invalid/.test(d.reason)).length, 0);
+});
+
+test("round 8 (Opus nit): refuse to score unless A0, A1, C, A5 and A3 records all exist", () => {
+  for (const missing of ARMS) {
+    const records = ARMS.filter((a) => a !== missing).map((a) => mk24(a));
+    assert.throws(
+      () => gateRefusal(records, gateCensus(ARMS), lines24(), OPTS),
+      new RegExp(`missing arm record\\(s\\) arm-${missing}\\.json`),
+    );
+  }
 });
 
 test("N9: feedFiles resets per-log parser state (a pending tail at the end of log 1 never reaches log 2)", async () => {
@@ -1071,7 +1213,10 @@ test("step 4: -ExtraArgs of the benign arms (and of C) are checked against the r
   const cFa0 = { ...gateCensus(arms), C: rawCensus([flags(1, 1, 0, "-fa 0"), ...ARMED]) };
   assert.equal(preScoreChecks(records, cFa0, { shell: "C" }).verdict, "mislaunched");
   // whitespace in the recorded extra does not matter
-  const spaced = { ...gateCensus(arms), A5: rawCensus([flags(1, 0, 0, "  -no-fmoe   -no-fug "), ...ARMED]) };
+  const spaced = {
+    ...gateCensus(arms),
+    A5: rawCensus([flags(1, 0, 0, "  -no-fmoe   -no-fug "), ...ARMED]),
+  };
   assert.equal(preScoreChecks(records, spaced, { shell: "C" }), null);
 });
 
