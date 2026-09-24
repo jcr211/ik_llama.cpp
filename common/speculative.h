@@ -42,7 +42,8 @@ struct common_speculative_checkpoint {
 
 // LONGSPEAR_SPEC_HOST_TIMING=1 (off by default): host microseconds of one verify round, printed as a
 // single [spec-host] line on stderr. restore_result is -1 when the round restored nothing (every
-// draft accepted); mtp_skip counts MTP draft skips since the previous verify round.
+// draft accepted); mtp_skip counts MTP draft skips since the previous verify round. K is the verified
+// batch, k_prop = K + clamp the batch the drafter proposed before the checkpoint-capacity clamp.
 struct common_speculative_host_timing {
     int     mode             = LLAMA_SPEC_CKPT_NONE;
     int     restore_result   = -1;
@@ -79,6 +80,11 @@ int common_speculative_ckpt_max_tokens_override();
 // first M-1 instead of falling back to a root-only batch that drops every draft. Returns how many
 // draft tokens to drop (0 when off or when the draft fits) and counts the clamp.
 int common_speculative_ckpt_clamp(common_speculative * spec, const llama_model * model, size_t n_draft);
+
+// the last draft (n_draft tokens) is verified only up to its first n_keep tokens: the drafting stage's
+// acceptance bookkeeping (ngram-mod / suffix low-acceptance streaks) and the draft statistics are
+// corrected to n_keep. Called by the clamp; public for tests.
+void common_speculative_truncate_draft(common_speculative * spec, size_t n_draft, size_t n_keep);
 
 struct common_speculative_draft_result {
     llama_tokens tokens;

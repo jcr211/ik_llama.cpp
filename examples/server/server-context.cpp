@@ -3603,7 +3603,8 @@ void server_context::add_sampled_tokens() {
             // LONGSPEAR_SPEC_CLAMP_TO_CKPT: fit the draft to the per-step checkpoint capacity
             if (const int n_drop = common_speculative_ckpt_clamp(slot.spec, model, draft.size()); n_drop > 0) {
                 draft.resize(draft.size() - n_drop);
-                if (!proposal_dists.empty()) {
+                // only shorten: a shorter vector must reach the mismatch check below unchanged
+                if (proposal_dists.size() > draft.size()) {
                     proposal_dists.resize(draft.size());
                 }
             }

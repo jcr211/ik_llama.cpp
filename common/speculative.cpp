@@ -218,6 +218,12 @@ struct common_speculative_state {
     }
 
     virtual void accept(uint16_t n_accepted) = 0;
+
+    // the caller verifies only the first n_keep tokens of the last draft (LONGSPEAR_SPEC_CLAMP_TO_CKPT),
+    // so acceptance bookkeeping must measure against that length
+    virtual void truncate_draft(size_t n_keep) {
+        GGML_UNUSED(n_keep);
+    }
 };
 
 struct common_speculative_state_mtp;
@@ -863,6 +869,10 @@ struct common_speculative_state_ngram_mod : public common_speculative_state {
         n_draft_last = result.size();
     }
 
+    void truncate_draft(size_t n_keep) override {
+        n_draft_last = std::min(n_draft_last, n_keep);
+    }
+
     void accept(uint16_t n_accepted) override {
         if (verbose) {
             LOG_INF("%s: accepted %d tokens from %zu drafted tokens\n", __func__, n_accepted, n_draft_last);
@@ -1080,6 +1090,10 @@ struct common_speculative_state_suffix : public common_speculative_state {
         n_draft_last = result.size();
     }
 
+    void truncate_draft(size_t n_keep) override {
+        n_draft_last = std::min(n_draft_last, n_keep);
+    }
+
     void accept(uint16_t n_accepted) override {
         if (n_draft_last == 0) {
             return;
@@ -1162,11 +1176,11 @@ void common_speculative_host_timing_emit(common_speculative * spec, int id_slot,
     }
     const common_speculative_host_timing & t = spec->host_timing;
     fprintf(stderr,
-            "[spec-host] slot=%d mode=%s K=%d accepted=%d restore_result=%s redecode_n=%d"
+            "[spec-host] slot=%d mode=%s K=%d k_prop=%d accepted=%d restore_result=%s redecode_n=%d"
             " ckpt_init_us=%lld ckpt_save_us=%lld cells_copy_us=%lld shadow_copy_us=%lld sync_us=%lld"
             " sampler_init_us=%lld sampler_clone_us=%lld restore_us=%lld redecode_us=%lld"
             " draft_host_us=%lld sample_us=%lld mtp_skip=%d clamp=%d xcheck=%d\n",
-            id_slot, common_speculative_ckpt_mode_name(t.mode), n_verify, n_accepted,
+            id_slot, common_speculative_ckpt_mode_name(t.mode), n_verify, n_verify + t.clamp, n_accepted,
             common_speculative_restore_result_name(t.restore_result), t.redecode_n,
             (long long) t.ckpt_init_us, (long long) t.ckpt_save_us, (long long) t.save_cells_us,
             (long long) t.save_shadow_us, (long long) t.save_sync_us,
@@ -1203,7 +1217,28 @@ int common_speculative_ckpt_clamp(common_speculative * spec, const llama_model *
     spec->n_ckpt_clamps++;
     spec->n_ckpt_clamped_tokens += (size_t) n_drop;
     spec->host_timing.clamp += n_drop;
+    common_speculative_truncate_draft(spec, n_draft, (size_t) (capacity - 1));
     return n_drop;
+}
+
+void common_speculative_truncate_draft(common_speculative * spec, size_t n_draft, size_t n_keep) {
+    if (spec == nullptr || spec->curr_impl == nullptr || n_keep >= n_draft) {
+        return;
+    }
+    common_speculative_state * impl = spec->curr_impl;
+
+    // the statistics counted the whole draft when it was generated; only n_keep of it is verified
+    impl->n_gen_tokens -= std::min(impl->n_gen_tokens, n_draft - n_keep);
+    for (size_t i = n_keep; i < n_draft && i < impl->drafted_by_position.size(); ++i) {
+        if (impl->drafted_by_position[i] > 0) {
+            impl->drafted_by_position[i]--;
+        }
+    }
+    if (spec->tuner && spec->tuner->enabled) {
+        spec->last_n_drafted = (int) n_keep;
+    }
+
+    impl->truncate_draft(n_keep);
 }
 
 static bool common_speculative_stage_chain_matches(
@@ -2828,7 +2863,22 @@ bool common_speculative_checkpoint_restore(
                 llama_spec_ckpt_xcheck_compare(ctx, seq_id, step);
             }
 
-            if (common_speculative_has_target_features(spec)) {
+            if (xcheck) {
+                // the probe's companion takes the per-step path's commit (the verify pass's hidden rows),
+                // so its MTP-skip count measures what a direct restore does, not what a replay does
+                if (common_speculative_has_target_features(spec) && !mtp_hidden_state_pre.empty()) {
+                    if (!common_speculative_commit_accepted_hidden_rows(
+                            spec,
+                            spec_type_used,
+                            seq_id,
+                            mtp_n_past_base,
+                            sampled_before,
+                            ids,
+                            mtp_hidden_state_pre)) {
+                        common_speculative_clear_sequence_hidden(spec, seq_id);
+                    }
+                }
+            } else if (common_speculative_has_target_features(spec)) {
                 std::vector<int32_t> redecoded_indices(n_re);
                 for (int j = 0; j < n_re; ++j) {
                     redecoded_indices[j] = j;

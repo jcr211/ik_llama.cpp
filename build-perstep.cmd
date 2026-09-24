@@ -14,7 +14,7 @@ set "SOURCE_DIR=%SOURCE_DIR:~0,-1%"
 set "BUILD_DIR=%SOURCE_DIR%/build-sl1"
 set "CUDA13_ROOT=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0"
 
-set "TARGETS=llama-server test-ple-perstep test-iqk-moe-chunks test-spec-ckpt-sampler"
+set "TARGETS=llama-server test-ple-perstep test-iqk-moe-chunks test-spec-ckpt-sampler test-spec-ckpt-clamp"
 if /i "%~1"=="server" set "TARGETS=llama-server"
 
 call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
