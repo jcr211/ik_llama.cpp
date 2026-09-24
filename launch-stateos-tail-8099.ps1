@@ -86,7 +86,10 @@ $spec = if ($SpecOff) { 'off' } else { 'on' }
 $flagsLine = '[stateos-flags] ' + ($flagParts -join ' ') + ' spec=' + $spec + ' logstem=' + $LogStem + " extra='" + $ExtraArgs + "'"
 Set-Content -Path $flagsPath -Value $flagsLine -Encoding ascii
 
-# -SpecOff (the step-4 spec-off fallback, merged plan section 4 step 4) drops both --spec-type drafters
+# -SpecOff (the step-4 spec-off fallback, merged plan section 4 step 4) drops both --spec-type drafters.
+# --spec-ckpt-mode gpu-fallback stays: without a --spec-type it is parsed and stored only
+# (common.cpp --spec-ckpt-mode), no stage chain means the slot never calls common_speculative_try_init
+# (server-context.cpp requested_spec), so llama_spec_ckpt_init never runs and startup does not fail.
 $specArgs = if ($SpecOff) { '' } else { ' --spec-type ngram-mod:n_min=4 --spec-type mtp:n_max=4' }
 $argsx = '-m "D:\AI\LLM Models\custom\Qwen3.8-Flash-Next-MXFP4moe-ngramQ8-MTP.gguf" --api-key "' + $key + '" -ngl 999 -ncmoe 37 -fa 1 -c 196608 -ub 512 -ctk q8_0 -ctv q8_0 -np 1 -t 24 -tb 32 --jinja --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --host 0.0.0.0 --port 8099' + $specArgs + ' --reasoning-budget 1024 --spec-ckpt-mode gpu-fallback -rtr -muge'
 if ($ExtraArgs -ne '') { $argsx = $argsx + ' ' + $ExtraArgs }

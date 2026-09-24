@@ -26,6 +26,7 @@ import {
   gateRefusal,
   gateStatus,
   rowProblem,
+  SPEC_OFF_LABEL,
   preScoreChecks,
   preVerdict,
   matchRestores,
@@ -508,6 +509,7 @@ const recMeta = (arm) => ({
   receipt: "receipt.json",
   url: "http://127.0.0.1:8099",
   logStem: `stem-${arm}`,
+  bRequest: { ignore_eos: true },
 });
 const row = (id, over = {}) => ({
   id,
@@ -1160,6 +1162,12 @@ test("round 9 (Opus E1: S1, S2, S2b, S3): inconsistent arm records are refused (
     (r) => (rec(r, "A5").url = "http://127.0.0.1:8101"),
     (r) => r.push({ ...mk24("A0"), arm: "A0-attempt1" }),
     (r) => (rec(r, "A5").logStem = "stem-A0"), // N3: A5's record must name A5's own server log
+    // round 10: request B's ignore_eos protocol must be identical (and current) in every arm
+    (r) => (rec(r, "A3").bRequest = {}),
+    (r) => delete rec(r, "C").bRequest,
+    (r) => {
+      for (const x of r) x.bRequest = { ignore_eos: false };
+    },
   ]) {
     const r = recs24();
     mutate(r);
@@ -1216,6 +1224,7 @@ test("round 9 (Opus N1/S4): A1's request-B failure is a control failure; its req
 test("round 9 (Opus N4): the spec-off fallback runs when EVERY arm is spec=off; mixed = mislaunched", () => {
   const off = gateRefusal(recs24(), gateCensus(ARMS, "C", "off"), lines24(), OPTS);
   assert.equal(off.specOff, true);
+  assert.equal(SPEC_OFF_LABEL, "spec-off fallback: determinism only; C1 not testable");
   assert.equal(off.refused, null);
   assert.equal(gateRefusal(recs24(), gateCensus(ARMS), lines24(), OPTS).specOff, false);
   const mixed = { ...gateCensus(ARMS), A3: rawCensus([armFlags("A3", "C", "off"), ...ARMED]) };

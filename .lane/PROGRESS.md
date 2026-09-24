@@ -56,6 +56,10 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
       horizon (EOS recorded, invalid for all arms), A1 request-B failure = control failure (its request A
       still checked for determinism), -SpecOff launcher switch + all-arms spec-off fallback, corrected
       ngram-mod note, full precedence list + pairwise test; node tools 41/41 (tools + launcher only)
+- [x] round 10 (coordinator rulings): request B sends ignore_eos in every arm (bRequest recorded and
+      required identical by checkRecords; EOS rule kept as backstop); spec-off fallback labelled
+      "spec-off fallback: determinism only; C1 not testable"; --spec-ckpt-mode without --spec-type
+      confirmed accepted and inert from the server code (flag kept); node tools 41/41
 
 ## GPU-window assumptions (W-SV2)
 - Every arm (P0, T1, A0, A1, C, A5, A3, probe) launches via launch-stateos-tail-8099.ps1, so all run
@@ -190,12 +194,23 @@ Order: `D:/Projects/longspear/docs/drafts/stateos-v2-merged-plan-20260924.md` §
     `--spec-type` drafters and records `spec=off` in `<LogStem>.flags` (every launch records spec=on|off;
     a record without it is "unknown"). Steps 1-3 require spec=on. Step 4 accepts all arms spec=on (the
     standard run) or all spec=off (the fallback, verdict labelled "spec-off fallback" in gate.json `run`
-    and on stdout); mixed or unknown = mislaunched (VOID). CAVEAT for the coordinator: the tail is taken
-    from the gpu-fallback SPEC SHADOW and is eligible only after a drafted round with >= 1 accepted
-    draft, so with speculation off A0 shows no eligible prompt and C writes no tail: the fallback run
-    will end `not-engaged:no-eligible-prompts` (VOID) by construction. It can confirm spec-off
-    determinism, not C1 fidelity. Also untested: whether `--spec-ckpt-mode gpu-fallback` (kept) is
-    accepted without any --spec-type.
+    and on stdout); mixed or unknown = mislaunched (VOID). Scope (coordinator ruling, round 10): the
+    tail is taken from the gpu-fallback SPEC SHADOW and is eligible only after a drafted round with >= 1
+    accepted draft, so with speculation off C writes no tail and the run ends
+    `not-engaged:no-eligible-prompts` (VOID) by construction: the fallback is a DETERMINISM-ONLY check,
+    labelled "spec-off fallback: determinism only; C1 not testable" (gate.json `run`, stdout). C1 stays
+    off by default pending an engine-side determinism fix, as the plan says.
+    `--spec-ckpt-mode gpu-fallback` without any --spec-type (checked in the server code, round 10): it is
+    ACCEPTED and inert. common.cpp only parses and stores the mode; with no --spec-type and no -mtp the
+    stage chain is empty (common.cpp stage resolution; `has_mtp` defaults to false), so server init
+    never calls common_speculative_try_init (server-context.cpp `requested_spec`) and
+    llama_spec_ckpt_init never runs; the decode-time checkpoint block only acts on slots with draft rows
+    (none). So -SpecOff keeps the flag; nothing else changes.
+  - REQUEST B PROTOCOL (coordinator ruling, round 10): every arm sends request B with
+    `ignore_eos: true` (B_REQUEST), recorded as `bRequest` in each arm record; checkRecords refuses
+    (exit 1) unless every record's bRequest equals it. The server bans only llama_token_eos(model)
+    (server-context.cpp: logit_bias[eos] = -inf), so another end-of-generation token can still end B
+    early; the EOS/short-continuation invalid rule stays as the backstop.
   - `run` now requires `--log-stem <the server's -LogStem>` and records `logStem`, `bFinish`, `eosAt`.
   - Status: compatible-at-horizon PASS (exit 0); shellWorse, cuda-errors, ple-hist, shell-diverged STOP
     (2); insufficient-sample, void-determinism, mislaunched, insufficient-control,

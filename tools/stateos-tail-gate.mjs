@@ -36,7 +36,8 @@
 //   C = -Tail -DivLog, benign A5 (-ExtraArgs '-no-fmoe -no-fug') and A3 (-ExtraArgs '-fa 0') flag off.
 //
 // Arm records: `run` needs --log-stem <the server's launcher -LogStem>; the record carries it with url,
-// horizon, nFirst, receipt and per row: generated (request A ids), continuation (request B ids), bSha,
+// horizon, nFirst, receipt, bRequest (request B's extra body, {ignore_eos: true} in every arm) and per
+// row: generated (request A ids), continuation (request B ids), bSha,
 // bFinish, eosAt (B ended on EOS before the horizon), failedAt/errorKind on failure.
 //
 // Scoring needs every arm's record and server log (--arm-log ARM=path). Each log's <LogStem>.flags
@@ -53,13 +54,15 @@
 //
 // VERDICT PRECEDENCE (the first rule that fires decides; tested pairwise in the tools test):
 //   0. inconsistent or missing records - error, exit 1 (checkRecords): exactly one record per arm A0,
-//      A1, C, A5, A3 and no other; one horizon, nFirst and receipt; A0's prompt-id list in every
+//      A1, C, A5, A3 and no other; one horizon, nFirst and receipt; bRequest == {ignore_eos: true}
+//      in every record; A0's prompt-id list in every
 //      record; url on port 8099; each record's logStem == its --arm-log stem == that .flags logstem=;
 //   1. CUDA error lines in any arm's log - `cuda-errors` STOP;
 //   2. flags/spec mismatch - `mislaunched` VOID: recorded flags differ from the arm's required set
 //      (C: DIV_LOG + TAIL_SNAPSHOT; others DIV_LOG only; all PLE_HIST_REWIND + PLE_HIST_LOG; ExtraArgs
 //      A5 '-no-fmoe -no-fug', A3 '-fa 0', others none), no flags record, or the arms' spec states are
-//      mixed/unknown. All spec=off = the plan's spec-off fallback run (verdict labelled so);
+//      mixed/unknown. All spec=off = the plan's spec-off fallback run, labelled "spec-off fallback:
+//      determinism only; C1 not testable" (no drafted rounds = no tail; C1 stays off by default);
 //   3. a `[ple-hist] reset` at pos > 0 in any arm - `ple-hist` STOP;
 //   4. a .port record missing or not (ok, port 8099, exactly one listener == .pid) - `mislaunched` VOID;
 //   5. no `[ple-hist] set` line in an arm - `ple-hist` STOP;
@@ -262,6 +265,16 @@ async function post(url, key, route, body) {
   return text.length ? JSON.parse(text) : {};
 }
 
+// Request B in EVERY arm (coordinator ruling, round 10): ignore_eos so the continuation reaches the
+// horizon. The server bans only llama_token_eos(model) (server-context.cpp: logit_bias[eos] = -inf),
+// so another end-of-generation token can still end B early: rowProblem's EOS/short rule stays as the
+// backstop.
+export const B_REQUEST = Object.freeze({ ignore_eos: true });
+
+// The spec-off fallback (every arm -SpecOff) checks determinism only: the tail comes from the spec
+// shadow and needs a drafted round, so with speculation off C1 cannot engage (coordinator ruling).
+export const SPEC_OFF_LABEL = "spec-off fallback: determinism only; C1 not testable";
+
 const GREEDY = {
   temperature: 0,
   top_k: 1,
@@ -276,7 +289,7 @@ const GREEDY = {
 
 // error kinds recorded per failed row: "http" (HTTP status or connection error: the server failed) or
 // "parse" (the response could not be turned into ids, e.g. an id-count mismatch)
-async function complete(o, key, prompt, n) {
+async function complete(o, key, prompt, n, extra = {}) {
   let resp;
   try {
     resp = await post(o.url, key, "/v1/completions", {
@@ -284,6 +297,7 @@ async function complete(o, key, prompt, n) {
       prompt,
       max_tokens: n,
       n_predict: n,
+      ...extra,
     });
   } catch (e) {
     e.kind = "http";
@@ -321,6 +335,8 @@ async function runArm(o) {
     logStem: o.logStem,
     nFirst: o.nFirst,
     horizon: o.horizon,
+    // request B's extra body, the same in every arm (checkRecords requires it identical)
+    bRequest: B_REQUEST,
     candidates,
     prompts: [],
   };
@@ -358,7 +374,7 @@ async function runArm(o) {
       }
       row.bSha = tokensSha(forced.tokens);
       stage = "B";
-      const b = await complete(o, key, forced.tokens, o.horizon);
+      const b = await complete(o, key, forced.tokens, o.horizon, B_REQUEST);
       Object.assign(row, {
         ok: true,
         promptTokens: promptTokens.length,
@@ -740,7 +756,7 @@ export function preVerdict(pre, { shell, minPrompts }) {
  * Rule 0 (round 9): the five arm records must be ONE consistent run, else refuse to score (throws;
  * exit 1). Exactly one record per arm A0, A1, the shell arm and every benign arm, and no other record
  * (a stale `arm-A0-attempt1.json` is refused, never picked); the same horizon, nFirst and receipt in
- * every record; every record has A0's ordered prompt-id list; every record's url is on the model port;
+ * every record; request B's body (bRequest) equal to B_REQUEST in every record; every record has A0's ordered prompt-id list; every record's url is on the model port;
  * every record names the launcher -LogStem of its server, equal to the logstem= of the arm log's
  * .flags record (censusByArm[arm].logStem), which ties every arm, benign ones included, to its own log.
  */
@@ -764,6 +780,11 @@ export function checkRecords(records, censusByArm, { shell, benign }) {
         if (r[k] !== a0[k])
           bad.push(`${r.arm}: ${k}=${JSON.stringify(r[k])} (A0: ${JSON.stringify(a0[k])})`);
       }
+      // request B's protocol (ignore_eos) must be the same in every arm, and the current one
+      if (JSON.stringify(r.bRequest ?? null) !== JSON.stringify(B_REQUEST))
+        bad.push(
+          `${r.arm}: request-B body ${JSON.stringify(r.bRequest ?? null)} (every arm needs ${JSON.stringify(B_REQUEST)})`,
+        );
       if (JSON.stringify(r.prompts.map((p) => p.id)) !== ids)
         bad.push(
           `${r.arm}: prompt ids differ from A0's (${r.prompts.length} vs ${a0.prompts.length})`,
@@ -1083,7 +1104,7 @@ async function runScore(o) {
     minPrompts: o.minPrompts,
   });
   const horizon = records[0].horizon; // equal in every record (checkRecords)
-  const runLabel = specOff ? "spec-off fallback" : "standard (spec on)";
+  const runLabel = specOff ? SPEC_OFF_LABEL : "standard (spec on)";
   const result = refused
     ? { ...refused, rule: { outcome: "not-scored", reason: "" } }
     : score(records, lib, {
