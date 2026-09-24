@@ -27,18 +27,1062 @@ CMake Warning at common/CMakeLists.txt:26 (message):
 TARGET_SRCS contains: D:/AI/worktrees/stateos-lane1/examples/server/public/index.html.gz
 TARGET_SRCS contains: D:/AI/worktrees/stateos-lane1/examples/server/public_llamacpp/index_llamacpp.html.gz
 TARGET_SRCS contains: D:/AI/worktrees/stateos-lane1/examples/server/public_llamacpp/loading.html
--- Configuring done (2.2s)
+-- Configuring done (1.8s)
 -- Generating done (0.2s)
 -- Build files have been written to: D:/AI/worktrees/stateos-lane1/build-stateos-l1
 configure exit=0
 ==== build
-[1/9] Building CXX object tests\CMakeFiles\test-stateos-header.dir\__\examples\server\stateos-model.cpp.obj
-[2/9] Building CXX object examples\server\CMakeFiles\llama-server.dir\stateos-model.cpp.obj
-[3/9] Building CXX object examples\server\CMakeFiles\llama-server.dir\stateos-header.cpp.obj
-[4/9] Building CXX object tests\CMakeFiles\test-stateos-header.dir\__\examples\server\stateos-header.cpp.obj
-[5/9] Building CXX object tests\CMakeFiles\test-stateos-header.dir\test-stateos-header.cpp.obj
-[6/9] Linking CXX executable bin\test-stateos-header.exe
-[7/9] Building CXX object examples\server\CMakeFiles\llama-server.dir\server-context.cpp.obj
+[1/120] Building CXX object src\CMakeFiles\llama.dir\llama-mmap.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-mmap.cpp(120): warning C4267: 'argument': conversion from 'size_t' to 'DWORD', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-mmap.cpp(143): warning C4267: 'argument': conversion from 'size_t' to 'DWORD', possible loss of data
+[2/120] Building CXX object src\CMakeFiles\llama.dir\llama-spec-features.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[3/120] Building CXX object src\CMakeFiles\llama.dir\llama-spec-features-dflash.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[4/120] Building CXX object src\CMakeFiles\llama.dir\llama-dflash.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama-dflash.cpp(512): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+[5/120] Building CXX object src\CMakeFiles\llama.dir\llama-sampling.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-sampling.cpp(31): warning C4244: '=': conversion from 'time_t' to 'uint32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-sampling.cpp(42): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-sampling.cpp(138): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-sampling.cpp(411): warning C4244: '=': conversion from 'double' to 'float', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-sampling.cpp(415): warning C4244: '/=': conversion from 'double' to 'float', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-sampling.cpp(461): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-sampling.cpp(599): warning C4244: 'initializing': conversion from 'float' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-sampling.cpp(599): warning C4244: 'initializing': conversion from 'float' to 'const int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-sampling.cpp(619): warning C4244: 'argument': conversion from 'const int32_t' to 'float', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-sampling.cpp(989): warning C4244: '=': conversion from 'float' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-sampling.cpp(1012): warning C4244: 'initializing': conversion from 'double' to 'float', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-sampling.cpp(1241): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+[6/120] Building CXX object src\CMakeFiles\llama.dir\llama-build-context.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(71): warning C4267: 'initializing': conversion from 'size_t' to 'const int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(207): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(214): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(280): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(296): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(308): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(694): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(922): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(925): warning C4244: 'argument': conversion from 'int64_t' to 'uint32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(927): warning C4244: 'argument': conversion from 'int64_t' to 'uint32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(928): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(964): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(1522): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(1526): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(1554): warning C4305: 'argument': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(1698): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(2184): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(2186): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(2189): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(2193): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(2194): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(2211): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-build-context.cpp(3327): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+[7/120] Building CXX object src\CMakeFiles\llama.dir\llama-grammar.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-grammar.cpp(605): warning C4267: 'initializing': conversion from 'size_t' to 'uint32_t', possible loss of data
+[8/120] Building CXX object src\CMakeFiles\llama.dir\llama-dsv4.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[9/120] Building CXX object src\CMakeFiles\llama.dir\llama-model-loader.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(419): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(695): warning C4267: '=': conversion from 'size_t' to 'T', possible loss of data
+        with
+        [
+            T=unsigned int
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(695): note: the template instantiation context (the oldest one first) is
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(1418): note: see reference to function template instantiation 'bool llama_model_loader::get_arr_n<unsigned int>(const std::string &,unsigned int &,bool)' being compiled
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(166): warning C4244: '=': conversion from 'const int64_t' to 'OT', possible loss of data
+        with
+        [
+            OT=uint32_t
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(166): note: the template instantiation context (the oldest one first) is
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(871): note: see reference to function template instantiation 'bool llama_model_loader::get_key<uint32_t>(const std::string &,T &,const bool)' being compiled
+        with
+        [
+            T=uint32_t
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(791): note: see reference to class template instantiation 'GGUFMeta::GKV<uint32_t>' being compiled
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(192): note: while compiling class template member function 'bool GGUFMeta::GKV<uint32_t>::set(const gguf_context *,const int,T &,const llama_model_kv_override *)'
+        with
+        [
+            T=uint32_t
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(202): note: see the first reference to 'GGUFMeta::GKV<uint32_t>::set' in 'GGUFMeta::GKV<uint32_t>::set'
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(206): note: see the first reference to 'GGUFMeta::GKV<uint32_t>::set' in 'GGUFMeta::GKV<uint32_t>::set'
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(791): note: see the first reference to 'GGUFMeta::GKV<uint32_t>::set' in 'llama_model_loader::get_key'
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(193): note: see reference to function template instantiation 'bool GGUFMeta::GKV<uint32_t>::try_override<T>(OT &,const llama_model_kv_override *)' being compiled
+        with
+        [
+            T=uint32_t,
+            OT=uint32_t
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(166): warning C4244: '=': conversion from 'const int64_t' to 'OT', possible loss of data
+        with
+        [
+            OT=int
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(166): note: the template instantiation context (the oldest one first) is
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(405): note: see reference to function template instantiation 'bool llama_model_loader::get_key<int>(const std::string &,T &,const bool)' being compiled
+        with
+        [
+            T=int
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(791): note: see reference to class template instantiation 'GGUFMeta::GKV<int>' being compiled
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(192): note: while compiling class template member function 'bool GGUFMeta::GKV<int>::set(const gguf_context *,const int,T &,const llama_model_kv_override *)'
+        with
+        [
+            T=int
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(202): note: see the first reference to 'GGUFMeta::GKV<int>::set' in 'GGUFMeta::GKV<int>::set'
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(206): note: see the first reference to 'GGUFMeta::GKV<int>::set' in 'GGUFMeta::GKV<int>::set'
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(791): note: see the first reference to 'GGUFMeta::GKV<int>::set' in 'llama_model_loader::get_key'
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(193): note: see reference to function template instantiation 'bool GGUFMeta::GKV<int>::try_override<T>(OT &,const llama_model_kv_override *)' being compiled
+        with
+        [
+            T=int,
+            OT=int
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(166): warning C4244: '=': conversion from 'const int64_t' to 'OT', possible loss of data
+        with
+        [
+            OT=uint16_t
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(166): note: the template instantiation context (the oldest one first) is
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(362): note: see reference to function template instantiation 'bool llama_model_loader::get_key<uint16_t>(const std::string &,T &,const bool)' being compiled
+        with
+        [
+            T=uint16_t
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(791): note: see reference to class template instantiation 'GGUFMeta::GKV<uint16_t>' being compiled
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(192): note: while compiling class template member function 'bool GGUFMeta::GKV<uint16_t>::set(const gguf_context *,const int,T &,const llama_model_kv_override *)'
+        with
+        [
+            T=uint16_t
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(202): note: see the first reference to 'GGUFMeta::GKV<uint16_t>::set' in 'GGUFMeta::GKV<uint16_t>::set'
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(206): note: see the first reference to 'GGUFMeta::GKV<uint16_t>::set' in 'GGUFMeta::GKV<uint16_t>::set'
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(791): note: see the first reference to 'GGUFMeta::GKV<uint16_t>::set' in 'llama_model_loader::get_key'
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(193): note: see reference to function template instantiation 'bool GGUFMeta::GKV<uint16_t>::try_override<T>(OT &,const llama_model_kv_override *)' being compiled
+        with
+        [
+            T=uint16_t,
+            OT=uint16_t
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(176): warning C4244: '=': conversion from 'const double' to 'T', possible loss of data
+        with
+        [
+            T=float
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(176): note: the template instantiation context (the oldest one first) is
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(1410): note: see reference to function template instantiation 'bool llama_model_loader::get_key<float>(llm_kv,float &,bool)' being compiled
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(802): note: see reference to function template instantiation 'bool llama_model_loader::get_key<T>(const std::string &,T &,const bool)' being compiled
+        with
+        [
+            T=float
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(791): note: see reference to class template instantiation 'GGUFMeta::GKV<T>' being compiled
+        with
+        [
+            T=float
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(192): note: while compiling class template member function 'bool GGUFMeta::GKV<T>::set(const gguf_context *,const int,T &,const llama_model_kv_override *)'
+        with
+        [
+            T=float
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(202): note: see the first reference to 'GGUFMeta::GKV<T>::set' in 'GGUFMeta::GKV<T>::set'
+        with
+        [
+            T=float
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(206): note: see the first reference to 'GGUFMeta::GKV<T>::set' in 'GGUFMeta::GKV<T>::set'
+        with
+        [
+            T=float
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(791): note: see the first reference to 'GGUFMeta::GKV<T>::set' in 'llama_model_loader::get_key'
+        with
+        [
+            T=float
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(802): note: see the first reference to 'llama_model_loader::get_key' in 'llama_model_loader::get_key'
+D:\AI\worktrees\stateos-lane1\src\llama-model-loader.cpp(193): note: see reference to function template instantiation 'bool GGUFMeta::GKV<T>::try_override<T>(T &,const llama_model_kv_override *)' being compiled
+        with
+        [
+            T=float
+        ]
+[10/120] Building CXX object src\CMakeFiles\llama.dir\llama-arch.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[11/120] Building CXX object src\CMakeFiles\llama.dir\llama-reload.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[12/120] Building CXX object src\CMakeFiles\llama.dir\llama-vocab.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama-vocab.cpp(640): warning C4267: '=': conversion from 'size_t' to 'llm_symbol::index', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-vocab.cpp(643): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-vocab.cpp(744): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-vocab.cpp(744): warning C4267: 'initializing': conversion from 'size_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-vocab.cpp(1312): warning C4267: 'argument': conversion from 'size_t' to 'llama_token', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-vocab.cpp(1317): warning C4267: 'argument': conversion from 'size_t' to 'llama_token', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-vocab.cpp(2857): warning C4244: 'return': conversion from 'long' to 'uint8_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-vocab.cpp(2862): warning C4244: 'return': conversion from 'long' to 'uint8_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-vocab.cpp(3032): warning C4267: 'argument': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-vocab.cpp(3035): warning C4267: 'argument': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-vocab.cpp(3820): warning C4267: 'return': conversion from 'size_t' to 'int32_t', possible loss of data
+[13/120] Building CXX object src\CMakeFiles\llama.dir\llama-delta-net.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama-delta-net.cpp(498): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+[14/120] Building CXX object src\CMakeFiles\llama.dir\llama-kda.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama-kda.cpp(138): warning C4244: 'initializing': conversion from 'int64_t' to 'uint32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-kda.cpp(138): warning C4244: 'initializing': conversion from 'int64_t' to 'const uint32_t', possible loss of data
+[15/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_llama.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_llama.cpp(73): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_llama.cpp(77): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[16/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_muse_glimmer.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[17/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_mistral3.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[18/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_deci.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deci.cpp(56): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deci.cpp(63): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[19/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_baichuan.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_baichuan.cpp(38): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_baichuan.cpp(43): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[20/120] Building CXX object src\CMakeFiles\llama.dir\llama-hparams.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.cpp(1558): warning C4244: '=': conversion from 'const int64_t' to 'uint32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.cpp(1757): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.cpp(2147): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.cpp(2152): warning C4018: '<': signed/unsigned mismatch
+[21/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_xverse.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_xverse.cpp(36): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_xverse.cpp(43): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[22/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_falcon.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_falcon.cpp(56): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_falcon.cpp(62): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[23/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_grok.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_grok.cpp(41): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_grok.cpp(48): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_grok.cpp(100): warning C4244: 'argument': conversion from 'double' to 'float', possible loss of data
+[24/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_dbrx.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_dbrx.cpp(56): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_dbrx.cpp(63): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[25/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_starcoder.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[26/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_starcoder2.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_starcoder2.cpp(37): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_starcoder2.cpp(44): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[27/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_refact.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[28/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_bert.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_bert.cpp(82): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_bert.cpp(89): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[29/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_bloom.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[30/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_mpt.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[31/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_stablelm.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_stablelm.cpp(54): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_stablelm.cpp(61): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[32/120] Building CXX object src\CMakeFiles\llama.dir\llama-quantize.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama-quantize.cpp(155): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-quantize.cpp(171): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-quantize.cpp(363): warning C4244: 'initializing': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-quantize.cpp(842): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-quantize.cpp(842): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-quantize.cpp(970): warning C4244: 'initializing': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-quantize.cpp(1023): warning C4244: 'argument': conversion from 'const int64_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-quantize.cpp(1211): warning C4244: 'argument': conversion from 'const double' to 'float', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-quantize.cpp(1213): warning C4244: 'argument': conversion from 'const int64_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-quantize.cpp(1372): warning C4267: 'argument': conversion from 'size_t' to 'uint16_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-quantize.cpp(1552): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-quantize.cpp(1552): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\include\type_traits(1680): warning C4244: 'argument': conversion from 'unsigned __int64' to 'int', possible loss of data
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\include\type_traits(1680): note: the template instantiation context (the oldest one first) is
+D:\AI\worktrees\stateos-lane1\src\llama-quantize.cpp(214): note: see reference to function template instantiation 'std::thread &std::vector<std::thread,std::allocator<std::thread>>::emplace_back<llama_tensor_dequantize_internal::<lambda_1>&,ggml_type&,uint8_t*,float*,size_t&>(llama_tensor_dequantize_internal::<lambda_1> &,ggml_type &,uint8_t *&&,float *&&,size_t &)' being compiled
+D:\AI\worktrees\stateos-lane1\src\llama-quantize.cpp(214): note: see the first reference to 'std::vector<std::thread,std::allocator<std::thread>>::emplace_back' in 'llama_tensor_dequantize_internal'
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\include\vector(924): note: see reference to function template instantiation '_Ty &std::vector<_Ty,std::allocator<_Ty>>::_Emplace_one_at_back<llama_tensor_dequantize_internal::<lambda_1>&,ggml_type&,unsigned char*,float*,size_t&>(llama_tensor_dequantize_internal::<lambda_1> &,ggml_type &,unsigned char *&&,float *&&,size_t &)' being compiled
+        with
+        [
+            _Ty=std::thread
+        ]
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\include\vector(845): note: see reference to function template instantiation '_Ty &std::vector<_Ty,std::allocator<_Ty>>::_Emplace_back_with_unused_capacity<llama_tensor_dequantize_internal::<lambda_1>&,ggml_type&,unsigned char*,float*,size_t&>(llama_tensor_dequantize_internal::<lambda_1> &,ggml_type &,unsigned char *&&,float *&&,size_t &)' being compiled
+        with
+        [
+            _Ty=std::thread
+        ]
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\include\vector(863): note: see reference to function template instantiation 'void std::_Default_allocator_traits<_Alloc>::construct<_Ty,llama_tensor_dequantize_internal::<lambda_1>&,ggml_type&,unsigned char*,float*,size_t&>(_Alloc &,_Objty *const ,llama_tensor_dequantize_internal::<lambda_1> &,ggml_type &,unsigned char *&&,float *&&,size_t &)' being compiled
+        with
+        [
+            _Alloc=std::allocator<std::thread>,
+            _Ty=std::thread,
+            _Objty=std::thread
+        ]
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\include\xmemory(730): note: see reference to function template instantiation '_Ty *std::construct_at<_Objty,llama_tensor_dequantize_internal::<lambda_1>&,ggml_type&,unsigned char*,float*,size_t&>(_Ty *const ,llama_tensor_dequantize_internal::<lambda_1> &,ggml_type &,unsigned char *&&,float *&&,size_t &) noexcept(false)' being compiled
+        with
+        [
+            _Ty=std::thread,
+            _Objty=std::thread
+        ]
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\include\xutility(463): note: see reference to function template instantiation 'std::thread::thread<llama_tensor_dequantize_internal::<lambda_1>&,ggml_type&,_T,float*,size_t&,0>(_Fn,ggml_type &,_T &&,float *&&,size_t &)' being compiled
+        with
+        [
+            _T=uint8_t *,
+            _Fn=llama_tensor_dequantize_internal::<lambda_1> &
+        ]
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\include\thread(93): note: see reference to function template instantiation 'void std::thread::_Start<llama_tensor_dequantize_internal::<lambda_1>&,ggml_type&,_Ty,float*,size_t&>(_Fn,ggml_type &,_Ty &&,float *&&,size_t &)' being compiled
+        with
+        [
+            _Ty=uint8_t *,
+            _Fn=llama_tensor_dequantize_internal::<lambda_1> &
+        ]
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\include\thread(76): note: see reference to function template instantiation 'unsigned int (__cdecl *std::thread::_Get_invoke<std::thread::_Start::_Tuple,0,1,2,3,4>(std::integer_sequence<size_t,0,1,2,3,4>) noexcept)(void *) noexcept' being compiled
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\include\thread(67): note: see reference to function template instantiation 'unsigned int std::thread::_Invoke<std::thread::_Start::_Tuple,0,1,2,3,4>(void *) noexcept' being compiled
+C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\include\thread(60): note: see reference to function template instantiation 'void std::invoke<llama_tensor_dequantize_internal::<lambda_1>,ggml_type,uint8_t*,float*,unsigned __int64>(_Callable &&,_Ty1 &&,uint8_t *&&,float *&&,unsigned __int64 &&) noexcept(false)' being compiled
+        with
+        [
+            _Callable=llama_tensor_dequantize_internal::<lambda_1>,
+            _Ty1=ggml_type
+        ]
+[33/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_seedoss.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[34/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_laguna.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[35/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_step35.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[36/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_qwen.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen.cpp(49): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen.cpp(55): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[37/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_qwen2.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen2.cpp(38): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen2.cpp(45): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen2.cpp(139): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen2.cpp(145): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen2.cpp(233): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen2.cpp(240): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[38/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_mellum.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[39/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_qwen3.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen3.cpp(26): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen3.cpp(26): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen3.cpp(59): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen3.cpp(61): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen3.cpp(300): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen3.cpp(312): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[40/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_qwen3next.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[41/120] Building CXX object src\CMakeFiles\llama.dir\llama.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(642): warning C4805: '!=': unsafe mix of type 'const int' and type 'const bool' in operation
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(673): warning C4805: '!=': unsafe mix of type 'int' and type 'bool' in operation
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(3979): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(3988): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(4006): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(4201): warning C4018: '>=': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(4205): warning C4018: '>=': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(4541): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(4653): warning C4996: 'strdup': The POSIX name for this item is deprecated. Instead, use the ISO C and C++ conformant name: _strdup. See online help for details.
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(4728): warning C4996: 'strdup': The POSIX name for this item is deprecated. Instead, use the ISO C and C++ conformant name: _strdup. See online help for details.
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(7060): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(8494): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(8509): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(8663): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(8596): warning C4297: 'llama_init_from_model': function assumed not to throw an exception but does
+D:\AI\worktrees\stateos-lane1\src\llama.cpp(8596): note: __declspec(nothrow), throw(), noexcept(true), or noexcept was specified on the function
+[42/120] Building CXX object src\CMakeFiles\llama.dir\llama-model.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama-model.cpp(2556): warning C4018: '>=': signed/unsigned mismatch
+[43/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_qwen35.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen35.cpp(37): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen35.cpp(37): warning C4244: 'initializing': conversion from 'int64_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen35.cpp(110): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen35.cpp(110): warning C4244: 'initializing': conversion from 'int64_t' to 'const int', possible loss of data
+[44/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_phi3.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_phi3.cpp(66): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_phi3.cpp(75): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[45/120] Building CXX object src\CMakeFiles\llama.dir\llama-load-tensors.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(309): warning C4244: '=': conversion from 'float' to '_Ty', possible loss of data
+        with
+        [
+            _Ty=llama_token
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(313): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(329): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(416): warning C4244: '=': conversion from 'float' to '_Ty', possible loss of data
+        with
+        [
+            _Ty=llama_token
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(559): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(559): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(581): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(581): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(625): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(625): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(651): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(651): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(660): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(660): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(708): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(708): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(721): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(721): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(754): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(754): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(766): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(766): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(835): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(835): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(858): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(858): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(877): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(877): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1160): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1160): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1189): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1189): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1232): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1232): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1257): warning C4244: '=': conversion from 'const int64_t' to 'uint32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1353): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1353): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1369): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1369): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1410): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1410): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1418): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1418): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1492): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1492): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1662): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1681): warning C4244: 'initializing': conversion from 'int64_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1681): warning C4244: 'initializing': conversion from 'int64_t' to 'const int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1717): warning C4244: 'initializing': conversion from 'int64_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1717): warning C4244: 'initializing': conversion from 'int64_t' to 'const int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(1900): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2027): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2027): warning C4244: 'initializing': conversion from 'int64_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2051): warning C4244: 'initializing': conversion from 'int64_t' to 'uint32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2051): warning C4244: 'initializing': conversion from 'int64_t' to 'const uint32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2067): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2067): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2230): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2230): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2271): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2271): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2289): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2289): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2296): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2296): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2312): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2312): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2351): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2351): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2877): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2877): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2893): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2893): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2927): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2927): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2935): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2935): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2942): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2942): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2943): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2943): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2978): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(2978): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(3025): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(3025): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(3035): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(3035): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(3039): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(3039): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(3203): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(3203): warning C4244: 'initializing': conversion from 'int64_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(3641): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(3641): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(3722): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(3722): warning C4244: 'initializing': conversion from 'int64_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4057): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4057): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4065): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4065): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4066): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4066): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4098): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4098): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4375): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4375): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4413): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4413): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4422): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4422): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4442): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4535): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4535): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4553): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4565): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4565): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4589): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4602): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4602): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4616): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4616): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4914): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4994): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(4994): warning C4244: 'initializing': conversion from 'int64_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5032): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5074): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5080): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5229): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5331): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5551): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5551): warning C4267: 'initializing': conversion from 'size_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5569): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5572): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5632): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5666): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5675): warning C4244: '=': conversion from 'int64_t' to '_Ty', possible loss of data
+        with
+        [
+            _Ty=llama_token
+        ]
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5687): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5694): warning C4244: '=': conversion from 'int64_t' to 'uint32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5700): warning C4244: '=': conversion from 'int64_t' to 'uint32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5704): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5705): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5852): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5854): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5872): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5874): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5913): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5915): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5938): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5955): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5961): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5967): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\llama-load-tensors.cpp(5994): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+[46/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_phi2.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_phi2.cpp(59): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_phi2.cpp(70): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[47/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_qwen4exp.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen4exp.cpp(41): warning C4244: 'argument': conversion from 'const int64_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen4exp.cpp(346): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen4exp.cpp(374): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen4exp.cpp(447): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen4exp.cpp(447): warning C4244: 'initializing': conversion from 'int64_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen4exp.cpp(448): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen4exp.cpp(448): warning C4244: 'initializing': conversion from 'int64_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen4exp.cpp(464): warning C4244: 'initializing': conversion from 'int64_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen4exp.cpp(464): warning C4244: 'initializing': conversion from 'int64_t' to 'const int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen4exp.cpp(521): warning C4244: 'argument': conversion from 'const int64_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen4exp.cpp(527): warning C4244: 'argument': conversion from 'const int64_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen4exp.cpp(544): warning C4244: 'argument': conversion from 'const int64_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen4exp.cpp(549): warning C4244: 'argument': conversion from 'const int64_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen4exp.cpp(566): warning C4244: 'argument': conversion from 'const int64_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen4exp.cpp(583): warning C4244: 'argument': conversion from 'const int64_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_qwen4exp.cpp(602): warning C4244: 'argument': conversion from 'const int64_t' to 'int32_t', possible loss of data
+[48/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_plamo.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_plamo.cpp(38): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_plamo.cpp(44): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[49/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_gpt2.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[50/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_codeshell.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_codeshell.cpp(46): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_codeshell.cpp(53): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[51/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_orion.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_orion.cpp(37): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_orion.cpp(44): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[52/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_internlm2.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_internlm2.cpp(37): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_internlm2.cpp(44): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[53/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_minicpm.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_minicpm.cpp(48): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_minicpm.cpp(55): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[54/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_gemma.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma.cpp(15): warning C4244: 'argument': conversion from 'const int64_t' to 'float', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma.cpp(36): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma.cpp(45): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[55/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_gemma2.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma2.cpp(15): warning C4244: 'argument': conversion from 'const int64_t' to 'float', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma2.cpp(41): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma2.cpp(56): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[56/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_gemma3.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma3.cpp(15): warning C4244: 'argument': conversion from 'const int64_t' to 'float', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma3.cpp(34): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma3.cpp(34): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma3.cpp(36): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma3.cpp(36): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma3.cpp(63): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma3.cpp(66): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[57/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_mamba.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[58/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_command_r.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[59/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_dflash.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_dflash.cpp(203): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_dflash.cpp(251): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_dflash.cpp(467): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_dflash.cpp(475): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_dflash.cpp(649): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[60/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_olmo.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_olmo.cpp(65): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_olmo.cpp(72): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_olmo.cpp(79): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[61/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_openelm.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_openelm.cpp(56): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_openelm.cpp(62): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[62/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_arctic.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_arctic.cpp(41): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_arctic.cpp(48): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[63/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_gptneox.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gptneox.cpp(45): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gptneox.cpp(52): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[64/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_gemma4.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma4.cpp(91): warning C4244: '+=': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma4.cpp(107): warning C4244: '+=': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma4.cpp(169): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma4.cpp(187): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma4.cpp(574): warning C4018: '<=': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma4.cpp(609): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma4.cpp(686): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma4.cpp(907): warning C4244: 'argument': conversion from 'const int64_t' to 'float', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma4.cpp(951): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_gemma4.cpp(950): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[65/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_cohere2.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[66/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_glm4.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_glm4.cpp(17): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_glm4.cpp(17): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_glm4.cpp(43): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_glm4.cpp(43): warning C4244: 'initializing': conversion from 'int64_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_glm4.cpp(70): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_glm4.cpp(72): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_glm4.cpp(212): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_glm4.cpp(218): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[67/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_bitnet.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_bitnet.cpp(64): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_bitnet.cpp(71): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_bitnet.cpp(189): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_bitnet.cpp(196): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[68/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_deepseek2.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(85): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(85): warning C4244: 'initializing': conversion from 'int64_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(112): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(114): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(405): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(428): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(443): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(445): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(606): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(872): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(875): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(928): warning C4244: 'initializing': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(933): warning C4244: '=': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(1125): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(1127): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(1130): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(1302): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek2.cpp(1302): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[69/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_openpangu.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_openpangu.cpp(269): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_openpangu.cpp(292): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_openpangu.cpp(354): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_openpangu.cpp(375): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_openpangu.cpp(537): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_openpangu.cpp(550): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_openpangu.cpp(678): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_openpangu.cpp(759): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_openpangu.cpp(813): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_openpangu.cpp(1186): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_openpangu.cpp(1186): warning C4244: 'initializing': conversion from 'int64_t' to 'const int', possible loss of data
+[70/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_cohere2_moe.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[71/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_deepseek4.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): warning C4477: 'printf' : format string '%ld' requires an argument of type 'long', but variadic argument 3 has type 'int64_t'
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%lld' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%Id' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%I64d' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): warning C4477: 'printf' : format string '%ld' requires an argument of type 'long', but variadic argument 4 has type 'int64_t'
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%lld' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%Id' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%I64d' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): warning C4477: 'printf' : format string '%ld' requires an argument of type 'long', but variadic argument 5 has type 'int64_t'
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%lld' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%Id' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%I64d' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): warning C4477: 'printf' : format string '%ld' requires an argument of type 'long', but variadic argument 6 has type 'int64_t'
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%lld' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%Id' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%I64d' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): warning C4477: 'printf' : format string '%ld' requires an argument of type 'long', but variadic argument 7 has type 'int64_t'
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%lld' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%Id' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%I64d' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): warning C4477: 'printf' : format string '%ld' requires an argument of type 'long', but variadic argument 8 has type 'int64_t'
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%lld' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%Id' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%I64d' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): warning C4477: 'printf' : format string '%ld' requires an argument of type 'long', but variadic argument 9 has type 'int64_t'
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%lld' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%Id' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%I64d' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): warning C4477: 'printf' : format string '%ld' requires an argument of type 'long', but variadic argument 10 has type 'int64_t'
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%lld' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%Id' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%I64d' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): warning C4477: 'printf' : format string '%ld' requires an argument of type 'long', but variadic argument 11 has type 'int64_t'
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%lld' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%Id' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%I64d' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): warning C4477: 'printf' : format string '%ld' requires an argument of type 'long', but variadic argument 12 has type 'int64_t'
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%lld' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%Id' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(180): note: consider using '%I64d' in the format string
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(195): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(415): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(430): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(651): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(703): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(711): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(785): warning C4244: 'argument': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(820): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1012): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1019): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1042): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1063): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1135): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1189): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1189): note: the template instantiation context (the oldest one first) is
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1212): note: see reference to function template instantiation 'auto ds4_attention::<lambda_3>::operator ()<llama_context::dsv4_runtime::comp_context>(const _T1 &) const' being compiled
+        with
+        [
+            _T1=llama_context::dsv4_runtime::comp_context
+        ]
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1237): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1298): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1298): warning C4244: 'initializing': conversion from 'int64_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1299): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1299): warning C4244: 'initializing': conversion from 'int64_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1333): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1333): warning C4244: 'initializing': conversion from 'int64_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1448): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1448): warning C4244: 'initializing': conversion from 'int64_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1559): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1568): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_deepseek4.cpp(1607): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[72/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_t5.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[73/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_jais.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[74/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_chatglm.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_chatglm.cpp(50): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_chatglm.cpp(57): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[75/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_dots1.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_dots1.cpp(50): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_dots1.cpp(59): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[76/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_ernie45.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_ernie45.cpp(63): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_ernie45.cpp(66): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[77/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_hunyuan.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[78/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_openai.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[79/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_mimo2.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[80/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_bailingmoe2.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_bailingmoe2.cpp(27): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_bailingmoe2.cpp(27): warning C4244: 'initializing': conversion from 'int64_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_bailingmoe2.cpp(30): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_bailingmoe2.cpp(30): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_bailingmoe2.cpp(50): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_bailingmoe2.cpp(52): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[81/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_minimaxm3.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+[82/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_bailingmoe3.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_bailingmoe3.cpp(31): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_bailingmoe3.cpp(31): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[83/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_minimaxm2.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_minimaxm2.cpp(88): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_minimaxm2.cpp(89): warning C4244: 'initializing': conversion from 'int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_minimaxm2.cpp(98): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_minimaxm2.cpp(100): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_minimaxm2.cpp(223): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_minimaxm2.cpp(226): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[84/120] Building CXX object src\CMakeFiles\llama.dir\graphs\build_smollm3.cpp.obj
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(129): warning C4305: 'initializing': truncation from 'double' to 'float'
+D:\AI\worktrees\stateos-lane1\src\llama-hparams.h(283): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\src\graphs\build_smollm3.cpp(45): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\src\graphs\build_smollm3.cpp(49): warning C4244: 'argument': conversion from 'const int64_t' to 'int', possible loss of data
+[85/120] Building CXX object common\CMakeFiles\common.dir\llguidance.cpp.obj
+[86/120] Linking CXX shared library bin\llama.dll
+[87/120] Building CXX object common\CMakeFiles\common.dir\ngram-cache.cpp.obj
+D:\AI\worktrees\stateos-lane1\common\ngram-cache.cpp(20): warning C4244: 'argument': conversion from 'int64_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\ngram-cache.cpp(100): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\ngram-cache.cpp(147): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\ngram-cache.cpp(147): warning C4267: 'initializing': conversion from 'size_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\ngram-cache.cpp(156): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\ngram-cache.cpp(156): warning C4267: 'initializing': conversion from 'size_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\ngram-cache.cpp(170): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\ngram-cache.cpp(170): warning C4267: 'initializing': conversion from 'size_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\ngram-cache.cpp(202): warning C4267: 'initializing': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\ngram-cache.cpp(202): warning C4267: 'initializing': conversion from 'size_t' to 'const int32_t', possible loss of data
+[88/120] Building CXX object common\CMakeFiles\common.dir\train.cpp.obj
+[89/120] Building CXX object common\CMakeFiles\common.dir\ngram-map.cpp.obj
+D:\AI\worktrees\stateos-lane1\common\ngram-map.cpp(158): warning C4267: '=': conversion from 'size_t' to 'uint32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\ngram-map.cpp(169): warning C4267: 'initializing': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\ngram-map.cpp(321): warning C4267: '=': conversion from 'size_t' to '_Ty', possible loss of data
+        with
+        [
+            _Ty=std::_Vbase
+        ]
+D:\AI\worktrees\stateos-lane1\common\ngram-map.cpp(330): warning C4267: '=': conversion from 'size_t' to '_Ty', possible loss of data
+        with
+        [
+            _Ty=std::_Vbase
+        ]
+[90/120] Building CXX object common\CMakeFiles\common.dir\chat-auto-parser-helpers.cpp.obj
+[91/120] Building CXX object common\CMakeFiles\common.dir\chat-auto-parser-generator.cpp.obj
+[92/120] Building CXX object common\CMakeFiles\common.dir\sampling.cpp.obj
+D:\AI\worktrees\stateos-lane1\common\sampling.cpp(299): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\sampling.cpp(299): warning C4267: 'initializing': conversion from 'size_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\sampling.cpp(790): warning C4267: '=': conversion from 'size_t' to '_Ty', possible loss of data
+        with
+        [
+            _Ty=int
+        ]
+D:\AI\worktrees\stateos-lane1\common\sampling.cpp(918): warning C4804: '+=': unsafe use of type 'bool' in operation
+D:\AI\worktrees\stateos-lane1\common\sampling.cpp(924): warning C4804: '-=': unsafe use of type 'bool' in operation
+D:\AI\worktrees\stateos-lane1\common\sampling.cpp(952): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\common\sampling.cpp(964): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\common\sampling.cpp(968): warning C4018: '<': signed/unsigned mismatch
+[93/120] Building CXX object common\CMakeFiles\common.dir\spec-tuner.cpp.obj
+[94/120] Building CXX object common\CMakeFiles\common.dir\chat-peg-parser.cpp.obj
+[95/120] Building CXX object common\CMakeFiles\common.dir\regex-partial.cpp.obj
+[96/120] Building CXX object common\CMakeFiles\common.dir\reasoning-budget.cpp.obj
+[97/120] Building CXX object tests\CMakeFiles\test-ple-hist.dir\get-model.cpp.obj
+[98/120] Building CXX object common\CMakeFiles\common.dir\suffix-tree.cpp.obj
+[99/120] Building CXX object common\CMakeFiles\common.dir\speculative.cpp.obj
+D:\AI\worktrees\stateos-lane1\common\speculative.cpp(522): warning C4267: 'argument': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\speculative.cpp(590): warning C4267: 'argument': conversion from 'size_t' to 'llama_pos', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\speculative.cpp(602): warning C4267: 'initializing': conversion from 'size_t' to 'llama_pos', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\speculative.cpp(602): warning C4267: 'initializing': conversion from 'size_t' to 'const llama_pos', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\speculative.cpp(975): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\speculative.cpp(1288): warning C4267: 'argument': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\speculative.cpp(2446): warning C4267: 'argument': conversion from 'size_t' to 'int32_t', possible loss of data
+[100/120] Building CXX object tests\CMakeFiles\test-ple-hist.dir\test-ple-hist.cpp.obj
+[101/120] Building CXX object common\CMakeFiles\common.dir\chat-diff-analyzer.cpp.obj
+D:\AI\worktrees\stateos-lane1\common\chat-diff-analyzer.cpp(762): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\chat-diff-analyzer.cpp(763): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\chat-diff-analyzer.cpp(805): warning C4267: '-=': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\chat-diff-analyzer.cpp(806): warning C4267: '+=': conversion from 'size_t' to 'int', possible loss of data
+[102/120] Building CXX object common\CMakeFiles\common.dir\json-schema-to-grammar.cpp.obj
+D:\AI\worktrees\stateos-lane1\common\json-schema-to-grammar.cpp(97): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\json-schema-to-grammar.cpp(97): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\json-schema-to-grammar.cpp(112): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\json-schema-to-grammar.cpp(112): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\json-schema-to-grammar.cpp(173): warning C4244: 'initializing': conversion from 'int64_t' to 'char', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\json-schema-to-grammar.cpp(192): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\json-schema-to-grammar.cpp(203): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\json-schema-to-grammar.cpp(498): warning C4101: 'e': unreferenced local variable
+D:\AI\worktrees\stateos-lane1\common\json-schema-to-grammar.cpp(809): warning C4101: 'e': unreferenced local variable
+[103/120] Building CXX object tests\CMakeFiles\test-speculative-params.dir\test-speculative-params.cpp.obj
+[104/120] Building CXX object examples\mtmd\CMakeFiles\mtmd.dir\mtmd.cpp.obj
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd.cpp(392): warning C4267: 'argument': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd.cpp(395): warning C4267: 'argument': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd.cpp(629): warning C4267: '=': conversion from 'size_t' to 'uint32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd.cpp(694): warning C4267: '=': conversion from 'size_t' to 'uint32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd.cpp(767): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd.cpp(769): warning C4267: 'argument': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd.cpp(769): warning C4267: 'argument': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd.cpp(772): warning C4267: 'argument': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd.cpp(772): warning C4267: 'argument': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd.cpp(915): warning C4267: '=': conversion from 'size_t' to 'uint32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd.cpp(1021): warning C4267: 'return': conversion from 'size_t' to 'llama_pos', possible loss of data
+[105/120] Building CXX object common\CMakeFiles\common.dir\peg-parser.cpp.obj
+[106/120] Building CXX object examples\mtmd\CMakeFiles\mtmd.dir\mtmd-helper.cpp.obj
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd-helper.cpp(192): warning C4267: 'initializing': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd-helper.cpp(204): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd-helper.cpp(204): warning C4267: 'initializing': conversion from 'size_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd-helper.cpp(205): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd-helper.cpp(205): warning C4267: 'initializing': conversion from 'size_t' to 'const int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\mtmd\mtmd-helper.cpp(478): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+[107/120] Linking CXX shared library bin\mtmd.dll
+[108/120] Building CXX object common\CMakeFiles\common.dir\common.cpp.obj
+D:\AI\worktrees\stateos-lane1\common\common.cpp(875): warning C4996: 'strdup': The POSIX name for this item is deprecated. Instead, use the ISO C and C++ conformant name: _strdup. See online help for details.
+[109/120] Building CXX object common\CMakeFiles\common.dir\chat.cpp.obj
+D:\AI\worktrees\stateos-lane1\common\chat.cpp(52): warning C4101: 'e': unreferenced local variable
+D:\AI\worktrees\stateos-lane1\common\chat.cpp(2836): warning C4267: 'argument': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\common\chat.cpp(2849): warning C4267: 'argument': conversion from 'size_t' to 'int32_t', possible loss of data
+[110/120] Linking CXX static library common\common.lib
+sampling.cpp.obj : warning LNK4006: "struct common_reasoning_budget_ctx * __cdecl common_reasoning_budget_init(struct llama_vocab const *,class std::vector<int,class std::allocator<int> > const &,class std::vector<int,class std::allocator<int> > const &,class std::vector<int,class std::allocator<int> > const &,int,enum common_reasoning_budget_state)" (?common_reasoning_budget_init@@YAPEAUcommon_reasoning_budget_ctx@@PEBUllama_vocab@@AEBV?$vector@HV?$allocator@H@std@@@std@@11HW4common_reasoning_budget_state@@@Z) already defined in reasoning-budget.cpp.obj; second definition ignored
+sampling.cpp.obj : warning LNK4006: "enum common_reasoning_budget_state __cdecl common_reasoning_budget_get_state(struct common_reasoning_budget_ctx const *)" (?common_reasoning_budget_get_state@@YA?AW4common_reasoning_budget_state@@PEBUcommon_reasoning_budget_ctx@@@Z) already defined in reasoning-budget.cpp.obj; second definition ignored
+[111/120] Linking CXX executable bin\test-ple-hist.exe
+[112/120] Linking CXX executable bin\test-stateos-header.exe
+[113/120] Linking CXX executable bin\test-speculative-params.exe
+[114/120] Building CXX object examples\server\CMakeFiles\llama-server.dir\server-queue.cpp.obj
+D:\AI\worktrees\stateos-lane1\examples\server\server-common.h(396): warning C4267: 'return': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-task.h(106): warning C4267: 'return': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-task.h(401): warning C4267: 'return': conversion from 'size_t' to 'int', possible loss of data
+[115/120] Building CXX object examples\server\CMakeFiles\llama-server.dir\server-chat.cpp.obj
+D:\AI\worktrees\stateos-lane1\examples\server\server-common.h(396): warning C4267: 'return': conversion from 'size_t' to 'int', possible loss of data
+[116/120] Building CXX object examples\server\CMakeFiles\llama-server.dir\server-task.cpp.obj
+D:\AI\worktrees\stateos-lane1\examples\server\server-common.h(396): warning C4267: 'return': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-task.h(106): warning C4267: 'return': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-task.h(401): warning C4267: 'return': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-task.cpp(1179): warning C4244: 'argument': conversion from 'double' to 'const _Ty', possible loss of data
+        with
+        [
+            _Ty=size_t
+        ]
+D:\AI\worktrees\stateos-lane1\examples\server\server-task.cpp(1221): warning C4244: 'argument': conversion from 'float' to 'const _Ty', possible loss of data
+        with
+        [
+            _Ty=size_t
+        ]
+[117/120] Building CXX object examples\server\CMakeFiles\llama-server.dir\server-common.cpp.obj
+D:\AI\worktrees\stateos-lane1\examples\server\server-common.h(396): warning C4267: 'return': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-common.cpp(96): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-common.cpp(107): warning C4267: '=': conversion from 'size_t' to 'uint8_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-common.cpp(128): warning C4267: '=': conversion from 'size_t' to 'uint8_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-common.cpp(338): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-common.cpp(339): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-common.cpp(1183): warning C4267: 'initializing': conversion from 'size_t' to 'llama_pos', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-common.cpp(1187): warning C4267: '+=': conversion from 'size_t' to 'llama_pos', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-common.cpp(1176): warning C4267: 'return': conversion from 'size_t' to 'llama_pos', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-common.cpp(1179): warning C4244: 'return': conversion from 'int64_t' to 'llama_pos', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-common.cpp(1697): warning C4101: 'e': unreferenced local variable
+[118/120] Building CXX object examples\server\CMakeFiles\llama-server.dir\server-context.cpp.obj
 D:\AI\worktrees\stateos-lane1\examples\server\server-common.h(396): warning C4267: 'return': conversion from 'size_t' to 'int', possible loss of data
 D:\AI\worktrees\stateos-lane1\examples\server\server-task.h(106): warning C4267: 'return': conversion from 'size_t' to 'int32_t', possible loss of data
 D:\AI\worktrees\stateos-lane1\examples\server\server-task.h(401): warning C4267: 'return': conversion from 'size_t' to 'int', possible loss of data
@@ -99,18 +1143,18 @@ D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4513): warning 
 D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4514): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
 D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4584): warning C4805: '!=': unsafe mix of type 'int32_t' and type 'bool' in operation
 D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4596): warning C4267: '=': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4658): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4659): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4660): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4689): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4834): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4840): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4866): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4893): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(5010): warning C4018: '<': signed/unsigned mismatch
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(5024): warning C4018: '<': signed/unsigned mismatch
-D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(5233): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
-[8/9] Building CXX object examples\server\CMakeFiles\llama-server.dir\server.cpp.obj
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4673): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4674): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4675): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4704): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4849): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4855): warning C4267: '+=': conversion from 'size_t' to 'int32_t', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4881): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(4908): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(5025): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(5039): warning C4018: '<': signed/unsigned mismatch
+D:\AI\worktrees\stateos-lane1\examples\server\server-context.cpp(5248): warning C4267: '=': conversion from 'size_t' to 'int32_t', possible loss of data
+[119/120] Building CXX object examples\server\CMakeFiles\llama-server.dir\server.cpp.obj
 D:\AI\worktrees\stateos-lane1\examples\server\server-common.h(396): warning C4267: 'return': conversion from 'size_t' to 'int', possible loss of data
 D:\AI\worktrees\stateos-lane1\examples\server\server-task.h(106): warning C4267: 'return': conversion from 'size_t' to 'int32_t', possible loss of data
 D:\AI\worktrees\stateos-lane1\examples\server\server-task.h(401): warning C4267: 'return': conversion from 'size_t' to 'int', possible loss of data
@@ -122,6 +1166,6 @@ D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1914): warning C4101: '
 D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1917): warning C4101: 'e': unreferenced local variable
 D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1975): warning C4101: 'e': unreferenced local variable
 D:\AI\worktrees\stateos-lane1\examples\server\server.cpp(1978): warning C4101: 'e': unreferenced local variable
-[9/9] Linking CXX executable bin\llama-server.exe
+[120/120] Linking CXX executable bin\llama-server.exe
 build exit=0
 build-l1 exit=0

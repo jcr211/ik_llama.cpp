@@ -1,23 +1,26 @@
 'vswhere.exe' is not recognized as an internal or external command,
 operable program or batch file.
+CUDA_VISIBLE_DEVICES=[-1]
 ==== test-stateos-header (direct)
-gguf_init_from_file: failed to open 'C:\Users\jcrog\AppData\Local\Temp\stateos-header-test-1790205317\fp-split-00002-of-00002.gguf': 'No such file or directory'
+gguf_init_from_file: failed to open 'C:\Users\jcrog\AppData\Local\Temp\stateos-header-test-1790218275\fp-split-00002-of-00002.gguf': 'No such file or directory'
 gguf_init_from_file: invalid magic characters 'JUNK'
-gguf_init_from_file: failed to open 'C:\Users\jcrog\AppData\Local\Temp\stateos-header-test-1790205317\missing.gguf': 'No such file or directory'
+gguf_init_from_file: failed to open 'C:\Users\jcrog\AppData\Local\Temp\stateos-header-test-1790218275\missing.gguf': 'No such file or directory'
 test-stateos-header: 202 checks, 0 failures
 test-stateos-header exit=0
 ==== ctest
 Test project D:/AI/worktrees/stateos-lane1/build-stateos-l1
     Start 22: test-speculative-params
-1/2 Test #22: test-speculative-params ..........   Passed    0.10 sec
+1/3 Test #22: test-speculative-params ..........   Passed    0.09 sec
     Start 23: test-stateos-header
-2/2 Test #23: test-stateos-header ..............   Passed    2.04 sec
+2/3 Test #23: test-stateos-header ..............   Passed    2.08 sec
+    Start 24: test-ple-hist
+3/3 Test #24: test-ple-hist ....................   Passed    0.02 sec
 
-100% tests passed out of 2
+100% tests passed out of 3
 
 Label Time Summary:
-main    =   2.14 sec*proc (2 tests)
+main    =   2.20 sec*proc (3 tests)
 
-Total Test time (real) =   2.39 sec
+Total Test time (real) =   2.40 sec
 ctest exit=0
 test-l1 exit=0

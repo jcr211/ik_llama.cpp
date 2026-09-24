@@ -23,7 +23,7 @@ echo configure exit=%CFG_RC%
 if not "%CFG_RC%"=="0" exit /b 12
 
 echo ==== build
-cmake --build "%BLD%" --target llama-server test-stateos-header test-speculative-params -j 12
+cmake --build "%BLD%" --target llama-server test-stateos-header test-speculative-params test-ple-hist -j 12
 set "BUILD_RC=%ERRORLEVEL%"
 echo build exit=%BUILD_RC%
 if not "%BUILD_RC%"=="0" exit /b 13

@@ -102,3 +102,28 @@ valid MAIN is caught after seq_rm (slot cleared, 500), so a content checksum is 
 - Build: before it, no nvcc, cl, cmake or ninja from another lane was running. `.lane/build-l1.cmd` exit 0; no
   diagnostics in lane files.
 - Tests: `.lane/test-l1.cmd` exit 0. `test-stateos-header` runs 202 checks with 0 failures; ctest 2/2.
+
+## Fix round 3 (merge of lane/ple-hist-rewind)
+
+- Merged `lane/ple-hist-rewind` (`b72eb38d`, `424cbe84`) as `1b3352ed`. The only conflict was `tests/CMakeLists.txt`,
+  resolved by keeping both test registrations. `src/llama.cpp`, `include/llama.h`, `common/speculative.*` and
+  `server-context.cpp` auto-merged into separate hunks.
+- **The State-OS restore reaches the PLE choke point.** `stateos_slot_restore` installs `cache_tokens` from TOKS.
+  On the next request, `batch_pending_prompt` keeps the common prefix and computes `p0 > 0`. On that first prompt
+  batch (`n_prompt_tokens_processed == 0`) and before any decode, it calls
+  `common_ple_history_set(..., system_tokens + cache_tokens[n_past - n_hist .. n_past), p0, "server-resume")`. So no
+  extra `llama_ple_history_set` call is needed in the restore. An empty-state or failed restore leaves `n_past = 0`
+  and `p0 = 0`, where the position-0 EOS convention applies. The gate is `LONGSPEAR_PLE_HIST_REWIND=1`; off, the
+  behaviour is unchanged.
+- **GPU script:**
+  - Every 8101 server gets `LONGSPEAR_PLE_HIST_REWIND=1` and `LONGSPEAR_PLE_HIST_LOG=1` (plus `VERIFY_TIMING` and
+    `CG_REVIVE`). They are recorded as `<name> env: ...` in `launch-args.txt` and removed before the standing
+    relaunch.
+  - Every restore round counts the `[ple-hist] reset` lines at pos > 0 (expect 0) and the `site=server-resume` sets:
+    identity rounds, the empty round trip, the MAIN tamper and the no-companion restore.
+  - Summary in `results.json → ple_hist`. `GPU-VERIFY.md` has a new section on this.
+- `build-l1.cmd` also builds `test-ple-hist`, and `test-l1.cmd` runs it. The test script prints
+  `CUDA_VISIBLE_DEVICES=[-1]`, a non-empty value.
+- Build: a process check showed no nvcc, cl, cmake or ninja from another lane. `.lane/build-l1.cmd` exit 0 (120 steps).
+- Tests: `.lane/test-l1.cmd` exit 0. `test-stateos-header` runs 202 checks with 0 failures; ctest 3/3
+  (`test-speculative-params`, `test-stateos-header`, `test-ple-hist`).

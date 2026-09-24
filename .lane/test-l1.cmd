@@ -16,13 +16,14 @@ exit /b %RC%
 call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" > nul
 if not "%ERRORLEVEL%"=="0" exit /b 11
 
+echo CUDA_VISIBLE_DEVICES=[%CUDA_VISIBLE_DEVICES%]
 echo ==== test-stateos-header (direct)
 "%BLD%\bin\test-stateos-header.exe" "%SRC%\models\ggml-vocab-qwen2.gguf" "%SRC%\models\ggml-vocab-llama-bpe.gguf"
 set "T1=%ERRORLEVEL%"
 echo test-stateos-header exit=%T1%
 
 echo ==== ctest
-ctest --test-dir "%BLD%" -R "test-stateos-header|test-speculative-params" --output-on-failure
+ctest --test-dir "%BLD%" -R "test-stateos-header|test-speculative-params|test-ple-hist" --output-on-failure
 set "T2=%ERRORLEVEL%"
 echo ctest exit=%T2%
 

@@ -30,3 +30,6 @@ Log (ET, approximate):
 - 18:57 build exit 0, test-l1 exit 0 (195 checks / 0 failures, ctest 2/2); no compiler of another lane was running
 - 19:17 fix round 2 (re-review ALLOW): N1 split.count=0, N2 KV<->tokens save refusal + restore failure, N3 guarded
   startup identity, N4 script guards/verdicts; build exit 0, test-l1 exit 0 (202 checks / 0 failures, ctest 2/2)
+- 22:55 fix round 3: merged lane/ple-hist-rewind (1b3352ed; CMake conflict kept both); restore reaches the
+  server-resume choke point; GPU script sets PLE env + counts [ple-hist] resets per restore round; build exit 0,
+  test-l1 exit 0 (202 / 0, ctest 3/3 incl. test-ple-hist)

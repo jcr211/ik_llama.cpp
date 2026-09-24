@@ -35,8 +35,16 @@ $ResultsJs  = Join-Path $Root 'results.json'
 $CommonArgs = @('-ngl','999','-ncmoe','37','-fa','1','-c','196608','-ub','512','-ctk','q8_0','-ctv','q8_0','-np','1','-t','24','-tb','32',
                 '--jinja','--temp','1.0','--top-p','0.95','--top-k','20','--min-p','0.0','--reasoning-budget','1024','-rtr','-muge')
 $SpecArgs   = @('--spec-type','ngram-mod:n_min=4','--spec-type','mtp:n_max=4','--spec-ckpt-mode','gpu-fallback')
-$env:LONGSPEAR_VERIFY_TIMING = '1'
-$env:LONGSPEAR_CG_REVIVE = '1'
+# Inherited by every 8101 server (both legs). PLE_HIST_REWIND=1 rebuilds the qwen4exp PLE n-gram history at the one
+# server choke point before the next decode (restores included); PLE_HIST_LOG=1 prints the [ple-hist] telemetry the
+# per-round check below counts. Both are removed again before the standing server is relaunched.
+$ServerEnv = [ordered]@{
+    LONGSPEAR_VERIFY_TIMING   = '1'
+    LONGSPEAR_CG_REVIVE       = '1'
+    LONGSPEAR_PLE_HIST_REWIND = '1'
+    LONGSPEAR_PLE_HIST_LOG    = '1'
+}
+foreach ($k in $ServerEnv.Keys) { Set-Item -Path "Env:$k" -Value $ServerEnv[$k] }
 
 New-Item -ItemType Directory -Force -Path $Root, $SlotDir | Out-Null
 Add-Type -AssemblyName System.Net.Http
@@ -106,6 +114,23 @@ function Read-LogSince([string] $Path, [long] $Offset) {
     } finally { $fs.Dispose() }
 }
 function Log-Size([string] $Path) { if (Test-Path -LiteralPath $Path) { (Get-Item -LiteralPath $Path).Length } else { 0 } }
+
+# [ple-hist] telemetry: fprintf(stderr), so it lands in <name>.err.log; read both files to be safe.
+# A "reset" at pos > 0 means a decode found no history for a position that has predecessors (the defect the
+# ple-hist merge fixes); expected 0 for text-only prompts. "set ... site=server-resume" is the choke point firing.
+function Ple-Offsets([string] $LogPath) {
+    $err = $LogPath -replace '\.log$', '.err.log'
+    [pscustomobject]@{ Out = (Log-Size $LogPath); Err = (Log-Size $err); OutPath = $LogPath; ErrPath = $err }
+}
+function Ple-Counts($Offsets) {
+    $lines = @(Read-LogSince $Offsets.OutPath $Offsets.Out) + @(Read-LogSince $Offsets.ErrPath $Offsets.Err)
+    $resets = 0; $resume = 0; $sets = 0
+    foreach ($l in $lines) {
+        if ($l -match '\[ple-hist\] reset seq=\d+ pos=(\d+)') { if ([int] $Matches[1] -gt 0) { $resets++ } }
+        elseif ($l -match '\[ple-hist\] set .*site=(\S+)') { $sets++; if ($Matches[1] -eq 'server-resume') { $resume++ } }
+    }
+    [pscustomobject]@{ resets_pos_gt0 = $resets; sets = $sets; sets_server_resume = $resume }
+}
 function Acceptance([string[]] $Lines) {
     $a = 0; $g = 0
     foreach ($l in $Lines) { if ($l -match 'draft acceptance rate = [0-9.]+ \(\s*(\d+) accepted /\s*(\d+) generated\)') { $a += [int] $Matches[1]; $g += [int] $Matches[2] } }
@@ -118,6 +143,8 @@ function Start-TestServer([string] $Name, [string[]] $Extra) {
     # Start-Process joins ArgumentList with spaces and does not quote: paths with spaces carry their own quotes
     $argv = @('-m', ('"' + $Model + '"'), '--host', '127.0.0.1', '--port', "$Port", '--slot-save-path', ('"' + $SlotDir + '"'), '--verbose') + $CommonArgs + $Extra
     Add-Content -LiteralPath (Join-Path $Root 'launch-args.txt') -Value "$Name`: $PatchedExe $($argv -join ' ')" -Encoding utf8
+    $envLine = ($ServerEnv.Keys | ForEach-Object { "$_=" + [Environment]::GetEnvironmentVariable($_) }) -join ' '
+    Add-Content -LiteralPath (Join-Path $Root 'launch-args.txt') -Value "$Name env: $envLine" -Encoding utf8
     $p = Start-Process -FilePath $PatchedExe -ArgumentList $argv -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError $err
     $healthy = $false
     for ($i = 0; $i -lt 180 -and -not $healthy; $i++) {
@@ -213,19 +240,25 @@ function Test-Identity([string] $Tag, [int[]] $P, [int[]] $Z, [int[]] $Q, [int] 
     if ($s.Status -ne 200) { throw "$Tag save: $($s.Status) $(Short $s.Raw)" }
     $res.save = [ordered]@{ n_saved = $s.Body.n_saved; n_written = $s.Body.n_written; save_ms = $s.Body.timings.save_ms; bytes = $s.Body.stateos.bytes; companion = $s.Body.stateos.companion; checkpoints_saved = $s.Body.stateos.checkpoints_saved; token_sha256 = $s.Body.stateos.token_sha256 }
     $o = Log-Size $LogPath
+    $po = Ple-Offsets $LogPath
     $w = Complete $PZ $NGen                                      # continuation from the in-memory S0
-    $res.warm = $w; $res.warm_acceptance = Acceptance (Read-LogSince $LogPath $o)
+    $res.warm = $w; $res.warm_acceptance = Acceptance (Read-LogSince $LogPath $o); $res.warm_ple = Ple-Counts $po
 
     $runs = @()
     foreach ($k in 1, 2) {
         [void] (Slot 'erase' $null); [void] (Complete $Q 8)      # another conversation occupies the slot
+        $po = Ple-Offsets $LogPath                               # from the restore through the continuation
         $rs = Slot 'restore' "$Tag.state"
         if ($rs.Status -ne 200) { throw "$Tag restore $k`: $($rs.Status) $(Short $rs.Raw)" }
         $o = Log-Size $LogPath
         $r = Complete $PZ $NGen
-        $runs += [ordered]@{ restore = [ordered]@{ n_restored = $rs.Body.n_restored; n_read = $rs.Body.n_read; restore_ms = $rs.Body.timings.restore_ms; stateos = $rs.Body.stateos }; out = $r; acceptance = (Acceptance (Read-LogSince $LogPath $o)) }
+        $ple = Ple-Counts $po
+        $runs += [ordered]@{ restore = [ordered]@{ n_restored = $rs.Body.n_restored; n_read = $rs.Body.n_read; restore_ms = $rs.Body.timings.restore_ms; stateos = $rs.Body.stateos }; out = $r; acceptance = (Acceptance (Read-LogSince $LogPath $o)); ple = $ple }
+        Log "$Tag restore round $k`: [ple-hist] resets at pos>0 = $($ple.resets_pos_gt0) (expect 0), server-resume sets = $($ple.sets_server_resume)"
     }
     $res.restored = $runs
+    $res.ple_resets_pos_gt0 = [int] $runs[0].ple.resets_pos_gt0 + [int] $runs[1].ple.resets_pos_gt0
+    $res.ple_ok = ($res.ple_resets_pos_gt0 -eq 0) -and ($runs[0].ple.sets_server_resume -ge 1) -and ($runs[1].ple.sets_server_resume -ge 1)
     if (-not $NoCold) {
         [void] (Slot 'erase' $null)
         $res.cold = Complete $PZ $NGen                           # full prefill of P+Z, report-only
@@ -365,14 +398,17 @@ try {
     [void] (Slot 'erase' $null)
     $se = Slot 'save' 'empty.state'
     [void] (Complete $Q 8)                                   # something to erase
+    $poA = Ple-Offsets $logA
     $re = Slot 'restore' 'empty.state'
     $alive = $false; try { $alive = ((Invoke-RestMethod -Uri "$Base/health" -TimeoutSec 5).status -eq 'ok') } catch {}
     $ae = Complete $PZ4 64
+    $pleA = Ple-Counts $poA
+    Log "empty-slot round trip: [ple-hist] resets at pos>0 = $($pleA.resets_pos_gt0) (expect 0)"
     $emptyMech = ($se.Status -eq 200) -and ($se.Body.n_saved -eq 0) -and ($re.Status -eq 200) -and ($re.Body.stateos.empty -eq $true) -and $alive -and
-                 ($ae.prompt_n -eq $PZ4.Length)
+                 ($ae.prompt_n -eq $PZ4.Length) -and ($pleA.resets_pos_gt0 -eq 0)
     $emptySame = ($ae.content -ceq $cold4.content)
     $emptyVerdict = Destructive-Verdict $emptyMech $emptySame
-    $Results.legA.empty_roundtrip = [ordered]@{ save_status = $se.Status; restore_status = $re.Status; restore = $re.Body.stateos; alive = $alive; next = $ae; mechanism = $emptyMech; same_as_cold = $emptySame; verdict = $emptyVerdict; pass = ($emptyVerdict -eq 'PASS') }
+    $Results.legA.empty_roundtrip = [ordered]@{ save_status = $se.Status; restore_status = $re.Status; restore = $re.Body.stateos; alive = $alive; next = $ae; ple = $pleA; mechanism = $emptyMech; same_as_cold = $emptySame; verdict = $emptyVerdict; pass = ($emptyVerdict -eq 'PASS') }
     Log "empty-slot round trip: save=$($se.Status) restore=$($re.Status) empty=$($re.Body.stateos.empty) alive=$alive next prompt_n=$($ae.prompt_n)/$($PZ4.Length) same-as-cold=$emptySame verdict=$emptyVerdict"
 
     # (b) MAIN tamper: cell_count + 1 inside a well-formed container -> the loader fails after its seq_rm -> 500,
@@ -383,14 +419,17 @@ try {
     $cc = [BitConverter]::ToUInt32((Read-BytesAt $bad $m.Offset 4), 0)
     Write-BytesAt $bad $m.Offset ([BitConverter]::GetBytes([uint32] ($cc + 1)))
     $rs = Slot 'restore' 'id4k.state'                         # the slot holds S0 before the tamper
+    $poB = Ple-Offsets $logA
     $rt = Slot 'restore' 'main-tamper.state'
     $alive = $false; try { $alive = ((Invoke-RestMethod -Uri "$Base/health" -TimeoutSec 5).status -eq 'ok') } catch {}
     $at = Complete $PZ4 64
+    $pleB = Ple-Counts $poB
+    Log "MAIN tamper: [ple-hist] resets at pos>0 = $($pleB.resets_pos_gt0) (expect 0)"
     $tamperMech = ($rs.Status -eq 200) -and ($rt.Status -eq 500) -and ($rt.Body.error.slot_untouched -eq $false) -and $alive -and
-                  ($at.prompt_n -eq $PZ4.Length)
+                  ($at.prompt_n -eq $PZ4.Length) -and ($pleB.resets_pos_gt0 -eq 0)
     $tamperSame = ($at.content -ceq $cold4.content)
     $tamperVerdict = Destructive-Verdict $tamperMech $tamperSame
-    $Results.legA.main_tamper = [ordered]@{ cell_count = $cc; status = $rt.Status; error = $rt.Body.error; alive = $alive; next = $at; mechanism = $tamperMech; same_as_cold = $tamperSame; verdict = $tamperVerdict; pass = ($tamperVerdict -eq 'PASS') }
+    $Results.legA.main_tamper = [ordered]@{ cell_count = $cc; status = $rt.Status; error = $rt.Body.error; alive = $alive; next = $at; ple = $pleB; mechanism = $tamperMech; same_as_cold = $tamperSame; verdict = $tamperVerdict; pass = ($tamperVerdict -eq 'PASS') }
     Log "MAIN tamper (cell_count $cc -> $($cc + 1)): status=$($rt.Status) slot_untouched=$($rt.Body.error.slot_untouched) alive=$alive next prompt_n=$($at.prompt_n)/$($PZ4.Length) same-as-cold=$tamperSame verdict=$tamperVerdict"
     Save-Results
     Stop-TestServer $proc; $proc = $null
@@ -406,12 +445,15 @@ try {
         $Results.legB.companion_32k = Test-Identity 'on32k' (Head $all 32768) $Z $Q 128 -NoCold -LogPath $logB
         # the spec-off 32K file has no COMP section: restore it here to see acceptance without the companion
         [void] (Slot 'erase' $null); [void] (Complete $Q 8)
+        $poNc = Ple-Offsets $logB
         $rs = Slot 'restore' 'id32k.state'
         $nc = [ordered]@{ status = $rs.Status; stateos = $rs.Body.stateos; error = $rs.Body.error }
         if ($rs.Status -eq 200) {
             $o = Log-Size $logB
             $nc.out = Complete (Concat (Head $all 32768) $Z) 128
             $nc.acceptance = Acceptance (Read-LogSince $logB $o)
+            $nc.ple = Ple-Counts $poNc
+            Log "no-companion restore: [ple-hist] resets at pos>0 = $($nc.ple.resets_pos_gt0) (expect 0)"
         }
         $Results.legB.no_companion_32k = $nc
         Log "spec-on 32K: companion=$($Results.legB.companion_32k.restored[0].restore.stateos.companion) acc(warm)=$($Results.legB.companion_32k.warm_acceptance.rate) acc(restored)=$($Results.legB.companion_32k.restored[0].acceptance.rate) acc(no companion)=$($nc.acceptance.rate) status(no companion file)=$($rs.Status)"
@@ -465,14 +507,29 @@ try {
     }
     $Results.restore_invalidate_lines = $invalidates.Count
     Log "MTP invalidate: SLOT_RESTORE lines: $($invalidates.Count)"
+
+    # PLE n-gram history across every identity round (expected: 0 resets at pos > 0, the choke point fired each time)
+    $pleRounds = [ordered]@{}
+    foreach ($leg in 'legA', 'legB') {
+        foreach ($key in @($Results[$leg].Keys)) {
+            $v = $Results[$leg][$key]
+            if ($v -is [System.Collections.IDictionary] -and $v.Contains('ple_ok')) {
+                $pleRounds["$leg.$key"] = [ordered]@{ resets_pos_gt0 = $v.ple_resets_pos_gt0; ok = $v.ple_ok }
+            }
+        }
+    }
+    $Results.ple_hist = [ordered]@{ rounds = $pleRounds; all_ok = (@($pleRounds.Values | Where-Object { -not $_.ok }).Count -eq 0) }
+    Log "[ple-hist] identity rounds: $(($pleRounds.Keys | ForEach-Object { "$_=$($pleRounds[$_].resets_pos_gt0)" }) -join ' ') all_ok=$($Results.ple_hist.all_ok)"
 } catch {
     Log "ABORTED: $($_.Exception.Message)"
     $Results.aborted = $_.Exception.Message
 } finally {
     Save-Results
     if ($proc) { Stop-TestServer $proc }
-    # restore the standing server no matter what (detached; never block on it)
+    # restore the standing server no matter what (detached; never block on it). The test-only PLE switches must not
+    # leak into the standing server's inherited environment.
     Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Remove-Item Env:LONGSPEAR_PLE_HIST_REWIND, Env:LONGSPEAR_PLE_HIST_LOG -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 3
     Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$Standing -WindowStyle Hidden | Out-Null
     Log 'restore launcher started'

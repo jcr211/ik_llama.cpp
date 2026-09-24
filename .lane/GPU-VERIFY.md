@@ -23,6 +23,32 @@ always relaunches the standing server with `D:\AI\ik_llama-qwen4exp\launch-stand
    shard plus every shard's header; the log line `State-OS model_fingerprint_v2 <hex> (<ms>)` gives its cost). If it
    fails, the log says `State-OS disabled`, `/props` omits `stateos` and save/restore answer 500.
 7. `--verbose` echoes request data; the 190K round writes MB-sized log lines. Harmless, but budget the disk.
+8. The script sets `LONGSPEAR_PLE_HIST_REWIND=1` and `LONGSPEAR_PLE_HIST_LOG=1` (plus `LONGSPEAR_VERIFY_TIMING=1`,
+   `LONGSPEAR_CG_REVIVE=1`) in the environment every 8101 server inherits, in both legs. It records them per server as
+   `<name> env: ...` in `launch-args.txt`, and removes the two PLE switches before relaunching the standing server.
+
+## PLE n-gram history (merged `lane/ple-hist-rewind`)
+
+qwen4exp keeps a host-side PLE n-gram history (`lctx.ple_hist`) outside the KV cache and outside the sequence state.
+Before the merge, a restore left it pointing at the previous conversation (Q). The first 2 decoded tokens after every
+restore round then used wrong PLE rows, and the identity legs would have failed on that alone.
+
+- **The fix:** with `LONGSPEAR_PLE_HIST_REWIND=1`, the server rebuilds the history at one choke point,
+  `batch_pending_prompt`, from `system_tokens` + `cache_tokens[0..n_past)`. It runs on the first prompt batch of
+  every request with `p0 > 0`, before the next decode.
+- **The State-OS restore path goes through it.** The restore installs `cache_tokens` from TOKS. The next request's
+  common-prefix `n_past`, and so `p0`, then comes from those tokens, so no extra `llama_ple_history_set` call is needed
+  in the restore itself.
+- **An empty-state or failed restore** leaves the slot empty, so `p0 = 0`, and position 0 uses the EOS-padding
+  convention.
+- **What the script counts:** for each restore round, from the restore through its continuation, the
+  `[ple-hist] reset seq=… pos=N` lines with N > 0 (stderr goes to `<name>.err.log`; both logs are read). It also counts
+  the `[ple-hist] set … site=server-resume` lines.
+- **Where the counts go:** `identity_*.restored[].ple`, `empty_roundtrip.ple`, `main_tamper.ple`,
+  `no_companion_32k.ple`, and the summary `results.json → ple_hist`.
+- **Pass:** 0 resets at pos > 0 in every round (text-only prompts), and at least one `server-resume` set per identity
+  restore round (`identity_*.ple_ok`, `ple_hist.all_ok`). The empty-slot and MAIN-tamper steps also require 0 resets at
+  pos > 0 as part of their mechanism condition.
 
 ## Run
 
