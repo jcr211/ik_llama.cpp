@@ -957,11 +957,24 @@ int main(int argc, char ** argv) {
         res.status = 200; // HTTP OK
     };
 
-    const auto handle_slots_save = [&ctx_server, &params](const httplib::Request & req, httplib::Response & res, int id_slot) {
+    // names ending in the State-OS temp suffix are reserved: the startup cleanup deletes such files
+    const auto reject_reserved_name = [](const std::string & filename, httplib::Response & res) {
+        if (!stateos_reserved_name(filename)) {
+            return false;
+        }
+        res_err(res, json{ {"code", 409}, {"type", "state_name_reserved"},
+                           {"message", std::string("State-OS file names ending in ") + STATEOS_TMP_SUFFIX + " are reserved for in-progress saves"} });
+        return true;
+    };
+
+    const auto handle_slots_save = [&ctx_server, &params, &reject_reserved_name](const httplib::Request & req, httplib::Response & res, int id_slot) {
         json request_data = json::parse(req.body);
         std::string filename = request_data.at("filename");
         if (!fs_validate_filename(filename)) {
             res_err(res, format_error_response("Invalid filename", ERROR_TYPE_INVALID_REQUEST));
+            return;
+        }
+        if (reject_reserved_name(filename, res)) {
             return;
         }
         std::string filepath = params.slot_save_path + filename;
@@ -990,11 +1003,14 @@ int main(int argc, char ** argv) {
         }
     };
 
-    const auto handle_slots_restore = [&ctx_server, &params](const httplib::Request & req, httplib::Response & res, int id_slot) {
+    const auto handle_slots_restore = [&ctx_server, &params, &reject_reserved_name](const httplib::Request & req, httplib::Response & res, int id_slot) {
         json request_data = json::parse(req.body);
         std::string filename = request_data.at("filename");
         if (!fs_validate_filename(filename)) {
             res_err(res, format_error_response("Invalid filename", ERROR_TYPE_INVALID_REQUEST));
+            return;
+        }
+        if (reject_reserved_name(filename, res)) {
             return;
         }
         std::string filepath = params.slot_save_path + filename;
@@ -1947,6 +1963,15 @@ int main(int argc, char ** argv) {
                 new_filename_str.find("..") != std::string::npos || new_filename_str.find_first_of("/\\") != std::string::npos) {
                 res.status = 400;
                 response = {{"error", "Invalid filename format."}};
+                res.set_content(response.dump(), "application/json; charset=utf-8");
+                return;
+            }
+
+            // a state renamed onto our temp suffix would be deleted by the startup cleanup
+            if (stateos_reserved_name(new_filename_str)) {
+                res.status = 409;
+                response = {{"error", std::string("Destination names ending in ") + STATEOS_TMP_SUFFIX + " are reserved."},
+                            {"type", "state_name_reserved"}};
                 res.set_content(response.dump(), "application/json; charset=utf-8");
                 return;
             }

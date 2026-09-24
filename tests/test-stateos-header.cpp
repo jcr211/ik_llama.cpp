@@ -654,6 +654,15 @@ static void test_stale_tmp_cleanup() {
     make(".stateos.tmp", true);                // suffix only, no name: left alone
     std::filesystem::create_directories(dir / "dir.stateos.tmp"); // not a regular file
 
+    // client names on the temp suffix are refused, so the cleanup below can never meet a committed state
+    CHECK(stateos_reserved_name("notes.stateos.tmp"));
+    CHECK(stateos_reserved_name("NOTES.STATEOS.TMP"));  // Windows names are case-insensitive
+    CHECK(stateos_reserved_name(".stateos.tmp"));
+    CHECK(!stateos_reserved_name("notes.state"));
+    CHECK(!stateos_reserved_name("notes.stateos.tmp.bak"));
+    CHECK(!stateos_reserved_name("stateos.tmp"));
+    CHECK(!stateos_reserved_name(""));
+
     std::vector<std::string> removed;
     const size_t n = stateos_cleanup_stale_tmp(stateos_path_utf8(dir), 3600, &removed);
     CHECK(n == 1 && removed.size() == 1 && removed[0] == "crashed.state.stateos.tmp");

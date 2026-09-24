@@ -586,6 +586,21 @@ bool stateos_kv_consistent(size_t n_tokens, int32_t kv_pos_max) {
     return n_tokens == 0 || kv_pos_max >= 0;
 }
 
+bool stateos_reserved_name(const std::string & filename) {
+    const std::string suffix = STATEOS_TMP_SUFFIX;
+    if (filename.size() < suffix.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < suffix.size(); ++i) {
+        const char c = filename[filename.size() - suffix.size() + i];
+        const char lower = (c >= 'A' && c <= 'Z') ? (char) (c - 'A' + 'a') : c;
+        if (lower != suffix[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool stateos_flush_file(const std::string & path, std::string * err) {
 #if defined(_WIN32)
     const std::wstring w = stateos_path(path).wstring();

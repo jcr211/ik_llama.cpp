@@ -177,6 +177,10 @@ bool stateos_kv_consistent(size_t n_tokens, int32_t kv_pos_max);
 // Suffix of the file a save writes before its commit rename (`<name>.stateos.tmp`).
 constexpr const char * STATEOS_TMP_SUFFIX = ".stateos.tmp";
 
+// A client name that ends (case-insensitively, as on Windows) in STATEOS_TMP_SUFFIX: refused for save/restore/rename,
+// so the startup cleanup of that suffix can never delete a committed state.
+bool stateos_reserved_name(const std::string & filename);
+
 // Push a written file's data to the device (FlushFileBuffers / fsync) so the commit rename never publishes bytes that
 // a power loss could still take back.
 bool stateos_flush_file(const std::string & path, std::string * err);
