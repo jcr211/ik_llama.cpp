@@ -121,6 +121,10 @@ struct server_slot {
     void prompt_load(server_prompt_cache& prompt_cache, const server_tokens& tokens, float min_reusable_fraction);
 
     llama_pos checkpoint_pos = -1;
+
+    // State-OS: server_context::stateos_adapter_gen when this slot's KV started from empty (-1 = unknown, e.g. a RAM
+    // prompt-cache load after an adapter change); a save refuses a non-empty KV of another generation
+    int64_t stateos_kv_gen = 0;
     bool do_checkpoint = false;
     bool image_just_processed = false;
 
@@ -346,6 +350,10 @@ struct server_context {
 
     // State-OS v1 keyed slot state (/slots/{id}?action=save|restore)
     std::string stateos_model_fp; // model_fingerprint_v2, computed once after the load (empty = State-OS unavailable)
+
+    // bumped on every runtime LoRA / control-vector change: a slot's KV is honest to save only if it was built
+    // entirely under the current generation (server_slot::stateos_kv_gen)
+    int64_t stateos_adapter_gen = 0;
 
     void stateos_init_identity();
 

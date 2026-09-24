@@ -163,6 +163,10 @@ stateos_section_check stateos_check_sections(const stateos_scan_result & scan, s
 // the descriptor lines (one per active item, in load order: application order is part of the identity).
 std::string stateos_effective_model_value(const std::vector<std::string> & parts);
 
+// A non-empty KV is saved (stamped with the current effective_model) only when it was built entirely under the
+// current runtime adapter generation; kv_gen -1 means unknown and never qualifies.
+bool stateos_kv_built_under_current(size_t n_tokens, int64_t kv_gen, int64_t current_gen);
+
 // every id inside [0, n_vocab); on failure *bad_index (if not null) is the first offending position
 bool stateos_tokens_in_vocab(const int32_t * ids, size_t n, int32_t n_vocab, size_t * bad_index);
 

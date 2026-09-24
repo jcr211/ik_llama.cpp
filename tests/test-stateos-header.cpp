@@ -494,6 +494,13 @@ static void test_effective_model() {
     const std::string sv = stateos_effective_model_value({ "cvec-startup path=steer.gguf scale=1 layers=-1..-1" });
     CHECK(sv != "none" && sv != stateos_effective_model_value({ "cvec path=steer.gguf scale=1 layers=-1..-1" }));
 
+    // save honesty: the stamp is today's set, so the KV must have been built under it (review F11 P2-2)
+    CHECK(stateos_kv_built_under_current(0, -1, 7));    // empty slot: nothing to misdescribe
+    CHECK(stateos_kv_built_under_current(4096, 0, 0));  // no adapter change since startup
+    CHECK(stateos_kv_built_under_current(4096, 3, 3));  // rebuilt after the last change
+    CHECK(!stateos_kv_built_under_current(4096, 2, 3)); // prefilled under LoRA A, then the scale changed: refused
+    CHECK(!stateos_kv_built_under_current(4096, -1, 3)); // RAM prompt-cache state of unknown generation: refused
+
     // the verify path refuses a different adapter set by name
     stateos_fields saved   = server_like_fields();
     stateos_fields current = server_like_fields();

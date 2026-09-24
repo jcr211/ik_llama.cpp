@@ -1093,7 +1093,13 @@ server_slot* server_context::get_available_slot(const server_task& task) {
             const int64_t t_start = ggml_time_us();
             copy_data_to_cached_prompt(tokens, *ret);
 
+            const size_t n_states_before = prompt_cache->states.size();
             ret->prompt_load(*prompt_cache, task.tokens, cache_ram_similarity);
+            if (prompt_cache->states.size() != n_states_before) {
+                // a cached state of unknown adapter generation replaced the slot's KV: honest only if the adapter set
+                // never changed since startup (State-OS save refuses -1 until the slot is rebuilt from scratch)
+                ret->stateos_kv_gen = stateos_adapter_gen == 0 ? 0 : -1;
+            }
             prompt_cache->update();
 
             ret->cache_tokens = ret->server_cached_prompt.tokens.clone(); // recover cache tokens
@@ -2922,6 +2928,7 @@ void server_context::stateos_clear_slot(server_slot & slot) {
     slot.n_kept_prompt = 0;
     slot.n_discarded_prompt = 0;
     slot.checkpoint_pos = -1;
+    slot.stateos_kv_gen = stateos_adapter_gen; // empty: nothing in it predates the current adapter set
 }
 
 void server_context::stateos_slot_save(const server_task & task, server_slot & slot) {
@@ -3012,6 +3019,15 @@ void server_context::stateos_slot_save_impl(const server_task & task, server_slo
     fields.push_back({ STATEOS_HARD, "token_sha256", token_sha });
     fields.push_back({ STATEOS_INFO, "saved_unix",   std::to_string((long long) time(nullptr)) });
     fields.push_back({ STATEOS_INFO, "slot_id",      std::to_string(slot.id) });
+
+    // the header's effective_model is today's adapter set: honest only if the whole KV was built under it
+    if (!stateos_kv_built_under_current(n_tokens, slot.stateos_kv_gen, stateos_adapter_gen)) {
+        send_slot_error(task, 409, "state_adapters_changed",
+                "the slot's KV was built (in part) under a different runtime LoRA/control-vector set than the current "
+                "one; nothing was saved (the next request that starts from an empty slot makes it saveable again)",
+                { {"slot_untouched", true} });
+        return;
+    }
 
     // tokens without KV cells (e.g. after a failed RAM prompt-cache load) would restore as a false success
     const llama_pos kv_pos_max_save = llama_kv_cache_seq_pos_max(ctx, slot.id);
@@ -3410,6 +3426,8 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
     }
 
     slot.cache_tokens = server_tokens(llama_tokens(ids.begin(), ids.end()), mctx != nullptr);
+    // verified: the file's effective_model equals the current one, so this KV belongs to the current generation
+    slot.stateos_kv_gen = stateos_adapter_gen;
     const llama_pos pos_next = slot.cache_tokens.pos_next();
 
     if (comp_load) {
@@ -3680,6 +3698,7 @@ void server_context::process_single_task(server_task&& task) {
         // Erase token cache
         const size_t n_erased = slot->cache_tokens.size();
         llama_kv_cache_seq_rm(ctx, slot->id, -1, -1);
+        slot->stateos_kv_gen = stateos_adapter_gen; // empty: nothing in it predates the current adapter set
         slot->cache_tokens.keep_first(0);
         //slot->cache_tokens.clear();
         slot->server_cached_prompt.checkpoints.clear();
@@ -3695,6 +3714,7 @@ void server_context::process_single_task(server_task&& task) {
     } break;
     case SERVER_TASK_TYPE_SET_LORA:
     {
+        ++stateos_adapter_gen; // KV built before this point was computed under another adapter set
         llama_lora_adapters_apply(ctx, lora_adapters);
         server_task_result result;
         result.id = task.id;
@@ -3842,6 +3862,7 @@ void server_context::process_single_task(server_task&& task) {
 }
 
 bool server_context::apply_control_vectors_internal() {
+    ++stateos_adapter_gen; // every load/unload/apply path comes through here; KV built before was steered differently
     llama_control_vector_data combined_cv = { -1, {} };
 
     // Check if we have anything to apply
@@ -4728,6 +4749,12 @@ void server_context::batch_pending_prompt(const int32_t n_ubatch, const int32_t 
                     { "id_task", slot.id_task },
                     { "p0",      p0 }
                     });
+
+                // State-OS: a slot whose KV starts over (nothing reused) is built entirely under the current adapter
+                // set; one that reuses a prefix keeps the generation of that prefix (a save then refuses a mixed KV)
+                if (slot.n_prompt_tokens_processed == 0 && slot.n_past == 0) {
+                    slot.stateos_kv_gen = stateos_adapter_gen;
+                }
 
                 // LONGSPEAR_PLE_HIST_REWIND: every rewind before this point (checkpoint restore,
                 // prompt-cache or /slots state load, prefix trim) leaves the PLE n-gram history at
