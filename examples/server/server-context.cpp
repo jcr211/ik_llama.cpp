@@ -3323,6 +3323,14 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
     }
     const std::string token_sha = stateos_token_sha256(ids.data(), ids.size());
 
+    // nobody knows what the context computes with: no header can match that, whatever it says
+    if (stateos_effective_cur == STATEOS_EFFECTIVE_UNKNOWN) {
+        send_slot_error(task, 409, "state_adapters_unknown",
+                "State-OS restore refused: a runtime control-vector apply failed, so the applied adapter set is unknown "
+                "(a successful /control-vectors/apply makes it known again); slot untouched",
+                { {"slot_untouched", true} });
+        return;
+    }
     stateos_fields current = stateos_identity_fields(&err);
     if (current.empty()) {
         send_slot_error(task, 500, "server_error", "State-OS identity unavailable: " + err, { {"slot_untouched", true} });

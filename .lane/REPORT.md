@@ -220,7 +220,9 @@ tampers `effective_model` among the hard fields.
   - Unit tests cover the helpers: the cvec parts with startup live and dropped, and a bad-id request leaving the
     scales untouched.
   - **Failed apply.** While the stamp is `unknown`, every save is refused with 409 `state_adapters_unknown`, and every
-    restore is refused as an `effective_model` mismatch (`current=unknown`). Only a later successful
+    restore is refused outright with 409 `state_adapters_unknown` and `slot_untouched`, whatever the file's header says
+    (F11-3 P3-2; before that it was an `effective_model` mismatch, which a hand-made `effective_model=unknown` header
+    could pass). Only a later successful
     `/control-vectors/apply` clears it; a `/lora-adapters` call keeps it (F11-3 P3-1).
 - `91579f16` **P3-1:** `/rename_prompt` runs `fs_validate_filename` on both names (400). The reserved-suffix check now
   strips Windows trailing dots and spaces first, so `x.stateos.tmp.` and `x.stateos.tmp ` are refused too. It applies to
