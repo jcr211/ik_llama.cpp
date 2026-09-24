@@ -4626,6 +4626,21 @@ void server_context::batch_pending_prompt(const int32_t n_ubatch, const int32_t 
                     { "p0",      p0 }
                     });
 
+                // LONGSPEAR_PLE_HIST_REWIND: every rewind before this point (checkpoint restore,
+                // prompt-cache or /slots state load, prefix trim) leaves the PLE n-gram history at
+                // another position; this prompt resumes at p0 right after these tokens
+                if (slot.n_prompt_tokens_processed == 0 && p0 > 0 && common_ple_hist_rewind_enabled()) {
+                    const int32_t n_hist = llama_ple_history_len(ctx);
+                    std::vector<llama_token> prev;
+                    for (int32_t i = std::max(0, (int32_t) system_tokens.size() - n_hist); i < (int32_t) system_tokens.size(); ++i) {
+                        prev.push_back(system_tokens[i]);
+                    }
+                    for (int32_t i = std::max(0, slot.n_past - n_hist); i < slot.n_past; ++i) {
+                        prev.push_back(slot.cache_tokens[i]);
+                    }
+                    common_ple_history_set(ctx, slot.id, prev.data(), (int32_t) prev.size(), p0, "server-resume");
+                }
+
                 // check if we should process the image
                 if (slot.n_past_prompt < slot.n_prompt_tokens
                     && slot.prompt_tokens[slot.n_past_prompt] == LLAMA_TOKEN_NULL) {

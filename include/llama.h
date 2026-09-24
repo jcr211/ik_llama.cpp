@@ -847,6 +847,35 @@ extern "C" {
     LLAMA_API void llama_kv_cache_clear(
             struct llama_context * ctx);
 
+    // Per-layer-embedding (PLE, qwen4exp) n-gram history: the last tokens of each sequence that
+    // the next decoded token hashes with when they are not in its ubatch. It lives on the host,
+    // outside the KV cache and the sequence state, so a caller that rewinds a sequence (checkpoint
+    // restore, state load, re-prefill) sets it to the tokens before the resume position.
+
+    // Number of predecessor tokens the history holds (n-gram size - 1), 0 for a model without PLE.
+    LLAMA_API int32_t llama_ple_history_len(const struct llama_context * ctx);
+
+    // Copies up to n_max of the sequence's most recent history tokens (oldest first) into out and
+    // returns how many; *next_pos (if not NULL) is the position the history is valid for, -1 when
+    // the sequence has none.
+    LLAMA_API int32_t llama_ple_history_get(
+            const struct llama_context * ctx,
+                          llama_seq_id   seq_id,
+                           llama_token * out,
+                               int32_t   n_max,
+                             llama_pos * next_pos);
+
+    // Sets the history for decoding at next_pos to the last llama_ple_history_len() tokens of prev
+    // (the tokens before next_pos, oldest first), front-padded with EOS when n_prev is shorter,
+    // which reproduces the position-0 convention. LLAMA_TOKEN_NULL entries (media) act as EOS.
+    // No-op for a model without PLE.
+    LLAMA_API void llama_ple_history_set(
+            struct llama_context * ctx,
+                    llama_seq_id   seq_id,
+               const llama_token * prev,
+                         int32_t   n_prev,
+                       llama_pos   next_pos);
+
     // Unified checkpoint API for recurrent/hybrid speculative decoding.
     enum llama_spec_ckpt_mode {
         LLAMA_SPEC_CKPT_NONE        = -1,

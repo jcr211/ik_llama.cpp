@@ -813,6 +813,14 @@ void llama_kv_cache_dump_view(const llama_kv_cache_view & view, int row_size = 8
 // Dump the KV cache view showing individual sequences in each cell (long output).
 void llama_kv_cache_dump_view_seqs(const llama_kv_cache_view & view, int row_size = 40);
 
+// LONGSPEAR_PLE_HIST_REWIND=1: rewind sites restore the PLE n-gram history (llama_ple_history_set).
+bool common_ple_hist_rewind_enabled();
+
+// llama_ple_history_set when LONGSPEAR_PLE_HIST_REWIND=1 (returns whether it ran), logged under
+// LONGSPEAR_PLE_HIST_LOG=1 with the name of the rewind site.
+bool common_ple_history_set(llama_context * ctx, llama_seq_id seq_id, const llama_token * prev, int32_t n_prev,
+        llama_pos next_pos, const char * site);
+
 //
 // Embedding utils
 //

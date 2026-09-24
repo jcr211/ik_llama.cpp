@@ -68,12 +68,44 @@ void common_speculative_checkpoint::clear() {
     valid = false;
     mode = LLAMA_SPEC_CKPT_NONE;
     n_past = 0;
+    ple_hist.clear();
+    ple_next_pos = -1;
     sampled = LLAMA_TOKEN_NULL;
 
     if (sampler != nullptr) {
         common_sampler_free(sampler);
         sampler = nullptr;
     }
+}
+
+// LONGSPEAR_PLE_HIST_REWIND: the verify decode advances the target's PLE n-gram history through
+// every draft, and a checkpoint restore rewinds the recurrent state but not that host history. Keep
+// the history as it stood at the checkpoint (exact there: it is contiguous with n_past) ...
+static void common_speculative_ple_snapshot(common_speculative_checkpoint & ckpt, llama_context * ctx, llama_seq_id seq_id) {
+    const int32_t n_hist = common_ple_hist_rewind_enabled() ? llama_ple_history_len(ctx) : 0;
+    if (n_hist <= 0) {
+        return;
+    }
+    ckpt.ple_hist.resize(n_hist);
+    ckpt.ple_hist.resize(llama_ple_history_get(ctx, seq_id, ckpt.ple_hist.data(), n_hist, &ckpt.ple_next_pos));
+}
+
+// ... and rebuild it for the resume position: the checkpoint itself before a replay from n_past, or
+// the checkpoint followed by the sampled token and the accepted drafts after a per-step restore.
+static void common_speculative_ple_resume(const common_speculative_checkpoint & ckpt, llama_context * ctx,
+        llama_seq_id seq_id, const std::vector<llama_token> & ids, bool direct) {
+    if (ckpt.ple_next_pos != ckpt.n_past || ids.empty()) {
+        return; // no history contiguous with the checkpoint to rebuild from
+    }
+    std::vector<llama_token> prev = ckpt.ple_hist;
+    llama_pos next_pos = ckpt.n_past;
+    if (direct) {
+        prev.push_back(ckpt.sampled);
+        prev.insert(prev.end(), ids.begin(), ids.end() - 1);
+        next_pos += (llama_pos) ids.size();
+    }
+    common_ple_history_set(ctx, seq_id, prev.data(), (int32_t) prev.size(), next_pos,
+            direct ? "spec-per-step" : "spec-replay");
 }
 
 struct common_speculative_config {
@@ -2512,6 +2544,7 @@ static bool common_speculative_checkpoint_save(
         common_sampler_clone(sampler_src, ckpt.sampler);
     }
 
+    common_speculative_ple_snapshot(ckpt, ctx, seq_id);
     return true;
 }
 
@@ -2556,6 +2589,7 @@ bool common_speculative_checkpoint_restore(
     // now describes a target state that no longer exists, so invalidate it here. The
     // accepted-prefix commit below re-populates it from the restored rows.
     common_speculative_mtp_invalidate(spec, seq_id, ckpt.n_past);
+    common_speculative_ple_resume(ckpt, ctx, seq_id, ids, restore_result == LLAMA_SPEC_CKPT_RESTORE_DIRECT);
 
     if (restore_result == LLAMA_SPEC_CKPT_RESTORE_DIRECT) {
         if (ckpt.sampler != nullptr && sampler_dst != nullptr) {
