@@ -549,6 +549,18 @@ std::string stateos_effective_model_value(const std::vector<std::string> & parts
     return h.final_hex();
 }
 
+bool stateos_tokens_in_vocab(const int32_t * ids, size_t n, int32_t n_vocab, size_t * bad_index) {
+    for (size_t i = 0; i < n; ++i) {
+        if (ids[i] < 0 || ids[i] >= n_vocab) {
+            if (bad_index != nullptr) {
+                *bad_index = i;
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
 bool stateos_kv_consistent(size_t n_tokens, int32_t kv_pos_max) {
     return n_tokens == 0 || kv_pos_max >= 0;
 }

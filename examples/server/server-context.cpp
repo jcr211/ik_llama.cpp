@@ -3233,12 +3233,10 @@ void server_context::stateos_slot_restore_impl(const server_task & task, server_
                   {"warnings", stateos_mismatches_json(verdict.warnings)}, {"slot_untouched", true} });
         return;
     }
-    const int32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
-    for (size_t i = 0; i < n_tokens; ++i) {
-        if (ids[i] < 0 || ids[i] >= n_vocab) {
-            corrupt("section:TOKS", string_format("token %zu (id %d) is outside the vocabulary", i, ids[i]));
-            return;
-        }
+    size_t bad_id = 0;
+    if (!stateos_tokens_in_vocab(ids.data(), ids.size(), llama_vocab_n_tokens(llama_model_get_vocab(model)), &bad_id)) {
+        corrupt("section:TOKS", string_format("token %zu (id %d) is outside the vocabulary", bad_id, ids[bad_id]));
+        return;
     }
 
     std::vector<stateos_checkpoint_rec> recs;

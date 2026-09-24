@@ -506,6 +506,18 @@ static void test_section_checks() {
     c = stateos_check_sections(r, 196608);
     CHECK(!c.ok && c.field == "section:TOKS");
 
+    // vocabulary range (restore refuses, /list withholds the prompt)
+    {
+        const int32_t ok_ids[3]  = { 0, 5, 9 };
+        const int32_t bad_hi[3]  = { 0, 10, 1 };
+        const int32_t bad_neg[2] = { 3, -1 };
+        size_t bad = 99;
+        CHECK(stateos_tokens_in_vocab(ok_ids, 3, 10, &bad) && bad == 99);
+        CHECK(!stateos_tokens_in_vocab(bad_hi, 3, 10, &bad) && bad == 1);
+        CHECK(!stateos_tokens_in_vocab(bad_neg, 2, 10, &bad) && bad == 1);
+        CHECK(stateos_tokens_in_vocab(nullptr, 0, 10, nullptr));
+    }
+
     // KV <-> tokens: tokens need at least one KV cell (save refuses, restore fails and clears the slot)
     CHECK(stateos_kv_consistent(0, -1));      // empty slot
     CHECK(stateos_kv_consistent(4096, 4095)); // the normal case

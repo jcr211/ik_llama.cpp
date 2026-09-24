@@ -161,6 +161,9 @@ stateos_section_check stateos_check_sections(const stateos_scan_result & scan, s
 // the descriptor lines (one per active item, in load order: application order is part of the identity).
 std::string stateos_effective_model_value(const std::vector<std::string> & parts);
 
+// every id inside [0, n_vocab); on failure *bad_index (if not null) is the first offending position
+bool stateos_tokens_in_vocab(const int32_t * ids, size_t n, int32_t n_vocab, size_t * bad_index);
+
 // KV <-> tokens: a slot (or a just-loaded state) that claims tokens must hold at least one KV cell. kv_pos_max is
 // llama_kv_cache_seq_pos_max (-1 = no cells). The exact pos_max == n_tokens - 1 relation stays report-only.
 bool stateos_kv_consistent(size_t n_tokens, int32_t kv_pos_max);
