@@ -2773,6 +2773,41 @@ void server_context::stateos_init_identity() {
     SRV_INF("State-OS model_fingerprint_v2 %s (%.1f ms)\n", stateos_model_fp.c_str(), (ggml_time_us() - t0) / 1000.0);
 }
 
+// runtime changes to the computed weights that the GGUF fingerprint cannot see (a KV computed under one adapter set
+// is not the KV of another)
+static std::string stateos_effective_model(const gpt_params & params, const std::vector<llama_lora_adapter_container> & loras,
+                                           const std::vector<control_vector_container> & cvs) {
+    std::vector<std::string> parts;
+    for (const auto & la : loras) {
+        if (la.scale != 0.0f) {
+            parts.push_back(string_format("lora path=%s scale=%.9g", la.path.c_str(), la.scale));
+        }
+    }
+    for (const auto & cv : cvs) {
+        if (cv.applied && cv.scale != 0.0f) {
+            parts.push_back(string_format("cvec path=%s scale=%.9g layers=%d..%d", cv.path.c_str(), cv.scale, cv.layer_start, cv.layer_end));
+        }
+    }
+    for (const auto & ov : params.kv_overrides) {
+        if (ov.key[0] == '\0') {
+            continue; // the list's terminator
+        }
+        std::string val;
+        switch (ov.tag) {
+            case LLAMA_KV_OVERRIDE_TYPE_INT:   val = "int:"   + std::to_string(ov.val_i64); break;
+            case LLAMA_KV_OVERRIDE_TYPE_FLOAT: val = string_format("float:%.17g", ov.val_f64); break;
+            case LLAMA_KV_OVERRIDE_TYPE_BOOL:  val = ov.val_bool ? "bool:true" : "bool:false"; break;
+            case LLAMA_KV_OVERRIDE_TYPE_STR:   val = std::string("str:") + ov.val_str; break;
+            default:                           val = "tag:" + std::to_string((int) ov.tag); break;
+        }
+        parts.push_back(std::string("override-kv ") + ov.key + "=" + val);
+    }
+    if (params.min_experts >= 0 || params.thresh_experts != 0.0f) {
+        parts.push_back(string_format("experts min=%d thresh=%.9g", params.min_experts, params.thresh_experts));
+    }
+    return stateos_effective_model_value(parts);
+}
+
 stateos_fields server_context::stateos_identity_fields(std::string * err) {
     if (stateos_model_fp.empty()) {
         *err = "the model identity was not computed at startup (see the startup log)";
@@ -2785,6 +2820,7 @@ stateos_fields server_context::stateos_identity_fields(std::string * err) {
     // the catch-all geometry digest
     stateos_fields fields = {
         { STATEOS_HARD, "model_fingerprint_v2", stateos_model_fp },
+        { STATEOS_HARD, "effective_model",   stateos_effective_model(params_base, lora_adapters, control_vectors) },
         { STATEOS_HARD, "n_ctx",             std::to_string(llama_n_ctx(ctx)) },
         { STATEOS_HARD, "cache_type_k",      params_base.cache_type_k },
         { STATEOS_HARD, "cache_type_v",      params_base.cache_type_v },

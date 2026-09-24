@@ -322,6 +322,7 @@ try {
 
     $hard = [ordered]@{
         model_fingerprint_v2 = 'ffff' + (Get-HeaderValue $good 'model_fingerprint_v2').Substring(4)
+        effective_model      = '3' * 64
         n_ctx                = '65536'
         cache_type_k         = 'f16'
         cache_type_v         = 'f16'

@@ -32,6 +32,7 @@ static int g_checks   = 0;
 static stateos_fields server_like_fields() {
     return {
         { STATEOS_HARD, "model_fingerprint_v2", "3f1c0d5e9a" },
+        { STATEOS_HARD, "effective_model",      "none" },
         { STATEOS_HARD, "n_ctx",                "196608" },
         { STATEOS_HARD, "cache_type_k",         "q8_0" },
         { STATEOS_HARD, "cache_type_v",         "q8_0" },
@@ -450,6 +451,29 @@ static void test_props_capability() {
     CHECK(stateos_props_entry(false, false, false).is_null());
 }
 
+// runtime adapters/overrides are part of the identity: a state from one adapter set is refused on another
+static void test_effective_model() {
+    CHECK(stateos_effective_model_value({}) == "none");
+    const std::string a = stateos_effective_model_value({ "lora path=a.gguf scale=1" });
+    CHECK(a.size() == 64 && a != "none");
+    CHECK(stateos_effective_model_value({ "lora path=a.gguf scale=1" }) == a);             // stable
+    CHECK(stateos_effective_model_value({ "lora path=a.gguf scale=0.5" }) != a);           // scale matters
+    CHECK(stateos_effective_model_value({ "lora path=b.gguf scale=1" }) != a);             // adapter matters
+    const std::string ab = stateos_effective_model_value({ "lora path=a.gguf scale=1", "cvec path=c.gguf scale=1 layers=0..9" });
+    const std::string ba = stateos_effective_model_value({ "cvec path=c.gguf scale=1 layers=0..9", "lora path=a.gguf scale=1" });
+    CHECK(ab != a && ab != ba);                                                            // order is part of it
+    // no line-joining ambiguity: two items are not one item containing a separator
+    CHECK(stateos_effective_model_value({ "x", "y" }) != stateos_effective_model_value({ "x\ny" }));
+    CHECK(stateos_effective_model_value({ "xy" }) != stateos_effective_model_value({ "x", "y" }));
+
+    // the verify path refuses a different adapter set by name
+    stateos_fields saved   = server_like_fields();
+    stateos_fields current = server_like_fields();
+    set_value(current, "effective_model", a);
+    const stateos_verdict v = stateos_verify(saved, current);
+    CHECK(!v.ok && !v.refused.empty() && v.refused.front().key == "effective_model");
+}
+
 // section-level restore checks: MAIN must not be empty (0 is the loader's failure value), TOKS is bounded first
 static void test_section_checks() {
     stateos_scan_result r;
@@ -685,6 +709,7 @@ int main(int argc, char ** argv) {
     test_checkpoints();
     test_companion();
     test_props_capability();
+    test_effective_model();
     test_section_checks();
     test_replace_file();
     test_fingerprint_v2();

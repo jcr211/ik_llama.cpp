@@ -80,7 +80,7 @@ first 4096 or 32768 ids, `Z` = a short fixed question, `Q` = an unrelated 80-lin
 5. **cold** (report-only): `erase`; `/completion P+Z` (full prefill).
 
 Then, holding the restored 4K S0 in the slot: a soft-field tamper (`build`) must restore with a warning; each hard field
-tampered in a copy of `id4k.state` (`model_fingerprint_v2, n_ctx, cache_type_k, cache_type_v, rope, kv_layout_version,
+tampered in a copy of `id4k.state` (`model_fingerprint_v2, effective_model, n_ctx, cache_type_k, cache_type_v, rope, kv_layout_version,
 system_prompt_sha256, kv_geometry, n_tokens, token_sha256`) plus an unknown hard field, a fake and a real (lane-0 file
 head) legacy/unkeyed file, a truncated file, a junk file and a missing file must each answer **409** (missing =
 `state_missing`, legacy = `state_legacy_unkeyed`, truncated = `state_corrupt`, header = `state_refused` with

@@ -532,6 +532,23 @@ stateos_section_check stateos_check_sections(const stateos_scan_result & scan, s
     return c;
 }
 
+std::string stateos_effective_model_value(const std::vector<std::string> & parts) {
+    if (parts.empty()) {
+        return "none";
+    }
+    stateos_sha256 h;
+    const std::string tag = "stateos-effective-model/1";
+    h.update(tag.data(), tag.size());
+    for (const auto & p : parts) {
+        // length-prefixed: no two different lists hash the same bytes (a path may contain anything)
+        std::vector<uint8_t> len;
+        put_u64(len, p.size());
+        h.update(len.data(), len.size());
+        h.update(p.data(), p.size());
+    }
+    return h.final_hex();
+}
+
 bool stateos_kv_consistent(size_t n_tokens, int32_t kv_pos_max) {
     return n_tokens == 0 || kv_pos_max >= 0;
 }
