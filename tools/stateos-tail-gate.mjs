@@ -290,7 +290,13 @@ export const MODEL_URL = `http://127.0.0.1:${MODEL_PORT}`;
 // The preregistered step-4 parameters (round 11, coordinator ruling). Anything else is refused as a
 // verdict (exit 1, "non-preregistered parameters"), or runs only with --smoke, labelled SMOKE, exit 4
 // (never 0 or 2).
+// every step-4 arm: the MTP drafter only (round 12; enforced from the .flags records, rule 2)
+export const STEP4_DRAFTERS = "mtp";
+
 export const PREREG = Object.freeze({
+  // documented here and recorded in gate.json; enforced from the launch records as rule 2 (a
+  // mismatch is VOID mislaunched, not a refusal)
+  drafters: STEP4_DRAFTERS,
   receipt: DEFAULT_RECEIPT,
   receiptSha256: "7acd327043cb01c860f403380d3df0a50306e2ee1c06a818549ee26eb44a7cf3",
   prompts: 24,
@@ -306,7 +312,8 @@ const sha256Hex = (text) => crypto.createHash("sha256").update(text).digest("hex
 
 /**
  * Prompt content binding (round 11): A0's rows (ids and sha256, in order) must equal the receipt's
- * inputsEcho.prompts; checkRecords binds every other arm to A0's. receiptText: the receipt file's
+ * inputsEcho.prompts, or a leading prefix of them (a --limit smoke run; the full set is enforced by
+ * preregProblems); checkRecords binds every other arm to A0's. receiptText: the receipt file's
  * contents (null = unreadable). Returns the problems (empty = bound).
  */
 export function receiptProblems(records, receiptText) {
@@ -320,12 +327,14 @@ export function receiptProblems(records, receiptText) {
     prompts = null;
   }
   if (!Array.isArray(prompts)) return [`receipt ${a0.receipt} has no inputsEcho.prompts`];
-  const want = JSON.stringify(prompts.map((p) => [p.id, p.sha256]));
+  // A0's rows must be the receipt's prompts in order: all of them for the gate (preregProblems then
+  // requires the full 24), or a leading prefix for a --smoke --limit run (round 12, Sol nit)
+  const want = JSON.stringify(prompts.slice(0, a0.prompts.length).map((p) => [p.id, p.sha256]));
   const got = JSON.stringify(a0.prompts.map((p) => [p.id, p.sha256 ?? null]));
-  return want === got
+  return a0.prompts.length > 0 && a0.prompts.length <= prompts.length && want === got
     ? []
     : [
-        `A0's prompt ids/sha256 differ from the receipt's (${a0.prompts.length} rows vs ${prompts.length})`,
+        `A0's prompt ids/sha256 are not the receipt's prompts in order (${a0.prompts.length} rows vs ${prompts.length})`,
       ];
 }
 
@@ -641,6 +650,17 @@ export function determinismFailures(records) {
 // drafted round with >= 1 accepted draft, so the spec shadow held a tail (tail distance 1 = eligible).
 export const eligibleInA0 = (r) => r.prevRound === "drafted" && r.prevNAcc >= 1;
 
+// C's request-B line shows a tail existed for this restore: written/available before it, chosen, or
+// named in the outcome/reason (e.g. restore-failed after a tail choice, restored:xcheck-flag-off)
+export const tailEvidence = (r) =>
+  Boolean(
+    r &&
+      (r.tailAvailable ||
+        r.chosenOrigin === "tail" ||
+        /tail/.test(String(r.outcome ?? "")) ||
+        /tail/.test(String(r.reason ?? ""))),
+  );
+
 /**
  * Pre-scoring filter (round-7 structural rule). Every prompt is either scorable or excluded once, with
  * ONE reason, and every exclusion is either attributable to the shell arm C or not:
@@ -752,14 +772,27 @@ export function engagementAndDrops(records, restoresByArm, { shell, minPrompts }
       exclude(id, false, null, `${otherB.arm}: request B differs from A0's`);
       continue;
     }
-    // C's request-B line: a strict tail restore scores. Otherwise, where A0 shows a tail: a missing or
-    // misplaced line is C's fault; "no strict tail restore" is C's fault ONLY when C's OWN line shows an
-    // eligible final round (round 11, Opus B1): C's server-lifetime ngram-mod table drifts after any
-    // benign B divergence, so C's final round can legitimately hold no accepted draft (no tail to
-    // write) while A0's did - that prompt is not C-attributable.
+    // C's request-B line: a strict tail restore scores. Otherwise:
+    //  - TAIL EVIDENCE FIRST (round 12, Sol): if C's line shows a tail was written/available or chosen
+    //    (tailAvailable, chosen_origin=tail, or a tail outcome/reason) and the restore was not strict,
+    //    that is C's fault whatever C's or A0's final-round marker says (a root-only final round can
+    //    keep an older eligible shadow tail);
+    //  - where A0 shows a tail: a missing or misplaced line is C's fault; "no strict tail restore" is
+    //    C's fault when C's OWN line shows an eligible final round (round 11, Opus B1); otherwise C's
+    //    round legitimately held no accepted draft (no tail to write) - not C-attributable.
     const mc = matched[shell]?.[id];
     if (mc && mc.tailDist === 1 && isTailRestore(mc)) {
       tailRestores += 1;
+      continue;
+    }
+    if (mc && mc.tailDist === 1 && tailEvidence(mc)) {
+      exclude(
+        id,
+        true,
+        "B",
+        "not a strict tail restore",
+        `${mc.chosenOrigin}/${mc.outcome}/${mc.reason}, tail available=${mc.tailAvailable}`,
+      );
       continue;
     }
     if (eligibleInA0(a0Line)) {
@@ -878,9 +911,25 @@ export function checkRecords(records, censusByArm, { shell, benign }) {
     const stems = records.map((r) => r.logStem);
     if (new Set(stems).size !== stems.length)
       bad.push(`log stems are not distinct across arms (${stems.join(", ")})`);
-    const pids = records.map((r) => censusByArm?.[r.arm]?.pid).filter((p) => p != null);
-    if (new Set(pids).size !== pids.length)
-      bad.push(`launched PIDs are not distinct across arms (${pids.join(", ")})`);
+    // a shared PID is refused only when the two arms' launch-to-last-request intervals ([port check,
+    // finishedAt]) overlap or cannot be established; sequential PID reuse by Windows is fine (round 12)
+    const span = (r) => {
+      const from = Date.parse(censusByArm?.[r.arm]?.portCheckedAt ?? "");
+      const to = Date.parse(r.finishedAt ?? "");
+      return Number.isFinite(from) && Number.isFinite(to) ? [from, to] : null;
+    };
+    for (let i = 0; i < records.length; i += 1) {
+      for (let j = i + 1; j < records.length; j += 1) {
+        const [ri, rj] = [records[i], records[j]];
+        const [pi, pj] = [censusByArm?.[ri.arm]?.pid, censusByArm?.[rj.arm]?.pid];
+        if (pi == null || pi !== pj) continue;
+        const [si, sj] = [span(ri), span(rj)];
+        if (!si || !sj || (si[0] <= sj[1] && sj[0] <= si[1]))
+          bad.push(
+            `${ri.arm} and ${rj.arm} share launched PID ${pi} over overlapping (or unknown) launch-to-last-request intervals`,
+          );
+      }
+    }
     for (const r of records) {
       if (JSON.stringify(r.prompts.map((p) => p.sha256 ?? null)) !== shas)
         bad.push(`${r.arm}: prompt sha256 values differ from A0's`);
@@ -1081,6 +1130,35 @@ export function score(
   };
 }
 
+/**
+ * Round 12 (Opus R1): when not-engaged VOID fires, the strict tail restores that DID occur are still
+ * scored with the v2 classifier (min-prompts = their count) and reported, labelled "partial, not a
+ * verdict", so a C whose restores are visibly corrupt is not read as a neutral VOID. Never changes the
+ * verdict.
+ */
+export function partialScore(records, lib, pre, { shell, benign, horizon, nMin }) {
+  const s = score(records, lib, {
+    shell,
+    benign,
+    horizon,
+    minPrompts: Math.max(1, pre.tailRestores),
+    nMin,
+    drop: pre.drop,
+  });
+  const signs = { earlier: 0, tie: 0, later: 0 };
+  for (const r of s.rows) signs[r.sign] += 1;
+  return {
+    label: "partial, not a verdict",
+    strictTailRestores: pre.tailRestores,
+    scoredRows: s.rows.length,
+    signs,
+    shellEarliest: s.rows.filter((r) => r.sEarliest && Math.min(r.shell, r.worstBenign) < horizon)
+      .length,
+    classifier: s.verdict,
+    classifierReason: s.rule?.reason ?? null,
+  };
+}
+
 /** PASS | STOP | VOID for a gate verdict (VOID: the gate did not answer; not a C1 kill). */
 export function gateStatus(verdict) {
   if (verdict === "compatible-at-horizon") return "PASS";
@@ -1153,6 +1231,18 @@ export function preScoreChecks(records, censusByArm, { shell }) {
     return {
       verdict: "mislaunched",
       voidReason: `the arms' recorded speculation states differ or are unknown (${specs.join(", ")}): every arm must be spec=on, or every arm spec=off (the fallback)`,
+    };
+  }
+  // drafters (round 12): every step-4 arm runs the MTP drafter ONLY (launcher -MtpOnly), no ngram-mod
+  // table to drift across requests; the spec-off fallback has none
+  const needDrafters = specValues.has("off") ? "none" : STEP4_DRAFTERS;
+  const wrongDrafters = records
+    .map((r) => [r.arm, censusByArm[r.arm]?.flags?.drafters ?? "unknown"])
+    .filter(([, d]) => d !== needDrafters);
+  if (wrongDrafters.length) {
+    return {
+      verdict: "mislaunched",
+      voidReason: `step 4 needs drafters=${needDrafters} in every arm (launcher ${needDrafters === "none" ? "-SpecOff" : "-MtpOnly"}): ${wrongDrafters.map(([a, d]) => `${a}=${d}`).join(", ")}`,
     };
   }
   const resets = perArm((c) =>
@@ -1246,6 +1336,11 @@ async function runScore(o) {
         nMin: o.nMin,
         drop: pre.drop,
       });
+  // not-engaged VOID: still score the strict tail restores that did occur, report-only
+  const partial =
+    result.verdict === "not-engaged:no-eligible-prompts" && pre.tailRestores > 0
+      ? partialScore(records, lib, pre, { shell: o.shell, benign: o.benign, horizon, nMin: o.nMin })
+      : null;
   const status = o.smoke ? "SMOKE" : gateStatus(result.verdict);
   const file = path.join(o.out, "gate.json");
   const report = {
@@ -1285,6 +1380,7 @@ async function runScore(o) {
     },
     droppedPrompts: pre.droppedPrompts,
     droppedCounts: pre.droppedCounts,
+    ...(partial ? { partial } : {}),
     ...result,
   };
   fs.writeFileSync(file, `${JSON.stringify(report, null, 2)}\n`);
@@ -1307,6 +1403,11 @@ async function runScore(o) {
   );
   process.stdout.write(`rule: ${result.rule.outcome} - ${result.rule.reason ?? ""}\n`);
   if (result.determinism) process.stdout.write(`determinism: ${result.determinism}\n`);
+  if (partial) {
+    process.stdout.write(
+      `PARTIAL, NOT A VERDICT: ${partial.strictTailRestores} strict tail restores, ${partial.scoredRows} scored; signs ${JSON.stringify(partial.signs)}; ${partial.shellEarliest} shell-earliest events; v2 classifier on them: ${partial.classifier}${partial.classifierReason ? ` (${partial.classifierReason})` : ""}\n`,
+    );
+  }
   process.stdout.write(
     `status: ${status}${status === "VOID" ? " (the gate did not answer; not a C1 kill)" : status === "SMOKE" ? " (not the preregistered gate; no verdict)" : ""}\n`,
   );

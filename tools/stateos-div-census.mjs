@@ -67,7 +67,10 @@ export const FLAG_NAMES = [
 // extra = the launcher's -ExtraArgs, whitespace-normalized ('' for every run but the benign gate arms);
 // spec = the launcher's speculation state ('on', or 'off' with -SpecOff); null = either, checked
 // elsewhere (step 4: every arm must share one state, see tools/stateos-tail-gate.mjs)
-const flagSet = (div, tail, xcheck, extra = "", spec = "on") => ({
+// drafters = the launcher's drafter set: 'ngram-mod,mtp' (production), 'mtp' (-MtpOnly, every step-4
+// arm), 'none' (-SpecOff); null = checked elsewhere (step 4, with spec, in tools/stateos-tail-gate.mjs)
+export const PRODUCTION_DRAFTERS = "ngram-mod,mtp";
+const flagSet = (div, tail, xcheck, extra = "", spec = "on", drafters = PRODUCTION_DRAFTERS) => ({
   LONGSPEAR_STATEOS_DIV_LOG: div,
   LONGSPEAR_STATEOS_TAIL_SNAPSHOT: tail,
   LONGSPEAR_STATEOS_TAIL_XCHECK: xcheck,
@@ -75,18 +78,22 @@ const flagSet = (div, tail, xcheck, extra = "", spec = "on") => ({
   LONGSPEAR_PLE_HIST_LOG: "1",
   extra,
   spec,
+  drafters,
 });
 
 /** The flags each W-SV2 run must have been launched with (merged plan section 4). */
 export const REQUIRED_FLAGS = {
+  // steps 1-3 measure the served config: production drafters, spec on
   step1: flagSet("1", "0", "0"), // telemetry read: DIV_LOG only
   step2: flagSet("1", "1", "1"), // mechanism probe: TAIL_SNAPSHOT + TAIL_XCHECK + DIV_LOG
   P0: flagSet("1", "0", "0"), // step 3 flag-off arm
   T1: flagSet("1", "1", "0"), // step 3 tail arm
-  gateOff: flagSet("1", "0", "0", "", null), // step 4 A0, A1
-  gateA5: flagSet("1", "0", "0", "-no-fmoe -no-fug", null), // step 4 benign A5
-  gateA3: flagSet("1", "0", "0", "-fa 0", null), // step 4 benign A3
-  gateTail: flagSet("1", "1", "0", "", null), // step 4 C
+  // step 4: spec and drafters are checked across arms by the gate (all spec=on + drafters=mtp, or the
+  // all-arms spec-off fallback, drafters=none)
+  gateOff: flagSet("1", "0", "0", "", null, null), // step 4 A0, A1
+  gateA5: flagSet("1", "0", "0", "-no-fmoe -no-fug", null, null), // step 4 benign A5
+  gateA3: flagSet("1", "0", "0", "-fa 0", null, null), // step 4 benign A3
+  gateTail: flagSet("1", "1", "0", "", null, null), // step 4 C
 };
 
 export const normalizeExtra = (s) =>
@@ -110,6 +117,9 @@ export function flagsMismatch(flags, required, problem = null) {
   }
   if (required.spec != null && flags.spec !== required.spec) {
     bad.push(`spec=${flags.spec} (need ${required.spec})`);
+  }
+  if (required.drafters != null && flags.drafters !== required.drafters) {
+    bad.push(`drafters=${flags.drafters} (need ${required.drafters})`);
   }
   return bad.length ? `wrong flags: ${bad.join(", ")}` : null;
 }
@@ -240,6 +250,9 @@ export function feed(c, line) {
     // spec=on|off (launcher -SpecOff); a record without it is "unknown", never assumed on
     const s = / spec=(on|off)\b/.exec(line);
     flags.spec = s ? s[1] : "unknown";
+    // drafters=mtp | ngram-mod,mtp | none (launcher -MtpOnly / default / -SpecOff); missing = "unknown"
+    const d = / drafters=(\S+)/.exec(line);
+    flags.drafters = d ? d[1] : "unknown";
     // the launcher's -LogStem: ties an arm record to its own server log (not part of the flag set, so
     // two logs of one census can agree on flags while naming different stems)
     const ls = / logstem=(\S+)/.exec(line);

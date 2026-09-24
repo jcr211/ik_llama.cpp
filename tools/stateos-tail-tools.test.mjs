@@ -25,6 +25,7 @@ import {
   forcedPrompt,
   gateRefusal,
   gateStatus,
+  partialScore,
   PREREG,
   preregProblems,
   receiptProblems,
@@ -173,8 +174,16 @@ const census = (lines, port = [PORT_OK, PID]) => {
 };
 
 // the launcher's recorded flags ([stateos-flags], normally from the <LogStem>.flags sidecar)
-const flags = (div, tail, xcheck, extra = "", stem = "x", spec = "on") =>
-  `[stateos-flags] LONGSPEAR_STATEOS_DIV_LOG=${div} LONGSPEAR_STATEOS_TAIL_SNAPSHOT=${tail} LONGSPEAR_STATEOS_TAIL_XCHECK=${xcheck} LONGSPEAR_PLE_HIST_REWIND=1 LONGSPEAR_PLE_HIST_LOG=1 spec=${spec} logstem=${stem} extra='${extra}'`;
+const flags = (
+  div,
+  tail,
+  xcheck,
+  extra = "",
+  stem = "x",
+  spec = "on",
+  drafters = "ngram-mod,mtp",
+) =>
+  `[stateos-flags] LONGSPEAR_STATEOS_DIV_LOG=${div} LONGSPEAR_STATEOS_TAIL_SNAPSHOT=${tail} LONGSPEAR_STATEOS_TAIL_XCHECK=${xcheck} LONGSPEAR_PLE_HIST_REWIND=1 LONGSPEAR_PLE_HIST_LOG=1 spec=${spec} drafters=${drafters} logstem=${stem} extra='${extra}'`;
 const F_OFF = flags(1, 0, 0); // step 1, P0, step-4 A0/A1
 const F_PROBE = flags(1, 1, 1); // step 2
 const F_TAIL = flags(1, 1, 0); // T1, step-4 C
@@ -735,21 +744,21 @@ test("step 3: T1 recorded with the crosscheck is VOID; a CUDA error is STOP even
 
 // raw census state with a flags record and a port record, as feedFiles returns it
 const PORT_CHECKED_AT = "2026-09-24T00:00:00.000Z";
-const rawCensus = (lines, port = [PORT_OK, PID]) => {
+const rawCensus = (lines, port = [PORT_OK, PID], checkedAt = PORT_CHECKED_AT) => {
   const c = newCensus();
   for (const l of lines) feed(c, l);
-  if (port) setPortRecord(c, port[0], port[1], PORT_CHECKED_AT);
+  if (port) setPortRecord(c, port[0], port[1], checkedAt);
   return c;
 };
 // each arm's recorded flags, with its own logstem (recMeta's logStem) and speculation state
-const armFlags = (a, shell, spec = "on") =>
+const armFlags = (a, shell, spec = "on", drafters = spec === "off" ? "none" : "mtp") =>
   a === shell
-    ? flags(1, 1, 0, "", `stem-${a}`, spec)
+    ? flags(1, 1, 0, "", `stem-${a}`, spec, drafters)
     : a === "A5"
-      ? flags(1, 0, 0, "-no-fmoe -no-fug", `stem-${a}`, spec)
+      ? flags(1, 0, 0, "-no-fmoe -no-fug", `stem-${a}`, spec, drafters)
       : a === "A3"
-        ? flags(1, 0, 0, "-fa 0", `stem-${a}`, spec)
-        : flags(1, 0, 0, "", `stem-${a}`, spec);
+        ? flags(1, 0, 0, "-fa 0", `stem-${a}`, spec, drafters)
+        : flags(1, 0, 0, "", `stem-${a}`, spec, drafters);
 // every arm: its recorded flags, the port check and an armed PLE-history repair
 // each arm its own launch: its own PID (distinct across arms) and port record
 const ARM_PID = { A0: "11", A1: "12", C: "13", A5: "14", A3: "15" };
@@ -871,26 +880,29 @@ test("N10/N8: step 4 PLE checks (STOP) and the port check (VOID) per arm", () =>
   const arms = ["A0", "A1", "C", "A5", "A3"];
   const noPle = ARMED.filter((l) => !l.startsWith("[ple-hist] set"));
   // no [ple-hist] set in C's log although its flags record REWIND=1 LOG=1: STOP
-  const unarmed = { ...gateCensus(arms), C: rawCensus([F_TAIL, ...noPle]) };
+  const unarmed = { ...gateCensus(arms), C: rawCensus([armFlags("C", "C"), ...noPle]) };
   const r = preScoreChecks(records, unarmed, { shell: "C" });
   assert.equal(r.verdict, "ple-hist");
   assert.equal(gateStatus(r.verdict), "STOP");
   // an unrepaired rewind in a benign arm: STOP
   const rewind = {
     ...gateCensus(arms),
-    A3: rawCensus([F_A3, ...ARMED, "[ple-hist] reset seq=0 pos=1996 next_pos=2001"]),
+    A3: rawCensus([armFlags("A3", "C"), ...ARMED, "[ple-hist] reset seq=0 pos=1996 next_pos=2001"]),
   };
   assert.equal(preScoreChecks(records, rewind, { shell: "C" }).verdict, "ple-hist");
   // a second listener on the port, or no port record: mislaunched (VOID)
   const shared = {
     ...gateCensus(arms),
-    A1: rawCensus([F_OFF, ...ARMED], ["[stateos-port] shared pid=7 listeners=7,9 port=8099", "7"]),
+    A1: rawCensus(
+      [armFlags("A1", "C"), ...ARMED],
+      ["[stateos-port] shared pid=7 listeners=7,9 port=8099", "7"],
+    ),
   };
   const s = preScoreChecks(records, shared, { shell: "C" });
   assert.equal(s.verdict, "mislaunched");
   assert.ok(/A1: mislaunched: port shared/.test(s.voidReason));
   assert.equal(gateStatus(s.verdict), "VOID");
-  const unverified = { ...gateCensus(arms), C: rawCensus([F_TAIL, ...ARMED], null) };
+  const unverified = { ...gateCensus(arms), C: rawCensus([armFlags("C", "C"), ...ARMED], null) };
   assert.ok(
     /C: port unverified/.test(preScoreChecks(records, unverified, { shell: "C" }).voidReason),
   );
@@ -1317,7 +1329,8 @@ test("round 9: verdict precedence, one case per adjacent pair of rules (the firs
     [
       "spec-off",
       (s) => {
-        for (const a of ARMS) s.census[a].flags = { ...s.census[a].flags, spec: "off" };
+        for (const a of ARMS)
+          s.census[a].flags = { ...s.census[a].flags, spec: "off", drafters: "none" };
       },
       "spec-off-fallback",
       /determinism only; C1 not testable/,
@@ -1423,7 +1436,24 @@ test("round 11 (Sol bug 2 + Opus N4): prompt content, exact url and distinct lau
     ...gateCensus(ARMS),
     A5: rawCensus([armFlags("A5", "C"), ...ARMED], armPort("A0")),
   };
-  refuse(recs24(), samePid, /PIDs are not distinct/);
+  // round 12 (Opus R3): a shared PID is refused only when the two launches overlap in time (or their
+  // intervals are unknown: these records carry no finishedAt)
+  refuse(recs24(), samePid, /A0 and A5 share launched PID 11/);
+  const timed = recs24();
+  for (const r of timed) r.finishedAt = "2026-09-24T01:30:00.000Z";
+  refuse(timed, samePid, /A0 and A5 share launched PID 11 over overlapping/);
+  // sequential reuse (A5 launched and port-checked after A0's last request) is accepted
+  const seq = recs24();
+  for (const r of seq) r.finishedAt = "2026-09-24T01:30:00.000Z";
+  Object.assign(rec(seq, "A5"), {
+    startedAt: "2026-09-24T02:10:00.000Z",
+    finishedAt: "2026-09-24T03:00:00.000Z",
+  });
+  const reused = {
+    ...gateCensus(ARMS),
+    A5: rawCensus([armFlags("A5", "C"), ...ARMED], armPort("A0"), "2026-09-24T02:00:00.000Z"),
+  };
+  assert.equal(gateRefusal(seq, reused, lines24(), OPTS).refused, null);
   // a record whose traffic started before its own port check
   const r4 = recs24();
   rec(r4, "A5").startedAt = "2026-09-23T23:59:00.000Z";
@@ -1458,12 +1488,103 @@ test("round 11 (Opus N2 + Sol bug 1): only the preregistered parameters make a v
   const limited = prereg();
   for (const r of limited) r.prompts = r.prompts.slice(0, 20);
   assert.ok(preregProblems(limited, opts, text).some((p) => /^prompts=20/.test(p)));
+  // round 12 (Sol nit): a --limit prefix passes receipt binding, so --smoke reaches SMOKE (exit 4);
+  // a non-prefix subset does not
+  assert.deepEqual(receiptProblems(limited, text), []);
+  const gap = prereg();
+  for (const r of gap) r.prompts = r.prompts.slice(1, 21);
+  assert.equal(receiptProblems(gap, text).length, 1);
   // prompt content must be the receipt's
   const swapped = prereg();
   rec(swapped, "A0").prompts[0].sha256 = tokensSha(["x"]);
   assert.equal(receiptProblems(swapped, text).length, 1);
   assert.equal(PREREG.horizon, 256);
   assert.equal(PREREG.nFirst, 64);
+});
+
+// ---- round 12 -----------------------------------------------------------------------------------
+
+test("round 12 (Sol probe): tail evidence beats the final-round marker - a failed/unused tail is C's", () => {
+  // C's final round is root-only (no accepted draft) but an older eligible shadow tail was written
+  // and C did not restore it strictly: charged to C whatever the markers say
+  const unused = () =>
+    bLine({ prevRound: "root-only", prevNAcc: 0, tailAvailable: true, chosenOrigin: "tolerance" });
+  const failed = () =>
+    bLine({
+      prevRound: "root-only",
+      prevNAcc: 0,
+      chosenOrigin: "tail",
+      outcome: "restore-failed",
+      reason: "tail",
+    });
+  for (const bad of [unused, failed]) {
+    const cLines = ids24.map((_, i) => (i >= 10 && i < 15 ? bad() : tailLine()));
+    const r = refuse24({}, lines24(cLines));
+    assert.equal(r.pre.cReasons["not a strict tail restore"], 5);
+    assert.equal(r.refused.verdict, "shell-diverged");
+    assert.equal(gateStatus(r.refused.verdict), "STOP");
+  }
+  // even where A0's own round was not eligible
+  const a0Ineligible = ids24.map((_, i) =>
+    i >= 10 && i < 15 ? bLine({ prevRound: "root-only", prevNAcc: 0 }) : bLine(),
+  );
+  const cLines = ids24.map((_, i) => (i >= 10 && i < 15 ? unused() : tailLine()));
+  const r = refuse24({}, { ...lines24(cLines), A0: a0Ineligible });
+  assert.equal(r.refused.verdict, "shell-diverged");
+});
+
+test("round 12: every step-4 arm must be drafters=mtp (-MtpOnly); steps 1-3 keep production drafters", () => {
+  const prod = {
+    ...gateCensus(ARMS),
+    C: rawCensus([armFlags("C", "C", "on", "ngram-mod,mtp"), ...ARMED], armPort("C")),
+  };
+  const m = gateRefusal(recs24(), prod, lines24(), OPTS).refused;
+  assert.equal(m.verdict, "mislaunched");
+  assert.ok(/drafters=mtp/.test(m.voidReason) && /C=ngram-mod,mtp/.test(m.voidReason));
+  const unknown = armFlags("A5", "C").replace(" drafters=mtp", "");
+  const u = gateRefusal(
+    recs24(),
+    { ...gateCensus(ARMS), A5: rawCensus([unknown, ...ARMED], armPort("A5")) },
+    lines24(),
+    OPTS,
+  );
+  assert.ok(/A5=unknown/.test(u.refused.voidReason));
+  assert.equal(PREREG.drafters, "mtp");
+  // steps 1-3 measure the served config: an -MtpOnly launch there is mislaunched (VOID)
+  const body = [...ARMED, TAIL_CREATE, restore(TAIL_HIT)];
+  assert.equal(
+    checkStep("step1", census([flags(1, 0, 0, "", "x", "on", "mtp"), ...body])).verdict,
+    "VOID",
+  );
+  assert.equal(checkStep("step1", census([F_OFF, ...body])).verdict, "PASS");
+});
+
+test("round 12 (Opus R1): a not-engaged VOID still reports the partial score of the tail restores that occurred", {
+  skip: !fs.existsSync(DEFAULT_LIB),
+}, async () => {
+  const lib = await import(pathToFileURL(DEFAULT_LIB).href);
+  // 5 prompts without an eligible tail (not C's fault) -> 19 strict restores -> not-engaged; but every
+  // restore that DID occur corrupts C's continuation at token 1
+  const noTail = ids24.map((_, i) =>
+    i < 5 ? bLine({ prevRound: "root-only", prevNAcc: 0 }) : bLine(),
+  );
+  const cLines = ids24.map((_, i) =>
+    i < 5 ? bLine({ prevRound: "root-only", prevNAcc: 0 }) : tailLine(),
+  );
+  const over = {
+    C: onIds(ids24, { continuation: [1, 9, 9, 9, 9, 9, 9, 9] }),
+    A5: onIds(ids24, OTHER_B),
+    A3: onIds(ids24, OTHER_B),
+  };
+  const g = refuse24(over, { ...lines24(cLines), A0: noTail, A1: noTail });
+  assert.equal(g.refused.verdict, "not-engaged:no-eligible-prompts");
+  const partial = partialScore(recs24(over), lib, g.pre, { ...OPTS, horizon: 8, nMin: 6 });
+  assert.equal(partial.label, "partial, not a verdict");
+  assert.equal(partial.strictTailRestores, 19);
+  assert.equal(partial.scoredRows, 19);
+  assert.equal(partial.signs.earlier, 19);
+  assert.equal(partial.shellEarliest, 19);
+  assert.equal(partial.classifier, "shellWorse");
 });
 
 test("N9: feedFiles resets per-log parser state (a pending tail at the end of log 1 never reaches log 2)", async () => {
@@ -1576,7 +1697,7 @@ test("step 4: -ExtraArgs of the benign arms (and of C) are checked against the r
   // whitespace in the recorded extra does not matter
   const spaced = {
     ...gateCensus(arms),
-    A5: rawCensus([flags(1, 0, 0, "  -no-fmoe   -no-fug "), ...ARMED]),
+    A5: rawCensus([flags(1, 0, 0, "  -no-fmoe   -no-fug ", "x", "on", "mtp"), ...ARMED]),
   };
   assert.equal(preScoreChecks(records, spaced, { shell: "C" }), null);
 });

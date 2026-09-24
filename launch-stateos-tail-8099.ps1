@@ -10,6 +10,9 @@
 #   -Xcheck  LONGSPEAR_STATEOS_TAIL_XCHECK=1    diagnostic cross-check (use launch-stateos-tail-xcheck-8099.ps1)
 # -SpecOff drops both --spec-type drafters (the step-4 spec-off fallback after void-determinism; every
 #   step-4 arm must then be launched with it) and records spec=off in <LogStem>.flags (else spec=on).
+# -MtpOnly keeps only the MTP drafter (--spec-type mtp:n_max=4). EVERY step-4 arm uses it (round 12:
+#   no ngram-mod table to drift across requests); steps 1-3 keep the production drafters. The flags
+#   record carries drafters=mtp | ngram-mod,mtp | none (with -SpecOff).
 # -ExtraArgs is appended last (later flags win), e.g. '-no-fmoe -no-fug' or '-fa 0' for the benign gate arms.
 # -LogStem is MANDATORY and must be new: every arm writes its own D:\AI\ik_llama-qwen4exp\<LogStem>.out.log /
 # .err.log (e.g. 'ik-serve-8099-wsv2-step3-P0'); an existing .err.log is refused, never truncated.
@@ -26,6 +29,7 @@ param(
     [switch]$Tail,
     [switch]$Xcheck,
     [switch]$SpecOff,
+    [switch]$MtpOnly,
     [string]$ExtraArgs = '',
     [Parameter(Mandatory = $true)][string]$LogStem,
     [string]$LockOwner = 'W-SV2 chain'
@@ -82,15 +86,19 @@ $flagParts = foreach ($n in $flagNames) {
     $v = [Environment]::GetEnvironmentVariable($n)
     if ($v -eq '1') { $n + '=1' } else { $n + '=0' }
 }
+if ($SpecOff -and $MtpOnly) { throw '-SpecOff and -MtpOnly are exclusive' }
 $spec = if ($SpecOff) { 'off' } else { 'on' }
-$flagsLine = '[stateos-flags] ' + ($flagParts -join ' ') + ' spec=' + $spec + ' logstem=' + $LogStem + " extra='" + $ExtraArgs + "'"
+$drafters = if ($SpecOff) { 'none' } elseif ($MtpOnly) { 'mtp' } else { 'ngram-mod,mtp' }
+$flagsLine = '[stateos-flags] ' + ($flagParts -join ' ') + ' spec=' + $spec + ' drafters=' + $drafters + ' logstem=' + $LogStem + " extra='" + $ExtraArgs + "'"
 Set-Content -Path $flagsPath -Value $flagsLine -Encoding ascii
 
 # -SpecOff (the step-4 spec-off fallback, merged plan section 4 step 4) drops both --spec-type drafters.
 # --spec-ckpt-mode gpu-fallback stays: without a --spec-type it is parsed and stored only
 # (common.cpp --spec-ckpt-mode), no stage chain means the slot never calls common_speculative_try_init
 # (server-context.cpp requested_spec), so llama_spec_ckpt_init never runs and startup does not fail.
-$specArgs = if ($SpecOff) { '' } else { ' --spec-type ngram-mod:n_min=4 --spec-type mtp:n_max=4' }
+# -MtpOnly (every step-4 arm, round 12): the MTP drafter alone - no ngram-mod, so no server-lifetime
+# draft table that drifts between arms
+$specArgs = if ($SpecOff) { '' } elseif ($MtpOnly) { ' --spec-type mtp:n_max=4' } else { ' --spec-type ngram-mod:n_min=4 --spec-type mtp:n_max=4' }
 $argsx = '-m "D:\AI\LLM Models\custom\Qwen3.8-Flash-Next-MXFP4moe-ngramQ8-MTP.gguf" --api-key "' + $key + '" -ngl 999 -ncmoe 37 -fa 1 -c 196608 -ub 512 -ctk q8_0 -ctv q8_0 -np 1 -t 24 -tb 32 --jinja --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --host 0.0.0.0 --port 8099' + $specArgs + ' --reasoning-budget 1024 --spec-ckpt-mode gpu-fallback -rtr -muge'
 if ($ExtraArgs -ne '') { $argsx = $argsx + ' ' + $ExtraArgs }
 
@@ -99,4 +107,4 @@ $proc = Start-Process -FilePath $exe -ArgumentList $argsx -WindowStyle Hidden -P
     -RedirectStandardError $errLog
 # the launched PID, for check-stateos-port-8099.ps1 (run it once the server is up, before any traffic)
 Set-Content -Path ('D:\AI\ik_llama-qwen4exp\' + $LogStem + '.pid') -Value ([string]$proc.Id) -Encoding ascii
-Write-Output ("stateos-tail-8099-launched pid=" + $proc.Id + " divlog=" + [int][bool]$DivLog + " tail=" + [int][bool]$Tail + " xcheck=" + [int][bool]$Xcheck + " spec=" + $spec + " ple_hist_rewind=1 ple_hist_log=1 extra='" + $ExtraArgs + "' log=" + $LogStem)
+Write-Output ("stateos-tail-8099-launched pid=" + $proc.Id + " divlog=" + [int][bool]$DivLog + " tail=" + [int][bool]$Tail + " xcheck=" + [int][bool]$Xcheck + " spec=" + $spec + " drafters=" + $drafters + " ple_hist_rewind=1 ple_hist_log=1 extra='" + $ExtraArgs + "' log=" + $LogStem)
