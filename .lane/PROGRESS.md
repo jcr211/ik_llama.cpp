@@ -9,7 +9,7 @@ Checklist:
 - [x] slot errors reach the HTTP handler (legacy result queue)
 - [x] unit tests (tests/test-stateos-header.cpp) registered in CTest
 - [x] .lane/GPU-VERIFY.md (+ gpu-verify-l1.ps1)
-- [x] build in build-stateos-l1 + run non-GPU tests (build-l1.cmd exit 0; test-l1.cmd exit 0: 156 checks / 0 failures, ctest 2/2)
+- [x] build in build-stateos-l1 + run non-GPU tests (build-l1.cmd and test-l1.cmd exit 0; 156 checks, ctest 2/2)
 - [x] GET /props "stateos" capability (coordinator contract addition) + unit test + GPU-VERIFY check
 - [ ] .lane/REPORT.md (the subagent file guard refused the write; the report text went to the coordinator by message)
 
@@ -44,3 +44,8 @@ Log (ET, approximate):
 - 01:58 F11-3 review round: P2-1 lora_live for --lora-init-without-apply (0acc6624), P3-1 SET_LORA keeps unknown
   (5eab5279), P3-2 restore refuses on unknown (e3e4b7ab), P3-3 UPSTREAM-CODE FIX combined cvec sizing (8347edf7), P3-4
   system-prompt recovery documented; P3-5 left as follow-ups; build-f11 exit 0; test-f11 exit 0 (291 / 0, ctest 4/4)
+- 2026-09-25: Clean PLE round-2 merge delta and bounded build script; external index lock blocked commit.
+- 2026-09-25: Provisional build green; 4/4 CTest and 291/0 checks; exact served cache was pending.
+- 2026-09-25: Provisional receipt done; script guards missing cache; external index lock denied commit.
+- 2026-09-25: Served-cache build 6f6b75c8 green; version/hash attested; 4/4 CTest, 291/0 direct checks.
+- 2026-09-25: Receipt commit attempt denied by external worktree index.lock; coordinator must force-add and commit.

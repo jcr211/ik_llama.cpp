@@ -33,7 +33,7 @@ valid MAIN is caught after seq_rm (slot cleared, 500), so a content checksum is 
   (`src/llama.cpp`). The server restores an empty-state file as an erase: the loader is not called, the answer is 200
   with `stateos.empty: true`. Saving an empty slot stays allowed.
 - M2 (P1): a zero-size MAIN is refused with 409 `state_corrupt` (`section:MAIN`) before anything is touched
-  (`stateos_check_sections`, unit-tested). `nread == 0` counts as a failure. A zero-size COMP state is skipped, and a COMP
+  (`stateos_check_sections`, unit-tested). `nread == 0` counts as failure. A zero-size COMP state is skipped, and a COMP
   load must return non-zero.
 - M3: `gpu-verify-l1.ps1` and `GPU-VERIFY.md` gain three steps. (a) An empty-slot round trip: 200, the server stays up,
   and the next request re-prefills correctly. (b) A MAIN tamper (`cell_count` + 1 in a well-formed container): 500 with
@@ -68,7 +68,8 @@ valid MAIN is caught after seq_rm (slot cleared, 500), so a content checksum is 
   in a gap does not. A whole-file sha256 would cost minutes per start on the ~180 GB model, so v1 accepts this residual
   (coordinator ruling).
 - Not done, noted: F9 is not enforced; it is report-only via `kv_pos_max` until the GPU run shows the invariant holds
-  on legitimate flows. F11 is left open: runtime LoRA / control-vector / override-kv identity, a golden layout-descriptor
+  on legitimate flows. F11 is left open: runtime LoRA / control-vector / override-kv identity,
+  a golden layout descriptor
   test, `/list` vocab-range and exposure, the state_missing naming for stat/permission errors, and
   FlushFileBuffers/stale-`.tmp` cleanup.
 - Build: `.lane/build-l1.cmd` exit 0. Before it, a process check showed no nvcc, cl, cmake or ninja from another
@@ -283,3 +284,24 @@ tampers `effective_model` among the hard fields.
 - Tests: `.lane/test-f11.cmd` exit 0 with `CUDA_VISIBLE_DEVICES=-1`: `test-stateos-header` 291 checks, 0 failures;
   ctest 4/4.
 - Not verified on GPU: none of this round (no GPU).
+
+## prod-binary-f11-ple — 2026-09-25
+
+- Merge SHA: `6f6b75c8a199c4f79dd2b4a992fb9730464cc348` with parents `fe5b967f` and
+  `fc3b0fbe`. Conflict summary: clean; no conflict hunks.
+- CTest: 4/4 model-free suites pass in `.lane/ctest.out`; direct `test-stateos-header` passes
+  291 checks with 0 failures.
+- Served CMake cache diff: empty for the selected values. CMake expands served compiler `cl`
+  to its full path and adds generated metadata. BF16, VBMI, and VNNI are `ON`.
+- `llama-server.exe --version` prints `version: 4981 (6f6b75c8)`; no model or port was used.
+- `LONGSPEAR_PLE_HIST_REWIND` remains off unless the environment value is exactly `1`.
+- Push to `fork` is the coordinator's step. Exact command:
+  `git push fork lane/prod-f11-ple:lane/prod-f11-ple`.
+- Commit pending for these lane receipts because the external worktree `index.lock` is denied.
+  Proposed commit: `build: attest production F11 PLE binary`.
+- Skipped: GPU smoke and launch decision, both owned by the coordinator.
+
+### Build
+
+- Directory: `build-avx512-prod-6f6b75c8`.
+- Attestation: `.lane/BUILD-ATTEST.md`.
