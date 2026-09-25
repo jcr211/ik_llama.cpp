@@ -6196,9 +6196,7 @@ static void llama_set_inputs(llama_context & lctx, const llama_batch & batch) {
         // an embedding ubatch has no token ids, and this feeds get_rows into a 320 M row table,
         // so every position still needs a defined row. The reference hashes the image placeholder
         // here; without that key EOS just makes the span a segment boundary
-        const llama_token img_tok = hp.ple_image_token_id != 0
-            ? (llama_token) hp.ple_image_token_id
-            : eos;
+        const llama_token img_tok = llama_ple_media_token(eos, hp.ple_image_token_id);
 
         // the n-gram context of every token, from the ubatch and each sequence's history
         // (llama-ple-hist.h); only the hash below is model-specific
@@ -9741,8 +9739,10 @@ void llama_ple_history_set(struct llama_context * ctx, llama_seq_id seq_id,
     if (n_hist == 0 || seq_id < 0) {
         return;
     }
-    llama_ple_hist_assign(ctx->ple_hist[seq_id], n_hist + 1,
-            (llama_token) ctx->model.hparams.ple_eos_token_id, prev, n_prev, next_pos);
+    const auto & hp = ctx->model.hparams;
+    const llama_token eos = hp.ple_eos_token_id;
+    llama_ple_hist_assign(ctx->ple_hist[seq_id], n_hist + 1, eos, llama_ple_media_token(eos, hp.ple_image_token_id),
+            prev, n_prev, next_pos);
 }
 
 // Unified speculative-checkpoint
@@ -10114,12 +10114,21 @@ void llama_kv_cache_seq_cp(struct llama_context * ctx, llama_seq_id seq_id_src, 
         const auto it = ctx->ple_hist.find(seq_id_src);
         if (it != ctx->ple_hist.end() && (p1 < 0 || p1 >= it->second.next_pos)) {
             ctx->ple_hist[seq_id_dst] = it->second;
+        } else if (it != ctx->ple_hist.end() && p1 > 0) {
+            // a prefix of src: no history is known to be exact for dst any more
+            ctx->ple_hist.erase(seq_id_dst);
         }
     }
 }
 
 void llama_kv_cache_seq_keep(struct llama_context * ctx, llama_seq_id seq_id) {
     llama_kv_cache_seq_keep(ctx->kv_self, seq_id);
+    if (llama_ple_hist_rewind_enabled()) {
+        // every other sequence is gone
+        for (auto it = ctx->ple_hist.begin(); it != ctx->ple_hist.end();) {
+            it = it->first == seq_id ? std::next(it) : ctx->ple_hist.erase(it);
+        }
+    }
 }
 
 void llama_kv_cache_seq_add(struct llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos delta) {

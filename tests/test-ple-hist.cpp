@@ -40,7 +40,19 @@ struct decoder {
     int n_mid_resets = 0; // resets at pos > 0: what LONGSPEAR_PLE_HIST_LOG reports
 
     void decode(llama_seq_id seq, const tokens & toks, llama_pos pos0, ctx_by_pos & out,
-            int32_t n_ubatch = 512, bool embd = false) {
+            int32_t n_ubatch = 512) {
+        decode_impl(seq, toks, pos0, out, n_ubatch, false);
+    }
+
+    // an M-RoPE image: an embedding ubatch whose first position section is pos_0 for every patch
+    // (mtmd-helper set_position_mrope_2d); the text after it continues at pos_0 + 1 (n_pos = 1)
+    void decode_image(llama_seq_id seq, int32_t n_patches, llama_pos pos_0, ctx_by_pos & out,
+            int32_t n_ubatch = 512) {
+        decode_impl(seq, tokens(n_patches, 0), pos_0, out, n_ubatch, true);
+    }
+
+    void decode_impl(llama_seq_id seq, const tokens & toks, llama_pos pos0, ctx_by_pos & out,
+            int32_t n_ubatch, bool image) {
         for (int32_t b = 0; b < (int32_t) toks.size(); b += n_ubatch) {
             const int32_t n = std::min(n_ubatch, (int32_t) toks.size() - b);
             tokens tk(toks.begin() + b, toks.begin() + b + n);
@@ -48,11 +60,11 @@ struct decoder {
             std::vector<llama_seq_id>   seqs(n, seq);
             std::vector<llama_seq_id *> seq_ptr(n);
             for (int32_t i = 0; i < n; ++i) {
-                pos[i]     = pos0 + b + i;
+                pos[i]     = image ? pos0 : pos0 + b + i;
                 seq_ptr[i] = &seqs[i];
             }
             tokens ctx;
-            llama_ple_ngram_fill(m, n, embd ? nullptr : tk.data(), IMG, pos.data(), seq_ptr.data(),
+            llama_ple_ngram_fill(m, n, image ? nullptr : tk.data(), IMG, pos.data(), seq_ptr.data(),
                     N_GRAM, EOS, ctx, [&](llama_seq_id, llama_pos p, llama_pos) {
                         if (p > 0) {
                             ++n_mid_resets;
@@ -64,9 +76,9 @@ struct decoder {
         }
     }
 
-    // llama_ple_history_set
-    void set(llama_seq_id seq, const tokens & prev, llama_pos next_pos) {
-        llama_ple_hist_assign(m[seq], N_GRAM, EOS, prev.data(), (int32_t) prev.size(), next_pos);
+    // llama_ple_history_set (media: what LLAMA_TOKEN_NULL becomes; the model's image token)
+    void set(llama_seq_id seq, const tokens & prev, llama_pos next_pos, llama_token media = IMG) {
+        llama_ple_hist_assign(m[seq], N_GRAM, EOS, media, prev.data(), (int32_t) prev.size(), next_pos);
     }
 };
 
@@ -98,34 +110,74 @@ bool same_from(const ctx_by_pos & a, const ctx_by_pos & b, llama_pos from) {
 void test_setter() {
     hist h;
 
-    llama_ple_hist_assign(h, N_GRAM, EOS, nullptr, 0, 0);
+    llama_ple_hist_assign(h, N_GRAM, EOS, IMG, nullptr, 0, 0);
     CHECK((h.toks == tokens{EOS, EOS}) && h.next_pos == 0);
 
     const tokens one = {7};
-    llama_ple_hist_assign(h, N_GRAM, EOS, one.data(), 1, 1);
+    llama_ple_hist_assign(h, N_GRAM, EOS, IMG, one.data(), 1, 1);
     CHECK((h.toks == tokens{EOS, 7}) && h.next_pos == 1);
 
     const tokens two = {7, 8};
-    llama_ple_hist_assign(h, N_GRAM, EOS, two.data(), 2, 2);
+    llama_ple_hist_assign(h, N_GRAM, EOS, IMG, two.data(), 2, 2);
     CHECK((h.toks == tokens{7, 8}) && h.next_pos == 2);
 
     const tokens many = {5, 6, 7, 8};
-    llama_ple_hist_assign(h, N_GRAM, EOS, many.data(), 4, 1234);
+    llama_ple_hist_assign(h, N_GRAM, EOS, IMG, many.data(), 4, 1234);
     CHECK((h.toks == tokens{7, 8}) && h.next_pos == 1234);
 
+    // media positions become the image token the builder pushed for them
     const tokens media = {7, LLAMA_TOKEN_NULL};
-    llama_ple_hist_assign(h, N_GRAM, EOS, media.data(), 2, 40);
-    CHECK((h.toks == tokens{7, EOS}) && h.next_pos == 40);
+    llama_ple_hist_assign(h, N_GRAM, EOS, IMG, media.data(), 2, 40);
+    CHECK((h.toks == tokens{7, IMG}) && h.next_pos == 40);
 
-    llama_ple_hist_assign(h, N_GRAM, EOS, nullptr, 3, 5);
+    // ... and the builder's own media id matches it
+    CHECK(llama_ple_media_token(EOS, IMG) == IMG);
+    CHECK(llama_ple_media_token(EOS, 0) == EOS);
+
+    llama_ple_hist_assign(h, N_GRAM, EOS, IMG, nullptr, 3, 5);
     CHECK((h.toks == tokens{EOS, EOS}) && h.next_pos == 5);
 
-    llama_ple_hist_assign(h, N_GRAM, EOS, two.data(), -1, 6);
+    llama_ple_hist_assign(h, N_GRAM, EOS, IMG, two.data(), -1, 6);
     CHECK((h.toks == tokens{EOS, EOS}) && h.next_pos == 6);
 
     // a longer n-gram keeps more predecessors
-    llama_ple_hist_assign(h, 5, EOS, two.data(), 2, 2);
+    llama_ple_hist_assign(h, 5, EOS, IMG, two.data(), 2, 2);
     CHECK((h.toks == tokens{EOS, EOS, 7, 8}) && h.next_pos == 2);
+}
+
+// the server prompt-resume window (llama_ple_hist_prompt_window at p0 = |system| + n_past): after
+// any rewind to n_past the prompt continues exactly as a sequential decode of the same tokens
+void test_prompt_resume() {
+    const tokens t = make_tokens(9, 8000);
+
+    for (const tokens & sys : { tokens{}, make_tokens(3, 7000) }) {
+        tokens all = sys;
+        all.insert(all.end(), t.begin(), t.end());
+
+        ctx_by_pos ref;
+        {
+            decoder d;
+            d.decode(SEQ, all, 0, ref);
+        }
+
+        for (int n_past = 0; n_past <= (int) t.size(); ++n_past) {
+            const llama_pos p0 = (llama_pos) sys.size() + n_past;
+            if (p0 == 0) {
+                continue; // the server leaves position 0 to the builder
+            }
+            decoder    d;
+            ctx_by_pos out;
+            d.decode(SEQ, slice(all, 0, p0), 0, out);
+            d.decode(SEQ, make_tokens(4, 9000), p0, out); // the suffix a checkpoint restore drops
+            const int resets_before = d.n_mid_resets;
+
+            d.set(SEQ, llama_ple_hist_prompt_window(sys, t, n_past, N_GRAM - 1), p0);
+            d.decode(SEQ, slice(t, n_past, (int) t.size()), p0, out);
+
+            CHECK(same_from(ref, out, 0));
+            CHECK(d.n_mid_resets == resets_before);
+        }
+    }
 }
 
 // rewinding to k and re-decoding: with the history set from tokens[0, k) the contexts match a
@@ -210,18 +262,22 @@ void test_speculative(bool direct, int step) {
         // ids: the accepted drafts plus the new sampled token
         const tokens ids = slice(t, K + 1, K + 2 + step);
 
+        const llama_pos resume = K + 1 + step; // where the next verify batch starts
+
         if (fix) {
-            tokens    prev     = snap.toks;
-            llama_pos next_pos = K;
-            if (direct) {
-                prev.push_back(t[K]);
-                prev.insert(prev.end(), ids.begin(), ids.end() - 1);
-                next_pos += (llama_pos) ids.size();
-            }
+            tokens    prev;
+            llama_pos next_pos = -1;
+            CHECK(llama_ple_hist_spec_resume(snap.toks, snap.next_pos, K, t[K], ids, direct, prev, next_pos));
+            CHECK(next_pos == (direct ? resume : K));
             d.set(SEQ, prev, next_pos);
+
+            // nothing exact to rebuild from: a snapshot not at the checkpoint, or no ids
+            tokens    unused;
+            llama_pos unused_pos = -1;
+            CHECK(!llama_ple_hist_spec_resume(snap.toks, K - 1, K, t[K], ids, direct, unused, unused_pos));
+            CHECK(!llama_ple_hist_spec_resume(snap.toks, K, K, t[K], tokens{}, direct, unused, unused_pos));
         }
 
-        llama_pos resume = K + 1 + step; // where the next verify batch starts
         if (!direct) {
             // replay the sampled token and the accepted drafts from the checkpoint
             tokens replay = { t[K] };
@@ -257,41 +313,57 @@ void test_other_sequence_untouched() {
     CHECK((d.m[1].toks == tokens{t1[1], t1[2]}) && d.m[1].next_pos == 3);
 }
 
-// an image (embedding ubatch) followed by text after a position jump: a sequential decode resets to
-// EOS at the text; a rewind whose predecessors include the media positions (LLAMA_TOKEN_NULL in the
-// server's cache tokens) reproduces it
+// an M-RoPE image followed by text: every patch sits at pos_0 and the text continues at pos_0 + 1,
+// which is the history's next_pos, so a sequential decode does not reset and the text's first
+// predecessors are the image token. A resume whose window holds media positions (LLAMA_TOKEN_NULL
+// in the server's cache tokens, one per patch) must reproduce that.
 void test_media_boundary() {
-    const tokens pre  = make_tokens(4, 5000);
-    const int    n_im = 5;
-    const tokens text = make_tokens(6, 6000);
+    const tokens    pre    = make_tokens(4, 5000);
+    const int       n_im   = 5;
+    const tokens    text   = make_tokens(6, 6000);
     const llama_pos p_img  = (llama_pos) pre.size();
-    const llama_pos p_text = p_img + n_im + 3; // IMROPE: the text resumes past the image's positions
+    const llama_pos p_text = p_img + 1; // mtmd_image_tokens_get_n_pos() == 1 under M-RoPE
 
-    // the server's cache tokens: text, then LLAMA_TOKEN_NULL for every media position, then text
     tokens cache = pre;
     cache.insert(cache.end(), n_im, LLAMA_TOKEN_NULL);
     cache.insert(cache.end(), text.begin(), text.end());
 
-    ctx_by_pos ref;
-    {
-        decoder d;
-        d.decode(SEQ, pre, 0, ref);
-        d.decode(SEQ, tokens(n_im, 0), p_img, ref, 512, true);
-        d.decode(SEQ, text, p_text, ref);
-        CHECK(d.n_mid_resets == 1); // the jump to the text
-    }
+    for (const int32_t n_ubatch : {512, 3}) {
+        ctx_by_pos ref;
+        {
+            decoder d;
+            d.decode(SEQ, pre, 0, ref);
+            d.decode_image(SEQ, n_im, p_img, ref, n_ubatch);
+            // one ubatch: no reset. Split: each ubatch after the first resets at pos_0 (base
+            // builder behaviour; the vision-mode note on LONGSPEAR_PLE_HIST_LOG)
+            CHECK(d.n_mid_resets == (n_ubatch >= n_im ? 0 : 1));
+            // the last image ubatch holds >= 2 patches here, so the history is [IMG, IMG]
+            CHECK((d.m[SEQ].toks == tokens{IMG, IMG}) && d.m[SEQ].next_pos == p_text);
+            d.decode(SEQ, text, p_text, ref);
+            CHECK((ref[p_text] == tokens{text[0], IMG, IMG}));
+        }
 
-    for (int r = 0; r < (int) text.size(); ++r) {
-        decoder    d;
-        ctx_by_pos out;
-        d.decode(SEQ, pre, 0, out);
-        d.decode(SEQ, tokens(n_im, 0), p_img, out, 512, true);
-        d.decode(SEQ, slice(text, 0, r), p_text, out);
-        d.decode(SEQ, make_tokens(3, 9500), p_text + r, out); // rejected
-        const int idx = (int) pre.size() + n_im + r;           // resume index in cache
-        d.set(SEQ, slice(cache, 0, idx), p_text + r);
-        d.decode(SEQ, slice(text, r, (int) text.size()), p_text + r, out);
-        CHECK(same_from(ref, out, p_text));
+        for (int r = 0; r < (int) text.size(); ++r) {
+            for (const llama_token media : {IMG, EOS}) {
+                decoder    d;
+                ctx_by_pos out;
+                d.decode(SEQ, pre, 0, out);
+                d.decode_image(SEQ, n_im, p_img, out, n_ubatch);
+                d.decode(SEQ, slice(text, 0, r), p_text, out);
+                d.decode(SEQ, make_tokens(3, 9500), p_text + r, out); // rejected
+
+                const int n_past = (int) pre.size() + n_im + r; // resume index in the cache tokens
+                d.set(SEQ, llama_ple_hist_prompt_window(tokens{}, cache, n_past, N_GRAM - 1), p_text + r, media);
+                d.decode(SEQ, slice(text, r, (int) text.size()), p_text + r, out);
+
+                if (media == IMG) {
+                    CHECK(same_from(ref, out, p_text));
+                } else if (r < N_GRAM - 1) {
+                    // round 1 mapped media to EOS: wrong within n_gram - 1 positions of the image
+                    CHECK(!same_from(ref, out, p_text));
+                }
+            }
+        }
     }
 }
 
@@ -300,6 +372,7 @@ void test_media_boundary() {
 int main() {
     test_setter();
     test_rewind_every_position();
+    test_prompt_resume();
     for (const bool direct : {false, true}) {
         for (int step = 0; step <= 3; ++step) {
             test_speculative(direct, step);

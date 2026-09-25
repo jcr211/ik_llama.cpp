@@ -3,6 +3,7 @@
 #include "common.h"
 #include "ggml.h"
 #include "llama.h"
+#include "llama-ple-hist.h"
 #include "log.h"
 #include "ngram-cache.h"
 #include "ngram-map.h"
@@ -94,15 +95,11 @@ static void common_speculative_ple_snapshot(common_speculative_checkpoint & ckpt
 // the checkpoint followed by the sampled token and the accepted drafts after a per-step restore.
 static void common_speculative_ple_resume(const common_speculative_checkpoint & ckpt, llama_context * ctx,
         llama_seq_id seq_id, const std::vector<llama_token> & ids, bool direct) {
-    if (ckpt.ple_next_pos != ckpt.n_past || ids.empty()) {
+    std::vector<llama_token> prev;
+    llama_pos next_pos = -1;
+    if (!llama_ple_hist_spec_resume(ckpt.ple_hist, ckpt.ple_next_pos, ckpt.n_past, ckpt.sampled, ids, direct,
+                prev, next_pos)) {
         return; // no history contiguous with the checkpoint to rebuild from
-    }
-    std::vector<llama_token> prev = ckpt.ple_hist;
-    llama_pos next_pos = ckpt.n_past;
-    if (direct) {
-        prev.push_back(ckpt.sampled);
-        prev.insert(prev.end(), ids.begin(), ids.end() - 1);
-        next_pos += (llama_pos) ids.size();
     }
     common_ple_history_set(ctx, seq_id, prev.data(), (int32_t) prev.size(), next_pos,
             direct ? "spec-per-step" : "spec-replay");
